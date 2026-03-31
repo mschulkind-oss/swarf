@@ -65,3 +65,17 @@ def link(quiet: bool) -> None:
     from swarf.link import run_link
 
     run_link(quiet=quiet)
+
+
+@main.command()
+@click.argument("paths", nargs=-1, required=True)
+def sweep(paths: tuple[str, ...]) -> None:
+    """Sweep files into .swarf/links/ and symlink them back.
+
+    Moves each file into .swarf/links/ (preserving its path relative to the
+    project root), replaces the original with a symlink, and updates
+    .git/info/exclude so the host repo ignores it.
+    """
+    from swarf.sweep import run_sweep
+
+    run_sweep(paths)

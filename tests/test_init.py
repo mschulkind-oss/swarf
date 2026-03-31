@@ -77,11 +77,15 @@ class TestInit:
         assert result.exit_code != 0
         assert "already initialized" in result.output
 
-    @pytest.mark.usefixtures("git_repo")
-    def test_init_warns_missing_global_gitignore(self):
+    def test_init_updates_git_info_exclude(self, git_repo):
         runner = CliRunner()
         result = runner.invoke(main, ["init"])
-        assert "not gitignored" in result.output.lower() or "Warning" in result.output
+        assert result.exit_code == 0, result.output
+        exclude = git_repo / ".git" / "info" / "exclude"
+        content = exclude.read_text()
+        assert "/.swarf/" in content
+        assert "/.mise.local.toml" in content
+        assert "swarf managed" in content
 
     def test_init_rclone_backend(self, git_repo):
         runner = CliRunner()

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from swarf.exclude import add_linked_excludes
 from swarf.paths import find_host_root, links_dir
 
 
@@ -73,5 +74,10 @@ def run_link(host_root: Path | None = None, quiet: bool = False) -> LinkResult:
     if quiet:
         for msg in result.warnings:
             click.echo(click.style("Warning:", fg="yellow") + f" {msg}")
+
+    # Update .git/info/exclude so linked files are ignored by the host repo
+    all_linked = [str(p) for p in result.created + result.skipped]
+    if all_linked:
+        add_linked_excludes(host_root, all_linked)
 
     return result
