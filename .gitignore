@@ -1,6 +1,7 @@
 # Go
 swarf
 *.exe
+coverage.out
 
 # Build artifacts
 dist/
