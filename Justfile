@@ -1,39 +1,36 @@
 default:
     @just --list
 
-setup:
-    uv sync --group dev
+VERSION := `git describe --tags 2>/dev/null || echo dev`
+GIT_COMMIT := `git rev-parse --short HEAD 2>/dev/null || echo unknown`
+DIRTY := `test -z "$(git status --porcelain 2>/dev/null)" && echo false || echo true`
+LDFLAGS := "-X github.com/mschulkind-oss/swarf/internal/version.Version=" + VERSION + " -X github.com/mschulkind-oss/swarf/internal/version.GitCommit=" + GIT_COMMIT + " -X github.com/mschulkind-oss/swarf/internal/version.Dirty=" + DIRTY
 
-check: format lint test
-
-format:
-    uv run ruff format .
+check: lint test
 
 lint:
-    uv run ruff check --fix .
+    go vet ./...
 
 test *ARGS:
-    uv run pytest tests/ {{ ARGS }}
+    go test ./... {{ ARGS }}
 
 test-fast *ARGS:
-    uv run pytest tests/ -x --no-header -q {{ ARGS }}
-
-typecheck:
-    uv run basedpyright
+    go test ./... -count=1 -short {{ ARGS }}
 
 build:
-    uv build
+    go build -ldflags '{{ LDFLAGS }}' -o swarf .
 
-install:
-    uv tool install . --force
+install: build
+    cp swarf ~/.local/bin/swarf
 
-# Build and install locally as a uv tool
+# Build and install locally
 deploy: build install
     @echo "swarf deployed. Verify: swarf --version"
 
 # Clean build artifacts
 clean:
-    rm -rf dist/ build/ src/*.egg-info
+    rm -f swarf
+    go clean -cache
 
 # Restart the systemd user service
 restart-service:
