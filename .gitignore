@@ -1,12 +1,13 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-.pytest_cache/
-.ruff_cache/
+# Go
+swarf
+*.exe
+
+# Build artifacts
 dist/
-build/
+
+# Swarf local
 .yolo/
 .swarf/
 .mise.local.toml
 .claude/
+.venv/
