@@ -243,6 +243,31 @@ func TestE2EEnter(t *testing.T) {
 	}
 }
 
+func TestE2EDocs(t *testing.T) {
+	e := setup(t)
+	// List topics
+	out, err := e.swarf("docs")
+	if err != nil {
+		t.Fatalf("docs failed: %s", out)
+	}
+	if !strings.Contains(out, "architecture") || !strings.Contains(out, "quickstart") {
+		t.Fatalf("docs missing topics: %s", out)
+	}
+	// Read a specific topic
+	out, err = e.swarf("docs", "architecture")
+	if err != nil {
+		t.Fatalf("docs architecture failed: %s", out)
+	}
+	if !strings.Contains(out, "central store") {
+		t.Fatalf("architecture doc missing content: %s", out)
+	}
+	// Unknown topic
+	out, err = e.swarf("docs", "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for unknown topic")
+	}
+}
+
 func TestE2EDaemonStatus(t *testing.T) {
 	e := setup(t)
 	out, _ := e.swarf("daemon", "status")

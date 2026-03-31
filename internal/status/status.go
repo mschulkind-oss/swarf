@@ -26,26 +26,30 @@ func Run() {
 }
 
 func printStoreInfo(gc *config.GlobalConfig) {
-	console.Info("\033[1mStore\033[0m")
-	console.Infof("  Path:    %s", paths.StoreDir)
-	console.Infof("  Backend: %s", gc.Backend)
+	console.Header("Store")
+	console.Infof("  Path:    %s", console.Color(console.Dim, paths.StoreDir))
+	console.Infof("  Backend: %s", console.Color(console.Cyan, gc.Backend))
 	if gc.Remote != "" {
 		console.Infof("  Remote:  %s", gc.Remote)
 	} else {
-		console.Info("  Remote:  not set")
+		console.Infof("  Remote:  %s", console.Color(console.Dim, "not set"))
 	}
 
 	if !paths.IsDir(paths.StoreDir) || !gitexec.IsRepo(paths.StoreDir) {
-		console.Info("  \033[31mStore not initialized. Run 'swarf init'.\033[0m")
+		console.Infof("  %s", console.Color(console.Red, "Store not initialized. Run 'swarf init'."))
 		return
 	}
 
 	status := gitexec.StatusPorcelain(paths.StoreDir)
 	pending := countNonEmpty(strings.Split(strings.TrimSpace(status), "\n"))
-	console.Infof("  Pending: %d file(s)", pending)
+	if pending > 0 {
+		console.Infof("  Pending: %s", console.Color(console.Yellow, fmt.Sprintf("%d file(s)", pending)))
+	} else {
+		console.Infof("  Pending: %s", console.Color(console.Green, "0 file(s)"))
+	}
 
 	if out := gitLog(paths.StoreDir); out != "" {
-		console.Infof("  Last sync: %s", out)
+		console.Infof("  Last sync: %s", console.Color(console.Dim, out))
 	}
 	if url := gitexec.RemoteURL(paths.StoreDir, ""); url != "" {
 		console.Infof("  Git remote: %s", url)
@@ -58,15 +62,17 @@ func printProjects() {
 		return
 	}
 	console.Info("")
-	console.Infof("%-20s %-40s %s", "PROJECT", "HOST PATH", "LINKED")
+	console.Infof("%-20s %-40s %s", console.Color(console.Bold, "PROJECT"),
+		console.Color(console.Bold, "HOST PATH"),
+		console.Color(console.Bold, "LINKED"))
 	console.Infof("%-20s %-40s %s", "-------", "---------", "------")
 	home, _ := os.UserHomeDir()
 	for _, d := range drawers {
 		displayHost := strings.Replace(d.Host, home, "~", 1)
 		linked := isSymlink(d.Host + "/.swarf")
-		linkedStr := "\033[31mno\033[0m"
+		linkedStr := console.Color(console.Red, "no")
 		if linked {
-			linkedStr = "\033[32myes\033[0m"
+			linkedStr = console.Color(console.Green, "yes")
 		}
 		console.Infof("%-20s %-40s %s", d.Slug, displayHost, linkedStr)
 	}
@@ -76,14 +82,14 @@ func printDaemonStatus() {
 	console.Info("")
 	pid, ok := readPID(paths.PIDFile)
 	if !ok {
-		console.Info("Daemon: \033[33mnot running\033[0m")
+		console.Infof("Daemon: %s", console.Color(console.Yellow, "not running"))
 		return
 	}
 	if err := syscall.Kill(pid, 0); err != nil {
-		console.Info("Daemon: \033[31mnot running\033[0m (stale PID file)")
+		console.Infof("Daemon: %s (stale PID file)", console.Color(console.Red, "not running"))
 		return
 	}
-	console.Infof("Daemon: \033[32mrunning\033[0m (PID %d)", pid)
+	console.Infof("Daemon: %s (PID %d)", console.Color(console.Green, "running"), pid)
 }
 
 func countNonEmpty(lines []string) int {

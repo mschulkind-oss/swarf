@@ -14,6 +14,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon"
 	"github.com/mschulkind-oss/swarf/internal/doctor"
+	"github.com/mschulkind-oss/swarf/internal/docs"
 	"github.com/mschulkind-oss/swarf/internal/enter"
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/link"
@@ -24,6 +25,13 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/version"
 )
 
+const (
+	groupCore   = "core"
+	groupSync   = "sync"
+	groupSystem = "system"
+	groupInfo   = "info"
+)
+
 func main() {
 	root := &cobra.Command{
 		Use:           "swarf",
@@ -31,18 +39,44 @@ func main() {
 		Version:       version.String(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Long: `Swarf gives your side-files a durable home alongside any project,
+without touching the project repo.
+
+Agent research, design docs, personal notes, skill files — swept into
+a private store that auto-syncs in the background. Invisible to git,
+durable across machines.
+
+Get started:
+  swarf init              Set up swarf in the current project
+  swarf docs quickstart   Full walkthrough
+
+Learn more:
+  swarf docs              List all documentation topics
+  swarf docs architecture How swarf works under the hood`,
 	}
+
+	root.SetUsageTemplate(usageTemplate())
+	root.SetHelpTemplate(helpTemplate())
+	root.SetVersionTemplate("swarf version {{.Version}}\n")
+
+	root.AddGroup(
+		&cobra.Group{ID: groupCore, Title: "Core Commands:"},
+		&cobra.Group{ID: groupSync, Title: "Sync & Remote:"},
+		&cobra.Group{ID: groupSystem, Title: "System:"},
+		&cobra.Group{ID: groupInfo, Title: "Info & Diagnostics:"},
+	)
 
 	root.AddCommand(
 		initCmd(),
-		cloneCmd(),
-		pullCmd(),
-		statusCmd(),
-		doctorCmd(),
+		sweepCmd(),
 		linkCmd(),
 		enterCmd(),
-		sweepCmd(),
+		cloneCmd(),
+		pullCmd(),
 		daemonCmd(),
+		statusCmd(),
+		doctorCmd(),
+		docsCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -51,11 +85,21 @@ func main() {
 	}
 }
 
+// --- Core Commands ---
+
 func initCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "init",
-		Short: "Initialize swarf for the current project",
-		Args:  cobra.NoArgs,
+		Use:     "init",
+		Short:   "Initialize swarf for the current project",
+		GroupID: groupCore,
+		Args:    cobra.NoArgs,
+		Long: `Initialize swarf in the current git repository.
+
+Creates the central store (if it doesn't exist), registers this project,
+sets up .swarf/ symlink, configures .git/info/exclude, and creates the
+mise enter hook. On first run, walks you through global config setup.`,
+		Example: `  swarf init              # interactive setup (first time)
+  cd ~/other-project && swarf init   # instant (reuses config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			gc := config.ReadGlobalConfig()
 			if gc == nil {
@@ -66,83 +110,38 @@ func initCmd() *cobra.Command {
 	}
 }
 
-func promptGlobalConfig() *config.GlobalConfig {
-	console.Info("\nNo global config found. Let's set one up.\n")
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Print("Backend [git/rclone] (git): ")
-	backend, _ := reader.ReadString('\n')
-	backend = strings.TrimSpace(backend)
-	if backend == "" {
-		backend = "git"
-	}
-
-	fmt.Print("Remote URL: ")
-	remote, _ := reader.ReadString('\n')
-	remote = strings.TrimSpace(remote)
-
-	gc := &config.GlobalConfig{Backend: backend, Remote: remote, Debounce: "5s"}
-	config.WriteGlobalConfig(gc)
-	console.Ok(fmt.Sprintf("Wrote %s", paths.GlobalConfigTOML))
-	return gc
-}
-
-func cloneCmd() *cobra.Command {
+func sweepCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "clone",
-		Short: "Clone the central store from your configured remote",
-		Args:  cobra.NoArgs,
-		RunE:  func(cmd *cobra.Command, args []string) error { return clone.Run() },
-	}
-}
+		Use:     "sweep <file>...",
+		Short:   "Move files into .swarf/links/ and symlink them back",
+		GroupID: groupCore,
+		Args:    cobra.MinimumNArgs(1),
+		Long: `Sweep moves files from the host repo into the swarf store and replaces
+them with symlinks. This lets files like AGENTS.md appear in the project
+tree while living in swarf's private, synced storage.
 
-func pullCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "pull",
-		Short: "Pull the latest changes from the remote into the store",
-		Args:  cobra.NoArgs,
-		RunE:  func(cmd *cobra.Command, args []string) error { return pull.Run() },
-	}
-}
-
-func statusCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "status",
-		Short: "Show sync status for the central store and all projects",
-		Args:  cobra.NoArgs,
-		Run:   func(cmd *cobra.Command, args []string) { status.Run() },
-	}
-}
-
-func doctorCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "doctor",
-		Short: "Validate swarf setup is healthy",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			allOk := true
-			for _, c := range doctor.RunAllChecks("") {
-				if c.OK {
-					console.Ok(c.Msg)
-				} else {
-					console.Error(c.Msg)
-					allOk = false
-				}
-			}
-			if !allOk {
-				return fmt.Errorf("some checks failed")
-			}
-			fmt.Println("\nAll checks passed.")
-			return nil
-		},
+The original path is automatically excluded from git via .git/info/exclude.
+Run 'swarf docs sweep' for the full guide.`,
+		Example: `  swarf sweep AGENTS.md
+  swarf sweep CLAUDE.md .copilot/skills/SKILL.md
+  swarf sweep docs/design.md`,
+		RunE: func(cmd *cobra.Command, args []string) error { return sweep.Run(args, "") },
 	}
 }
 
 func linkCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "link",
-		Short: "Create symlinks from .swarf/links/ into the host repo tree",
-		Args:  cobra.NoArgs,
+		Use:     "link",
+		Short:   "Re-create symlinks from .swarf/links/ into the host tree",
+		GroupID: groupCore,
+		Args:    cobra.NoArgs,
+		Long: `Scans .swarf/links/ and creates symlinks for any files that are missing
+in the host tree. Safe to run repeatedly — existing symlinks are skipped.
+
+This is useful after a fresh git clone, or if symlinks were accidentally
+deleted. 'swarf enter' does the same thing automatically via mise hooks.`,
+		Example: `  swarf link
+  swarf link --quiet      # only show warnings`,
 	}
 	quiet := cmd.Flags().BoolP("quiet", "q", false, "Only show warnings")
 	cmd.RunE = func(c *cobra.Command, args []string) error {
@@ -154,30 +153,74 @@ func linkCmd() *cobra.Command {
 
 func enterCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "enter",
-		Short: "Run on project enter (mise hook)",
-		Args:  cobra.NoArgs,
-		Run:   func(cmd *cobra.Command, args []string) { enter.Run() },
+		Use:     "enter",
+		Short:   "Re-link on project enter (mise hook, usually automatic)",
+		GroupID: groupCore,
+		Args:    cobra.NoArgs,
+		Long: `Called automatically by mise when you cd into a project. Re-creates
+any missing symlinks from .swarf/links/. You rarely need to run this
+manually — it's wired up by 'swarf init' via .mise.local.toml.`,
+		Run: func(cmd *cobra.Command, args []string) { enter.Run() },
 	}
 }
 
-func sweepCmd() *cobra.Command {
+// --- Sync & Remote ---
+
+func cloneCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "sweep [files...]",
-		Short: "Sweep files into .swarf/links/ and symlink them back",
-		Args:  cobra.MinimumNArgs(1),
-		RunE:  func(cmd *cobra.Command, args []string) error { return sweep.Run(args, "") },
+		Use:     "clone",
+		Short:   "Clone the central store from your configured remote",
+		GroupID: groupSync,
+		Args:    cobra.NoArgs,
+		Long: `Clones the central store from the remote configured in
+~/.config/swarf/config.toml. Use this when setting up swarf on a
+new machine where the store doesn't exist yet.
+
+After cloning, run 'swarf init' in each project directory to re-link.`,
+		Example: `  swarf clone             # clone store from remote
+  swarf init              # then init each project`,
+		RunE: func(cmd *cobra.Command, args []string) error { return clone.Run() },
 	}
 }
+
+func pullCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "pull",
+		Short:   "Pull latest changes from the remote into the store",
+		GroupID: groupSync,
+		Args:    cobra.NoArgs,
+		Long: `Pulls the latest changes from the configured remote into the local
+store. Useful if another machine pushed changes and you want them
+immediately (the daemon also pulls periodically).`,
+		Example: `  swarf pull`,
+		RunE:    func(cmd *cobra.Command, args []string) error { return pull.Run() },
+	}
+}
+
+// --- System ---
 
 func daemonCmd() *cobra.Command {
 	d := &cobra.Command{
-		Use:   "daemon",
-		Short: "Manage the swarf background sync daemon",
+		Use:     "daemon <command>",
+		Short:   "Manage the background sync daemon",
+		GroupID: groupSystem,
+		Long: `The swarf daemon watches the central store for file changes and
+auto-syncs to your configured backend. It handles all projects from
+a single process.
+
+Run 'swarf docs daemon' for the full guide.`,
 	}
 
-	startCmd := &cobra.Command{Use: "start", Short: "Start the background sync daemon", Args: cobra.NoArgs}
-	fg := startCmd.Flags().Bool("foreground", false, "Run in the foreground")
+	startCmd := &cobra.Command{
+		Use:   "start",
+		Short: "Start the background sync daemon",
+		Args:  cobra.NoArgs,
+		Long: `Starts the daemon process. By default it daemonizes (detaches from
+the terminal). Use --foreground for debugging.`,
+		Example: `  swarf daemon start
+  swarf daemon start --foreground`,
+	}
+	fg := startCmd.Flags().Bool("foreground", false, "Run in the foreground (don't daemonize)")
 	startCmd.Run = func(cmd *cobra.Command, args []string) {
 		daemon.DoStart(*fg)
 		if !*fg {
@@ -186,7 +229,9 @@ func daemonCmd() *cobra.Command {
 	}
 
 	stopCmd := &cobra.Command{
-		Use: "stop", Short: "Stop the background sync daemon", Args: cobra.NoArgs,
+		Use:   "stop",
+		Short: "Stop the background sync daemon",
+		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
 			pid, ok := readPID()
 			if !ok {
@@ -202,8 +247,10 @@ func daemonCmd() *cobra.Command {
 		},
 	}
 
-	statusCmd := &cobra.Command{
-		Use: "status", Short: "Check if the daemon is running", Args: cobra.NoArgs,
+	daemonStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "Check if the daemon is running",
+		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pid, ok := readPID()
 			if !ok {
@@ -219,7 +266,14 @@ func daemonCmd() *cobra.Command {
 	}
 
 	installCmd := &cobra.Command{
-		Use: "install", Short: "Install systemd user service", Args: cobra.NoArgs,
+		Use:   "install",
+		Short: "Install systemd user service (auto-start on login)",
+		Args:  cobra.NoArgs,
+		Long: `Installs a systemd user service that starts the daemon automatically
+on login. View logs with: journalctl --user -u swarf -f`,
+		Example: `  swarf daemon install
+  systemctl --user status swarf
+  journalctl --user -u swarf -f`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := daemon.InstallSystemdService(); err != nil {
 				return err
@@ -229,8 +283,114 @@ func daemonCmd() *cobra.Command {
 		},
 	}
 
-	d.AddCommand(startCmd, stopCmd, statusCmd, installCmd)
+	d.AddCommand(startCmd, stopCmd, daemonStatusCmd, installCmd)
 	return d
+}
+
+// --- Info & Diagnostics ---
+
+func statusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "status",
+		Short:   "Show sync status for the central store and all projects",
+		GroupID: groupInfo,
+		Args:    cobra.NoArgs,
+		Long: `Displays the current state of the central store, registered projects,
+sync status, and daemon health. A quick way to see everything at a glance.`,
+		Example: `  swarf status`,
+		Run:     func(cmd *cobra.Command, args []string) { status.Run() },
+	}
+}
+
+func doctorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "doctor",
+		Short:   "Validate that swarf is set up correctly",
+		GroupID: groupInfo,
+		Args:    cobra.NoArgs,
+		Long: `Runs a series of health checks: global config, store existence,
+remote connectivity, daemon status, .swarf/ directory, gitignore
+entries, mise hooks, and symlink integrity.
+
+Green checks pass, red checks need attention.`,
+		Example: `  swarf doctor`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			allOk := true
+			for _, c := range doctor.RunAllChecks("") {
+				if c.OK {
+					console.Ok(c.Msg)
+				} else {
+					console.Error(c.Msg)
+					allOk = false
+				}
+			}
+			if !allOk {
+				return fmt.Errorf("some checks failed")
+			}
+			console.Info("")
+			console.Ok("All checks passed.")
+			return nil
+		},
+	}
+}
+
+func docsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "docs [topic]",
+		Short:   "Browse built-in documentation",
+		GroupID: groupInfo,
+		Args:    cobra.MaximumNArgs(1),
+		Long: `Access swarf's built-in documentation. Run without arguments to see
+all available topics, or specify a topic name for details.`,
+		Example: `  swarf docs                 # list all topics
+  swarf docs quickstart      # getting started guide
+  swarf docs architecture    # how swarf works
+  swarf docs config          # configuration reference
+  swarf docs sweep           # sweep and link guide
+  swarf docs daemon          # daemon operations
+  swarf docs backends        # git and rclone setup`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				console.Header("Available documentation topics:")
+				console.Info("")
+				console.Info(docs.ListTopics())
+				console.Hint("  Run 'swarf docs <topic>' to read a topic.")
+				return nil
+			}
+			topic := docs.Get(args[0])
+			if topic == nil {
+				return fmt.Errorf("unknown topic %q — run 'swarf docs' to see available topics", args[0])
+			}
+			console.Info(topic.Content)
+			return nil
+		},
+	}
+	return cmd
+}
+
+// --- Helpers ---
+
+func promptGlobalConfig() *config.GlobalConfig {
+	console.Info("")
+	console.Header("No global config found. Let's set one up.")
+	console.Info("")
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("  Backend [git/rclone] (git): ")
+	backend, _ := reader.ReadString('\n')
+	backend = strings.TrimSpace(backend)
+	if backend == "" {
+		backend = "git"
+	}
+
+	fmt.Print("  Remote URL: ")
+	remote, _ := reader.ReadString('\n')
+	remote = strings.TrimSpace(remote)
+
+	gc := &config.GlobalConfig{Backend: backend, Remote: remote, Debounce: "5s"}
+	config.WriteGlobalConfig(gc)
+	console.Ok(fmt.Sprintf("Wrote %s", paths.GlobalConfigTOML))
+	return gc
 }
 
 func readPID() (int, bool) {
@@ -243,4 +403,41 @@ func readPID() (int, bool) {
 		return 0, false
 	}
 	return pid, true
+}
+
+func usageTemplate() string {
+	// Based on cobra's default template with ANSI colors injected.
+	return `{{"\033[1m"}}Usage:{{"\033[0m"}}{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+{{"\033[1m"}}Aliases:{{"\033[0m"}}
+  {{.NameAndAliases}}{{end}}{{if .HasExample}}
+
+{{"\033[1m"}}Examples:{{"\033[0m"}}
+{{"\033[2m"}}{{.Example}}{{"\033[0m"}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+{{"\033[1m"}}Available Commands:{{"\033[0m"}}{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{"\033[36m"}}{{rpad .Name .NamePadding }}{{"\033[0m"}} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{"\033[1;36m"}}{{.Title}}{{"\033[0m"}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{"\033[36m"}}{{rpad .Name .NamePadding }}{{"\033[0m"}} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+{{"\033[1m"}}Additional Commands:{{"\033[0m"}}{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{"\033[36m"}}{{rpad .Name .NamePadding }}{{"\033[0m"}} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+{{"\033[1m"}}Flags:{{"\033[0m"}}
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+{{"\033[1m"}}Global Flags:{{"\033[0m"}}
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`
+}
+
+func helpTemplate() string {
+	return `{{if or .Runnable .HasSubCommands}}{{if .Long}}{{.Long | trimTrailingWhitespaces}}
+
+{{end}}` + usageTemplate() + `{{end}}`
 }
