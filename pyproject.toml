@@ -17,7 +17,7 @@ classifiers = [
     "Topic :: Software Development :: Version Control :: Git",
 ]
 dependencies = [
-    "click>=8.1",
+    "cyclopts>=3.0",
     "tomli-w>=1.0",
     "rich>=13.0",
     "watchfiles>=1.0",
@@ -48,7 +48,7 @@ select = ["E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 
 [build-system]
 requires = ["hatchling"]

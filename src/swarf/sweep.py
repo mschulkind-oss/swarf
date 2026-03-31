@@ -5,8 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-import click
-
+from swarf.console import error, info, warn
 from swarf.exclude import add_linked_excludes
 from swarf.paths import find_host_root, links_dir
 
@@ -16,20 +15,12 @@ def run_sweep(paths: tuple[str, ...] | list[str], host_root: Path | None = None)
     if host_root is None:
         host_root = find_host_root()
     if host_root is None:
-        click.echo(
-            click.style("Error:", fg="red")
-            + " Not inside a swarf project. Run 'swarf init' first.",
-            err=True,
-        )
+        error("Not inside a swarf project. Run 'swarf init' first.")
         raise SystemExit(1)
 
     ld = links_dir(host_root)
     if not ld.is_dir():
-        click.echo(
-            click.style("Error:", fg="red")
-            + " .swarf/links/ does not exist. Run 'swarf init' first.",
-            err=True,
-        )
+        error(".swarf/links/ does not exist. Run 'swarf init' first.")
         raise SystemExit(1)
 
     swept: list[str] = []
@@ -42,11 +33,17 @@ def run_sweep(paths: tuple[str, ...] | list[str], host_root: Path | None = None)
         # Check symlink before resolving
         if source.is_symlink():
             relative = source.relative_to(host_root) if source.is_relative_to(host_root) else source
-            click.echo(
-                click.style("Warning:", fg="yellow")
-                + f" {relative} is already a symlink, skipping.",
-            )
+            warn(f"{relative} is already a symlink, skipping.")
             continue
+
+        # Check if inside .swarf/ BEFORE resolving (resolving follows symlinks)
+        try:
+            raw_relative = source.relative_to(host_root)
+            if ".swarf" in raw_relative.parts:
+                error(f"{path_str} is already inside .swarf/.")
+                continue
+        except ValueError:
+            pass
 
         source = source.resolve()
 
@@ -54,25 +51,11 @@ def run_sweep(paths: tuple[str, ...] | list[str], host_root: Path | None = None)
         try:
             relative = source.relative_to(host_root)
         except ValueError:
-            click.echo(
-                click.style("Error:", fg="red") + f" {path_str} is not inside the project root.",
-                err=True,
-            )
-            continue
-
-        # Must not already be inside .swarf/
-        if ".swarf" in relative.parts:
-            click.echo(
-                click.style("Error:", fg="red") + f" {path_str} is already inside .swarf/.",
-                err=True,
-            )
+            error(f"{path_str} is not inside the project root.")
             continue
 
         if not source.exists():
-            click.echo(
-                click.style("Error:", fg="red") + f" {path_str} does not exist.",
-                err=True,
-            )
+            error(f"{path_str} does not exist.")
             continue
 
         # Destination in .swarf/links/
@@ -80,17 +63,14 @@ def run_sweep(paths: tuple[str, ...] | list[str], host_root: Path | None = None)
         dest.parent.mkdir(parents=True, exist_ok=True)
 
         if dest.exists():
-            click.echo(
-                click.style("Warning:", fg="yellow")
-                + f" {relative} already exists in .swarf/links/, skipping.",
-            )
+            warn(f"{relative} already exists in .swarf/links/, skipping.")
             continue
 
         # Move file, create symlink
         shutil.move(str(source), str(dest))
         source.symlink_to(dest)
         swept.append(str(relative))
-        click.echo(f"  swept {relative}")
+        info(f"  swept {relative}")
 
     # Update .git/info/exclude for all swept files
     if swept:

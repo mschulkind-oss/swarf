@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from click.testing import CliRunner
+from helpers import invoke
 
-from swarf.cli import main
 from swarf.exclude import read_managed_excludes
 
 
@@ -15,8 +14,7 @@ class TestSweep:
         target = root / "AGENTS.md"
         target.write_text("# Agents\n")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep", "AGENTS.md"])
+        result = invoke(["sweep", "AGENTS.md"])
         assert result.exit_code == 0, result.output
         assert "swept AGENTS.md" in result.output
 
@@ -33,8 +31,7 @@ class TestSweep:
         skill = root / ".copilot" / "skills" / "SKILL.md"
         skill.write_text("# Skill\n")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep", ".copilot/skills/SKILL.md"])
+        result = invoke(["sweep", ".copilot/skills/SKILL.md"])
         assert result.exit_code == 0, result.output
 
         assert skill.is_symlink()
@@ -46,8 +43,7 @@ class TestSweep:
         root = initialized_swarf
         (root / "AGENTS.md").write_text("# Agents\n")
 
-        runner = CliRunner()
-        runner.invoke(main, ["sweep", "AGENTS.md"])
+        invoke(["sweep", "AGENTS.md"])
 
         managed = read_managed_excludes(root)
         assert "/AGENTS.md" in managed
@@ -57,8 +53,7 @@ class TestSweep:
         (root / "A.md").write_text("a")
         (root / "B.md").write_text("b")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep", "A.md", "B.md"])
+        result = invoke(["sweep", "A.md", "B.md"])
         assert result.exit_code == 0, result.output
         assert (root / "A.md").is_symlink()
         assert (root / "B.md").is_symlink()
@@ -69,23 +64,22 @@ class TestSweep:
         dest.write_text("# Agents\n")
         (root / "AGENTS.md").symlink_to(dest)
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep", "AGENTS.md"])
+        result = invoke(["sweep", "AGENTS.md"])
         assert "already a symlink" in result.output
 
     @pytest.mark.usefixtures("initialized_swarf")
     def test_sweep_file_not_found(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep", "nonexistent.md"])
+        result = invoke(["sweep", "nonexistent.md"])
         assert "does not exist" in result.output
 
     def test_sweep_inside_swarf(self, initialized_swarf):
         root = initialized_swarf
-        target = root / ".swarf" / "docs" / "notes.md"
+        notes_dir = root / ".swarf" / "notes"
+        notes_dir.mkdir()
+        target = notes_dir / "notes.md"
         target.write_text("notes")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep", ".swarf/docs/notes.md"])
+        result = invoke(["sweep", ".swarf/notes/notes.md"])
         assert "already inside .swarf" in result.output
 
     def test_sweep_already_in_links(self, initialized_swarf):
@@ -94,21 +88,18 @@ class TestSweep:
         dest.write_text("# Agents\n")
         (root / "AGENTS.md").write_text("# Different\n")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep", "AGENTS.md"])
+        result = invoke(["sweep", "AGENTS.md"])
         assert "already exists in .swarf/links" in result.output
         # Original should not have been touched
         assert not (root / "AGENTS.md").is_symlink()
 
     def test_sweep_no_swarf(self, git_repo):
         (git_repo / "file.md").write_text("hi")
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep", "file.md"])
+        result = invoke(["sweep", "file.md"])
         assert result.exit_code != 0
         assert "swarf init" in result.output
 
     @pytest.mark.usefixtures("initialized_swarf")
     def test_sweep_requires_args(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["sweep"])
+        result = invoke(["sweep"])
         assert result.exit_code != 0

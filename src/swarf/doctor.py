@@ -8,28 +8,108 @@ import signal
 import subprocess
 from pathlib import Path
 
+import swarf.paths as paths
 from swarf.config import read_global_config
 from swarf.exclude import read_managed_excludes
-from swarf.git import check_ignore, git_remote_url, is_inside_work_tree
-from swarf.paths import GLOBAL_CONFIG_TOML, PID_FILE
+from swarf.git import check_ignore, git_is_repo, git_remote_url, is_inside_work_tree
+
+
+def check_global_config() -> tuple[str, bool, str]:
+    """Check that the global config exists and is valid."""
+    config = read_global_config()
+    if config is None:
+        return (
+            "global config",
+            False,
+            f"Global config not found — create {paths.GLOBAL_CONFIG_TOML}",
+        )
+    if not config.remote:
+        return ("global config", False, "Global config has no remote configured")
+    msg = f"Global config: backend={config.backend}, remote={config.remote}"
+    return ("global config", True, msg)
+
+
+def check_store_exists() -> tuple[str, bool, str]:
+    """Check that the central store exists and is a git repo."""
+    if not paths.STORE_DIR.is_dir():
+        return ("store", False, f"Central store not found at {paths.STORE_DIR}")
+    if not git_is_repo(paths.STORE_DIR):
+        return ("store", False, f"Store at {paths.STORE_DIR} is not a git repository")
+    return ("store", True, f"Central store exists at {paths.STORE_DIR}")
+
+
+def check_store_remote() -> tuple[str, bool, str]:
+    """Check that the store has a remote configured."""
+    if not paths.STORE_DIR.is_dir():
+        return ("store remote", False, "Store does not exist")
+    url = git_remote_url(paths.STORE_DIR)
+    if url:
+        return ("store remote", True, f"Store remote: {url}")
+    return ("store remote", False, "Store has no git remote configured")
+
+
+def check_remote_reachable() -> tuple[str, bool, str]:
+    """Check that the configured remote backend is reachable."""
+    config = read_global_config()
+    if config is None:
+        return ("remote", False, "No global config — cannot check remote")
+
+    if config.backend == "git":
+        try:
+            subprocess.run(
+                ["git", "ls-remote", config.remote],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
+            )
+            return ("remote", True, f"Git remote reachable: {config.remote}")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return ("remote", False, f"Git remote not reachable: {config.remote}")
+
+    if config.backend == "rclone":
+        if not shutil.which("rclone"):
+            return ("remote", False, "rclone not installed")
+        try:
+            subprocess.run(
+                ["rclone", "lsd", config.remote],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
+            )
+            return ("remote", True, f"Rclone remote reachable: {config.remote}")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return ("remote", False, f"Rclone remote not reachable: {config.remote}")
+
+    return ("remote", False, f"Unknown backend: {config.backend}")
+
+
+def check_daemon_running() -> tuple[str, bool, str]:
+    """Check if the daemon is running via PID file."""
+    if not paths.PID_FILE.exists():
+        return ("daemon", False, "Daemon is not running (no PID file)")
+    try:
+        pid = int(paths.PID_FILE.read_text().strip())
+        os.kill(pid, signal.SIG_DFL)
+        return ("daemon", True, f"Daemon is running (PID {pid})")
+    except (ValueError, ProcessLookupError, PermissionError):
+        return ("daemon", False, "Daemon is not running (stale PID file)")
 
 
 def check_swarf_dir_exists(cwd: Path | None = None) -> tuple[str, bool, str]:
-    """Check that .swarf/ directory exists."""
+    """Check that .swarf/ exists (as a symlink to the store)."""
     swarf = Path(".swarf") if cwd is None else cwd / ".swarf"
+    if swarf.is_symlink():
+        target = swarf.resolve()
+        return (".swarf/", True, f".swarf/ linked to {target}")
     if swarf.is_dir():
-        return (".swarf/", True, ".swarf/ directory exists")
+        return (".swarf/", True, ".swarf/ directory exists (not a symlink — consider migrating)")
     return (".swarf/", False, ".swarf/ directory not found — run 'swarf init'")
 
 
 def check_gitignore(cwd: Path | None = None) -> list[tuple[str, bool, str]]:
-    """Check that required paths are gitignored.
-
-    Checks the .git/info/exclude managed section first, then falls back to
-    git check-ignore (which covers global gitignore and .gitignore).
-
-    Returns a list of (path, ok, message) tuples.
-    """
+    """Check that required paths are gitignored."""
     checks: list[tuple[str, bool, str]] = []
 
     if not is_inside_work_tree(cwd):
@@ -80,42 +160,9 @@ def check_mise_local(cwd: Path | None = None) -> tuple[str, bool, str]:
     if not mise.exists():
         return (".mise.local.toml", False, ".mise.local.toml not found — run 'swarf init'")
     content = mise.read_text()
-    if "swarf link" in content:
+    if "swarf link" in content or "swarf enter" in content:
         return (".mise.local.toml", True, ".mise.local.toml has swarf enter hook")
     return (".mise.local.toml", False, ".mise.local.toml missing swarf enter hook")
-
-
-def check_swarf_is_git_repo(cwd: Path | None = None) -> tuple[str, bool, str]:
-    """Check that .swarf/ is its own git repository (has .git/)."""
-    swarf = Path(".swarf") if cwd is None else cwd / ".swarf"
-    if not swarf.is_dir():
-        return (".swarf git", False, ".swarf/ does not exist")
-    if (swarf / ".git").is_dir():
-        return (".swarf git", True, ".swarf/ is a git repository")
-    return (".swarf git", False, ".swarf/ is not a git repository")
-
-
-def check_remote_configured(cwd: Path | None = None) -> tuple[str, bool, str]:
-    """Check that a remote is configured in .swarf/."""
-    swarf = Path(".swarf") if cwd is None else cwd / ".swarf"
-    if not swarf.is_dir():
-        return ("remote", False, ".swarf/ does not exist")
-    url = git_remote_url(swarf)
-    if url:
-        return ("remote", True, f"Remote configured: {url}")
-    return ("remote", False, "No remote configured in .swarf/ — add one with 'git remote add'")
-
-
-def check_daemon_running() -> tuple[str, bool, str]:
-    """Check if the daemon is running via PID file."""
-    if not PID_FILE.exists():
-        return ("daemon", False, "Daemon is not running (no PID file)")
-    try:
-        pid = int(PID_FILE.read_text().strip())
-        os.kill(pid, signal.SIG_DFL)
-        return ("daemon", True, f"Daemon is running (PID {pid})")
-    except (ValueError, ProcessLookupError, PermissionError):
-        return ("daemon", False, "Daemon is not running (stale PID file)")
 
 
 def check_links_healthy(cwd: Path | None = None) -> tuple[str, bool, str]:
@@ -139,70 +186,18 @@ def check_links_healthy(cwd: Path | None = None) -> tuple[str, bool, str]:
     return ("links", True, "All links healthy")
 
 
-def check_global_config() -> tuple[str, bool, str]:
-    """Check that the global config exists and is valid."""
-    config = read_global_config()
-    if config is None:
-        return (
-            "global config",
-            False,
-            f"Global config not found — create {GLOBAL_CONFIG_TOML}",
-        )
-    if not config.remote:
-        return ("global config", False, "Global config has no remote configured")
-    msg = f"Global config: backend={config.backend}, remote={config.remote}"
-    return ("global config", True, msg)
-
-
-def check_remote_reachable() -> tuple[str, bool, str]:
-    """Check that the configured remote backend is reachable."""
-    config = read_global_config()
-    if config is None:
-        return ("remote", False, "No global config — cannot check remote")
-
-    if config.backend == "git":
-        try:
-            subprocess.run(
-                ["git", "ls-remote", config.remote],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=15,
-            )
-            return ("remote", True, f"Git remote reachable: {config.remote}")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            return ("remote", False, f"Git remote not reachable: {config.remote}")
-
-    if config.backend == "rclone":
-        if not shutil.which("rclone"):
-            return ("remote", False, "rclone not installed")
-        try:
-            subprocess.run(
-                ["rclone", "lsd", config.remote],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=15,
-            )
-            return ("remote", True, f"Rclone remote reachable: {config.remote}")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-            return ("remote", False, f"Rclone remote not reachable: {config.remote}")
-
-    return ("remote", False, f"Unknown backend: {config.backend}")
-
-
 def run_all_checks(cwd: Path | None = None) -> list[tuple[str, bool, str]]:
     """Run all doctor checks and return results."""
     results: list[tuple[str, bool, str]] = []
     # Global checks
     results.append(check_global_config())
+    results.append(check_store_exists())
+    results.append(check_store_remote())
     results.append(check_remote_reachable())
     results.append(check_daemon_running())
     # Per-project checks (only if inside a swarf project)
     results.append(check_swarf_dir_exists(cwd))
     results.extend(check_gitignore(cwd))
     results.append(check_mise_local(cwd))
-    results.append(check_swarf_is_git_repo(cwd))
-    results.append(check_remote_configured(cwd))
     results.append(check_links_healthy(cwd))
     return results

@@ -2,57 +2,16 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from swarf.config import (
-    DrawerConfig,
     parse_duration,
-    read_drawer_config,
     read_drawers,
     register_drawer,
     unregister_drawer,
-    write_drawer_config,
 )
-
-
-class TestDrawerConfig:
-    def test_write_and_read(self, tmp_path):
-        swarf_path = tmp_path / ".swarf"
-        swarf_path.mkdir()
-        config = DrawerConfig(backend="git", remote="origin", debounce="5s")
-        write_drawer_config(swarf_path, config)
-        result = read_drawer_config(swarf_path)
-        assert result.backend == "git"
-        assert result.remote == "origin"
-        assert result.debounce == "5s"
-
-    def test_write_rclone_backend(self, tmp_path):
-        swarf_path = tmp_path / ".swarf"
-        swarf_path.mkdir()
-        config = DrawerConfig(backend="rclone", remote="gdrive:swarf", debounce="10s")
-        write_drawer_config(swarf_path, config)
-        result = read_drawer_config(swarf_path)
-        assert result.backend == "rclone"
-        assert result.remote == "gdrive:swarf"
-
-    def test_read_defaults(self, tmp_path):
-        swarf_path = tmp_path / ".swarf"
-        swarf_path.mkdir()
-        # Write a minimal config with no sync section
-        (swarf_path / "config.toml").write_text("")
-        result = read_drawer_config(swarf_path)
-        assert result.backend == "git"
-        assert result.remote == "origin"
-        assert result.debounce == "5s"
-
-    def test_config_toml_format(self, tmp_path):
-        swarf_path = tmp_path / ".swarf"
-        swarf_path.mkdir()
-        config = DrawerConfig(backend="git", remote="origin", debounce="5s")
-        write_drawer_config(swarf_path, config)
-        content = (swarf_path / "config.toml").read_text()
-        assert 'backend = "git"' in content
-        assert 'remote = "origin"' in content
 
 
 class TestDrawersRegistry:
@@ -69,14 +28,14 @@ class TestDrawersRegistry:
         monkeypatch.setattr(cfg, "CONFIG_DIR", config_dir)
         monkeypatch.setattr(cfg, "DRAWERS_TOML", config_dir / "drawers.toml")
 
-        drawer_path = tmp_path / "project" / ".swarf"
-        drawer_path.mkdir(parents=True)
-        register_drawer(drawer_path, "git")
+        host = tmp_path / "project"
+        host.mkdir(parents=True)
+        register_drawer("project", host)
 
         drawers = read_drawers()
         assert len(drawers) == 1
-        assert drawers[0].path == drawer_path.resolve()
-        assert drawers[0].backend == "git"
+        assert drawers[0].slug == "project"
+        assert drawers[0].host == host.resolve()
 
     def test_register_idempotent(self, monkeypatch, tmp_path):
         import swarf.config as cfg
@@ -85,14 +44,14 @@ class TestDrawersRegistry:
         monkeypatch.setattr(cfg, "CONFIG_DIR", config_dir)
         monkeypatch.setattr(cfg, "DRAWERS_TOML", config_dir / "drawers.toml")
 
-        drawer_path = tmp_path / "project" / ".swarf"
-        drawer_path.mkdir(parents=True)
-        register_drawer(drawer_path, "git")
-        register_drawer(drawer_path, "rclone")  # Update backend
+        host = tmp_path / "project"
+        host.mkdir(parents=True)
+        register_drawer("project", host)
+        register_drawer("project", Path("/new/path"))
 
         drawers = read_drawers()
         assert len(drawers) == 1
-        assert drawers[0].backend == "rclone"
+        assert drawers[0].host == Path("/new/path").resolve()
 
     def test_unregister(self, monkeypatch, tmp_path):
         import swarf.config as cfg
@@ -101,10 +60,10 @@ class TestDrawersRegistry:
         monkeypatch.setattr(cfg, "CONFIG_DIR", config_dir)
         monkeypatch.setattr(cfg, "DRAWERS_TOML", config_dir / "drawers.toml")
 
-        drawer_path = tmp_path / "project" / ".swarf"
-        drawer_path.mkdir(parents=True)
-        register_drawer(drawer_path, "git")
-        unregister_drawer(drawer_path)
+        host = tmp_path / "project"
+        host.mkdir(parents=True)
+        register_drawer("project", host)
+        unregister_drawer("project")
 
         assert read_drawers() == []
 
@@ -116,9 +75,9 @@ class TestDrawersRegistry:
         monkeypatch.setattr(cfg, "DRAWERS_TOML", config_dir / "drawers.toml")
 
         for name in ("alpha", "beta", "gamma"):
-            p = tmp_path / name / ".swarf"
+            p = tmp_path / name
             p.mkdir(parents=True)
-            register_drawer(p, "git")
+            register_drawer(name, p)
 
         drawers = read_drawers()
         assert len(drawers) == 3

@@ -1,4 +1,4 @@
-"""swarf init — initialize a .swarf/ directory in the current project."""
+"""swarf init — initialize swarf for the current project."""
 
 from __future__ import annotations
 
@@ -7,16 +7,16 @@ import signal
 import sys
 from pathlib import Path
 
-import click
+from rich.prompt import Confirm, Prompt
 
+import swarf.paths as paths
 from swarf.config import (
-    DrawerConfig,
     GlobalConfig,
     read_global_config,
     register_drawer,
-    write_drawer_config,
     write_global_config,
 )
+from swarf.console import error, info, ok, warn
 from swarf.exclude import update_excludes
 from swarf.git import (
     get_repo_root,
@@ -26,9 +26,9 @@ from swarf.git import (
     git_config_get,
     git_config_set,
     git_init,
+    git_is_repo,
 )
-from swarf.link import run_link
-from swarf.paths import PID_FILE, links_dir, swarf_dir
+from swarf.paths import project_slug, store_project_dir, swarf_dir
 
 _MISE_HOOK = "command -v swarf >/dev/null && [ -d .swarf/links ] && swarf enter"
 
@@ -44,32 +44,21 @@ def _ensure_global_config() -> GlobalConfig:
     if config is not None:
         return config
 
-    click.echo("\nNo global config found. Let's set one up.\n")
-    backend = click.prompt(
-        "Backend",
-        type=click.Choice(["git", "rclone"]),
-        default="git",
-    )
-    remote = click.prompt("Remote URL")
+    info("\nNo global config found. Let's set one up.\n")
+    backend = Prompt.ask("Backend", choices=["git", "rclone"], default="git")
+    remote = Prompt.ask("Remote URL")
     config = GlobalConfig(backend=backend, remote=remote)
     write_global_config(config)
-    click.echo(click.style("✓", fg="green") + f" Wrote {config_path()}\n")
+    ok(f"Wrote {paths.GLOBAL_CONFIG_TOML}\n")
     return config
-
-
-def config_path() -> Path:
-    """Return the global config path (for display)."""
-    from swarf.paths import GLOBAL_CONFIG_TOML
-
-    return GLOBAL_CONFIG_TOML
 
 
 def _daemon_is_running() -> bool:
     """Check if the daemon is running."""
-    if not PID_FILE.exists():
+    if not paths.PID_FILE.exists():
         return False
     try:
-        pid = int(PID_FILE.read_text().strip())
+        pid = int(paths.PID_FILE.read_text().strip())
         os.kill(pid, signal.SIG_DFL)
         return True
     except (ValueError, ProcessLookupError, PermissionError):
@@ -79,105 +68,106 @@ def _daemon_is_running() -> bool:
 def _offer_daemon_install() -> None:
     """Offer to install and start the daemon if not running."""
     if _daemon_is_running():
-        click.echo(click.style("✓", fg="green") + " Daemon is running.")
+        ok("Daemon is running.")
         return
 
-    install = click.confirm(
-        "\nDaemon is not running. Install as system service?",
-        default=True,
-    )
-    if not install:
-        click.echo("Skipped. Start manually with: swarf daemon start")
+    if not Confirm.ask("\nDaemon is not running. Install as user service?", default=True):
+        info("Skipped. Start manually with: swarf daemon start")
         return
 
     from swarf.daemon.cli import do_install, do_start
 
     do_install()
     do_start(foreground=False)
-    click.echo(click.style("✓", fg="green") + " Installed and started swarf daemon.")
+    ok("Installed and started swarf daemon.")
+
+
+def _ensure_store(host_root: Path, global_config: GlobalConfig) -> None:
+    """Initialize the central store if it doesn't exist yet."""
+    if paths.STORE_DIR.is_dir() and git_is_repo(paths.STORE_DIR):
+        return
+
+    paths.STORE_DIR.mkdir(parents=True, exist_ok=True)
+    git_init(paths.STORE_DIR)
+
+    # Propagate git user config from host repo
+    for key in ("user.name", "user.email"):
+        val = git_config_get(host_root, key)
+        if val:
+            git_config_set(paths.STORE_DIR, key, val)
+
+    # Add remote if git backend
+    if global_config.backend == "git" and global_config.remote:
+        git_add_remote(paths.STORE_DIR, "origin", global_config.remote)
+
+    ok(f"Created central store at {paths.STORE_DIR}")
 
 
 def run_init(host_root: Path | None = None) -> None:
-    """Initialize a .swarf/ directory in the current project."""
+    """Initialize swarf for the current project."""
     # 1. Resolve host root
     if host_root is None:
         host_root = get_repo_root()
     if host_root is None:
-        click.echo(click.style("Error:", fg="red") + " Not inside a git repository.", err=True)
+        error("Not inside a git repository.")
         raise SystemExit(1)
 
     sd = swarf_dir(host_root)
+    slug = project_slug(host_root)
+    proj_dir = store_project_dir(host_root)
 
     # 2. Abort if already initialized
-    if sd.is_dir():
-        click.echo(
-            click.style("Error:", fg="red") + " swarf is already initialized here.",
-            err=True,
-        )
+    if sd.is_symlink() or sd.is_dir():
+        error("swarf is already initialized here.")
         raise SystemExit(1)
 
     # 3. Ensure global config exists (prompt if not)
     global_config = _ensure_global_config()
-    backend = global_config.backend
-    remote = global_config.remote
 
-    # 4. Create directory structure
-    sd.mkdir()
-    (sd / "docs" / "research").mkdir(parents=True)
-    (sd / "docs" / "design").mkdir(parents=True)
-    links_dir(host_root).mkdir()
-    (sd / "open-questions.md").write_text("# Open Questions\n")
+    # 4. Ensure central store exists
+    _ensure_store(host_root, global_config)
 
-    # 5. Write per-drawer config
-    config = DrawerConfig(
-        backend=backend,
-        remote=remote,
-        debounce=global_config.debounce,
-    )
-    write_drawer_config(sd, config)
+    # 5. Create project directory in store (with just links/)
+    if proj_dir.is_dir():
+        # Already exists in store (e.g., from a clone) — just link
+        ok(f"Found existing project '{slug}' in store.")
+    else:
+        proj_dir.mkdir(parents=True)
+        (proj_dir / "links").mkdir()
+        (proj_dir / "links" / ".gitkeep").write_text("")
 
-    # 6. git init inside .swarf, propagate user config from host repo
-    git_init(sd)
-    for key in ("user.name", "user.email"):
-        val = git_config_get(host_root, key)
-        if val:
-            git_config_set(sd, key, val)
+    # 6. Symlink .swarf -> store project dir
+    sd.symlink_to(proj_dir)
+    ok(f"Linked .swarf → {proj_dir}")
 
-    # 7. Add git remote if backend is git and remote is set
-    if remote and backend == "git":
-        git_add_remote(sd, "origin", remote)
-
-    # 8. Create .mise.local.toml
+    # 7. Create .mise.local.toml
     mise_local = host_root / ".mise.local.toml"
     if mise_local.exists():
-        click.echo(
-            click.style("Warning:", fg="yellow")
-            + " .mise.local.toml already exists. Add this hook manually:"
-        )
-        click.echo(f'  [hooks]\n  enter = "{_MISE_HOOK}"')
+        warn(".mise.local.toml already exists. Add this hook manually:")
+        info(f'  [hooks]\n  enter = "{_MISE_HOOK}"')
     else:
         mise_local.write_text(_MISE_LOCAL_TOML)
-        click.echo("Created .mise.local.toml with enter hook.")
+        ok("Created .mise.local.toml with enter hook.")
 
-    # 9. Update .git/info/exclude
+    # 8. Update .git/info/exclude
     update_excludes(host_root)
 
-    # 10. Register drawer
-    register_drawer(sd, backend)
+    # 9. Register drawer
+    register_drawer(slug, host_root)
 
-    # 11. Initial commit
-    git_add_all(sd)
-    git_commit(sd, "init: swarf drawer")
+    # 10. Commit to store (if there's anything new)
+    git_add_all(paths.STORE_DIR)
+    import contextlib
 
-    # 12. Run link (no-op if links/ is empty)
-    run_link(host_root, quiet=True)
+    with contextlib.suppress(Exception):
+        git_commit(paths.STORE_DIR, f"init: {slug}")
 
-    # 13. Summary
-    click.echo(f"\n{click.style('✓', fg='green')} Initialized swarf in {sd}")
-    click.echo(f"  Backend: {backend}")
-    if remote:
-        click.echo(f"  Remote: {remote}")
+    # 11. Summary
+    ok(f"Initialized swarf for {slug}")
+    info(f"  Backend: {global_config.backend}")
+    if global_config.remote:
+        info(f"  Remote: {global_config.remote}")
 
-    # 14. Offer to install/start daemon (only if interactive terminal)
+    # 12. Offer to install/start daemon (only if interactive terminal)
     if sys.stdin.isatty():
         _offer_daemon_install()
