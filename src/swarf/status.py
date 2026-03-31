@@ -1,141 +1,87 @@
-"""swarf status — show sync status across all registered drawers."""
+"""swarf status — show sync status for the central store."""
 
 from __future__ import annotations
 
 import os
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 
-from rich.console import Console
 from rich.table import Table
 
-from swarf.config import read_drawer_config, read_drawers
-from swarf.git import git_remote_url, git_status_porcelain
-from swarf.paths import PID_FILE
+import swarf.paths as paths
+from swarf.config import read_drawers, read_global_config
+from swarf.git import git_is_repo, git_remote_url, git_status_porcelain
 
 
-@dataclass
-class DrawerStatus:
-    """Status of a single drawer."""
+def run_status() -> None:
+    """Display status of the central store and all registered projects."""
+    from swarf.console import console
 
-    path: Path
-    exists: bool
-    backend: str
-    remote: str
-    pending_changes: int
-    last_commit_time: str
-    last_commit_message: str
+    config = read_global_config()
+    if config is None:
+        console.print("No global config found. Run 'swarf init' in a project.")
+        return
 
+    # Store status
+    console.print("[bold]Store[/bold]")
+    console.print(f"  Path:    {paths.STORE_DIR}")
+    console.print(f"  Backend: {config.backend}")
+    console.print(f"  Remote:  {config.remote or '[dim]not set[/dim]'}")
 
-def get_drawer_status(path: Path) -> DrawerStatus:
-    """Get the status of a single drawer."""
-    if not path.is_dir():
-        return DrawerStatus(
-            path=path,
-            exists=False,
-            backend="unknown",
-            remote="",
-            pending_changes=0,
-            last_commit_time="",
-            last_commit_message="",
-        )
-
-    try:
-        config = read_drawer_config(path)
-        backend = config.backend
-        remote_str = config.remote
-    except Exception:
-        backend = "unknown"
-        remote_str = ""
-
-    # Get remote URL for git backends
-    if backend == "git":
-        url = git_remote_url(path)
-        if url:
-            remote_str = f"{remote_str} ({url})"
-
-    # Count pending changes
-    pending = 0
-    if backend == "git" and (path / ".git").is_dir():
+    if paths.STORE_DIR.is_dir() and git_is_repo(paths.STORE_DIR):
+        # Pending changes
         try:
-            status = git_status_porcelain(path)
+            status = git_status_porcelain(paths.STORE_DIR)
             pending = len([line for line in status.strip().splitlines() if line.strip()])
+            console.print(f"  Pending: {pending} file(s)")
         except Exception:
             pass
 
-    # Get last commit info
-    last_time = ""
-    last_msg = ""
-    if (path / ".git").is_dir():
+        # Last commit
         try:
             r = subprocess.run(
-                ["git", "log", "-1", "--format=%cr|%s"],
-                cwd=path,
+                ["git", "log", "-1", "--format=%cr — %s"],
+                cwd=paths.STORE_DIR,
                 capture_output=True,
                 text=True,
             )
             if r.returncode == 0 and r.stdout.strip():
-                parts = r.stdout.strip().split("|", 1)
-                last_time = parts[0]
-                last_msg = parts[1] if len(parts) > 1 else ""
+                console.print(f"  Last sync: {r.stdout.strip()}")
         except Exception:
             pass
 
-    return DrawerStatus(
-        path=path,
-        exists=True,
-        backend=backend,
-        remote=remote_str,
-        pending_changes=pending,
-        last_commit_time=last_time,
-        last_commit_message=last_msg,
-    )
+        # Remote URL
+        url = git_remote_url(paths.STORE_DIR)
+        if url:
+            console.print(f"  Git remote: {url}")
+    elif not paths.STORE_DIR.is_dir():
+        console.print("  [red]Store not initialized. Run 'swarf init'.[/red]")
 
-
-def run_status() -> None:
-    """Display status of all registered drawers."""
-    console = Console()
+    # Projects
     drawers = read_drawers()
+    if drawers:
+        console.print()
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Project")
+        table.add_column("Host Path")
+        table.add_column("Linked")
 
-    if not drawers:
-        console.print("No drawers registered. Run 'swarf init' in a project.")
-        return
+        for entry in drawers:
+            linked = (entry.host / ".swarf").is_symlink()
+            linked_str = "[green]yes[/green]" if linked else "[red]no[/red]"
+            display_host = str(entry.host).replace(str(Path.home()), "~")
+            table.add_row(entry.slug, display_host, linked_str)
 
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Drawer")
-    table.add_column("Backend")
-    table.add_column("Remote")
-    table.add_column("Pending", justify="right")
-    table.add_column("Last Sync")
-
-    for entry in drawers:
-        status = get_drawer_status(entry.path)
-
-        # Shorten path for display
-        display_path = str(status.path).replace(str(Path.home()), "~")
-
-        if not status.exists:
-            table.add_row(display_path, entry.backend, "", "", "[red]missing[/red]")
-            continue
-
-        table.add_row(
-            display_path,
-            status.backend,
-            status.remote,
-            str(status.pending_changes),
-            status.last_commit_time or "never",
-        )
-
-    console.print(table)
+        console.print(table)
 
     # Daemon status
-    if PID_FILE.exists():
+    console.print()
+    if paths.PID_FILE.exists():
         try:
-            pid = int(PID_FILE.read_text().strip())
+            pid = int(paths.PID_FILE.read_text().strip())
             os.kill(pid, 0)
-            console.print(f"\nDaemon: [green]running[/green] (PID {pid})")
+            console.print(f"Daemon: [green]running[/green] (PID {pid})")
         except (ValueError, ProcessLookupError):
-            console.print("\nDaemon: [red]not running[/red] (stale PID file)")
+            console.print("Daemon: [red]not running[/red] (stale PID file)")
     else:
-        console.print("\nDaemon: [yellow]not running[/yellow]")
+        console.print("Daemon: [yellow]not running[/yellow]")

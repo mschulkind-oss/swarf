@@ -30,7 +30,7 @@ def rclone_drawer(tmp_path):
         check=True,
     )
     # Initial commit
-    (swarf / "config.toml").write_text('[sync]\nbackend = "rclone"\n')
+    (swarf / "open-questions.md").write_text("# Open Questions\n")
     subprocess.run(["git", "add", "-A"], cwd=swarf, capture_output=True, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=swarf, capture_output=True, check=True)
 

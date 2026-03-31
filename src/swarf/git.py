@@ -85,6 +85,27 @@ def git_push(path: Path, remote: str = "origin") -> subprocess.CompletedProcess[
     )
 
 
+def git_clone(url: str, dest: Path) -> subprocess.CompletedProcess[str]:
+    """Clone a git repository."""
+    return subprocess.run(
+        ["git", "clone", url, str(dest)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def git_pull(path: Path) -> subprocess.CompletedProcess[str]:
+    """Pull from the default remote."""
+    return subprocess.run(
+        ["git", "pull"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 def git_status_porcelain(path: Path) -> str:
     """Return git status in porcelain format."""
     result = subprocess.run(

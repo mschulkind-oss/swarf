@@ -1,4 +1,4 @@
-"""Config read/write for per-drawer config.toml and global drawers.toml."""
+"""Config read/write for global config and drawer registry."""
 
 from __future__ import annotations
 
@@ -55,47 +55,11 @@ def write_global_config(config: GlobalConfig) -> None:
 
 
 @dataclass
-class DrawerConfig:
-    """Per-drawer configuration stored in .swarf/config.toml."""
-
-    backend: str  # "git" | "rclone"
-    remote: str
-    debounce: str = "5s"
-
-
-def read_drawer_config(swarf_path: Path) -> DrawerConfig:
-    """Read the per-drawer config.toml."""
-    config_file = swarf_path / "config.toml"
-    with open(config_file, "rb") as f:
-        data = tomllib.load(f)
-    sync = data.get("sync", {})
-    return DrawerConfig(
-        backend=sync.get("backend", "git"),
-        remote=sync.get("remote", "origin"),
-        debounce=sync.get("debounce", "5s"),
-    )
-
-
-def write_drawer_config(swarf_path: Path, config: DrawerConfig) -> None:
-    """Write the per-drawer config.toml."""
-    config_file = swarf_path / "config.toml"
-    data = {
-        "sync": {
-            "backend": config.backend,
-            "remote": config.remote,
-            "debounce": config.debounce,
-        }
-    }
-    with open(config_file, "wb") as f:
-        tomli_w.dump(data, f)
-
-
-@dataclass
 class DrawerEntry:
     """Entry in the global drawers.toml registry."""
 
-    path: Path
-    backend: str
+    slug: str
+    host: Path
 
 
 def read_drawers() -> list[DrawerEntry]:
@@ -106,37 +70,35 @@ def read_drawers() -> list[DrawerEntry]:
         data = tomllib.load(f)
     entries = []
     for d in data.get("drawers", []):
-        entries.append(DrawerEntry(path=Path(d["path"]), backend=d.get("backend", "git")))
+        entries.append(DrawerEntry(slug=d["slug"], host=Path(d["host"])))
     return entries
 
 
-def register_drawer(path: Path, backend: str) -> None:
+def register_drawer(slug: str, host: Path) -> None:
     """Register a drawer in the global drawers.toml."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     drawers = read_drawers()
-    # Don't duplicate
-    resolved = path.resolve()
+    resolved = host.resolve()
     for d in drawers:
-        if d.path.resolve() == resolved:
-            d.backend = backend
+        if d.slug == slug:
+            d.host = resolved
             _write_drawers(drawers)
             return
-    drawers.append(DrawerEntry(path=resolved, backend=backend))
+    drawers.append(DrawerEntry(slug=slug, host=resolved))
     _write_drawers(drawers)
 
 
-def unregister_drawer(path: Path) -> None:
+def unregister_drawer(slug: str) -> None:
     """Remove a drawer from the global drawers.toml."""
     drawers = read_drawers()
-    resolved = path.resolve()
-    drawers = [d for d in drawers if d.path.resolve() != resolved]
+    drawers = [d for d in drawers if d.slug != slug]
     _write_drawers(drawers)
 
 
 def _write_drawers(drawers: list[DrawerEntry]) -> None:
     """Write the global drawers.toml."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    data = {"drawers": [{"path": str(d.path), "backend": d.backend} for d in drawers]}
+    data = {"drawers": [{"slug": d.slug, "host": str(d.host)} for d in drawers]}
     with open(DRAWERS_TOML, "wb") as f:
         tomli_w.dump(data, f)
 

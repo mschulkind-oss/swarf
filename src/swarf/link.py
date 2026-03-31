@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import click
-
+from swarf.console import info, warn
 from swarf.exclude import add_linked_excludes
 from swarf.paths import find_host_root, links_dir
 
@@ -28,11 +27,9 @@ def run_link(host_root: Path | None = None, quiet: bool = False) -> LinkResult:
     if host_root is None:
         host_root = find_host_root()
     if host_root is None:
-        click.echo(
-            click.style("Error:", fg="red")
-            + " Not inside a swarf project. Run 'swarf init' first.",
-            err=True,
-        )
+        from swarf.console import error
+
+        error("Not inside a swarf project. Run 'swarf init' first.")
         raise SystemExit(1)
 
     ld = links_dir(host_root)
@@ -60,7 +57,7 @@ def run_link(host_root: Path | None = None, quiet: bool = False) -> LinkResult:
             msg = f"{relative}: real file exists, skipping (won't overwrite)"
             result.warnings.append(msg)
             if not quiet:
-                click.echo(click.style("Warning:", fg="yellow") + f" {msg}")
+                warn(msg)
             continue
 
         # Create parent dirs and symlink
@@ -68,12 +65,12 @@ def run_link(host_root: Path | None = None, quiet: bool = False) -> LinkResult:
         target.symlink_to(source)
         result.created.append(relative)
         if not quiet:
-            click.echo(f"  linked {relative}")
+            info(f"  linked {relative}")
 
     # Always show warnings, even in quiet mode
     if quiet:
         for msg in result.warnings:
-            click.echo(click.style("Warning:", fg="yellow") + f" {msg}")
+            warn(msg)
 
     # Update .git/info/exclude so linked files are ignored by the host repo
     all_linked = [str(p) for p in result.created + result.skipped]

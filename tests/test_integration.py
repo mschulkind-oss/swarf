@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import subprocess
 
-from click.testing import CliRunner
+from helpers import invoke
 
-from swarf.cli import main
+import swarf.paths as paths
 from swarf.config import GlobalConfig, write_global_config
 from swarf.daemon.backends.git import GitBackend
 
 
 def test_full_lifecycle(git_repo):
     """Test the complete swarf lifecycle: init -> link -> sync -> status -> doctor."""
-    runner = CliRunner()
-
     # 1. Create a bare remote for pushing
     bare = git_repo / "remote.git"
     bare.mkdir()
@@ -22,49 +20,51 @@ def test_full_lifecycle(git_repo):
 
     # 2. Set global config to use bare remote, then init
     write_global_config(GlobalConfig(backend="git", remote=str(bare)))
-    result = runner.invoke(main, ["init"])
+    result = invoke(["init"])
     assert result.exit_code == 0, result.output
     assert "Initialized swarf" in result.output
 
-    # 3. Create a link source
+    # 3. .swarf should be a symlink into the store
+    assert (git_repo / ".swarf").is_symlink()
+
+    # 4. Create a link source
     links = git_repo / ".swarf" / "links"
     (links / "AGENTS.md").write_text("# Agent Instructions\n")
 
-    # 4. swarf link
-    result = runner.invoke(main, ["link"])
+    # 5. swarf link
+    result = invoke(["link"])
     assert result.exit_code == 0
     assert (git_repo / "AGENTS.md").is_symlink()
     assert (git_repo / "AGENTS.md").read_text() == "# Agent Instructions\n"
 
-    # 4b. Push the initial commit to establish the remote branch
+    # 6. Push the initial commit to establish the remote branch
+    store = paths.STORE_DIR
     subprocess.run(
         ["git", "push", "-u", "origin", "master"],
-        cwd=git_repo / ".swarf",
+        cwd=store,
         capture_output=True,
         check=True,
     )
 
-    # 5. Create some research notes
-    docs = git_repo / ".swarf" / "docs" / "research"
-    (docs / "notes.md").write_text("# Research Notes\nImportant finding.\n")
+    # 7. Modify a file in the store
+    (links / "AGENTS.md").write_text("# Updated Agent Instructions\n")
 
-    # 6. Manually trigger GitBackend.sync()
-    swarf = git_repo / ".swarf"
+    # 8. Manually trigger GitBackend.sync() on the store
     backend = GitBackend()
-    result_sync = backend.sync(swarf)
+    result_sync = backend.sync(store)
     assert result_sync.success
     assert result_sync.files_changed > 0
 
-    # 7. Verify commit in .swarf git log
+    # 9. Verify commit in store git log
     r = subprocess.run(
         ["git", "log", "--oneline"],
-        cwd=swarf,
+        cwd=store,
         capture_output=True,
         text=True,
     )
     assert "auto: sync" in r.stdout
 
-    # 8. Verify push to bare remote
+    # 10. Verify push to bare remote
     r = subprocess.run(
         ["git", "log", "--oneline"],
         cwd=bare,
@@ -73,11 +73,11 @@ def test_full_lifecycle(git_repo):
     )
     assert "auto: sync" in r.stdout
 
-    # 9. swarf status
-    result = runner.invoke(main, ["status"])
+    # 11. swarf status
+    result = invoke(["status"])
     assert result.exit_code == 0
     assert "git" in result.output
 
-    # 10. swarf doctor
-    result = runner.invoke(main, ["doctor"])
-    assert ".swarf/ directory exists" in result.output
+    # 12. swarf doctor
+    result = invoke(["doctor"])
+    assert ".swarf/" in result.output

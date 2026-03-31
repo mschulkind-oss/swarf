@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from click.testing import CliRunner
+import pytest
+from helpers import invoke
 
-from swarf.cli import main
 from swarf.link import LinkResult, run_link
 
 
@@ -76,8 +76,7 @@ class TestLink:
         root = initialized_swarf
         (root / ".swarf" / "links" / "AGENTS.md").write_text("# Agents\n")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["link", "--quiet"])
+        result = invoke(["link", "--quiet"])
         assert result.exit_code == 0
         # No "linked" output in quiet mode
         assert "linked" not in result.output
@@ -87,9 +86,8 @@ class TestLink:
         (root / ".swarf" / "links" / "README.md").write_text("from swarf\n")
         (root / "README.md").write_text("original\n")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["link", "--quiet"])
-        assert "Warning" in result.output
+        result = invoke(["link", "--quiet"])
+        assert "real file exists" in result.output
 
     def test_link_empty_links_dir(self, initialized_swarf):
         result = run_link(initialized_swarf)
@@ -97,10 +95,10 @@ class TestLink:
         assert len(result.created) == 0
         assert len(result.warnings) == 0
 
+    @pytest.mark.usefixtures("git_repo")
     def test_link_no_swarf_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
-        runner = CliRunner()
-        result = runner.invoke(main, ["link"])
+        result = invoke(["link"])
         assert result.exit_code != 0
         assert "Not inside a swarf project" in result.output

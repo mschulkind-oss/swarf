@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from click.testing import CliRunner
+from helpers import invoke
 
-from swarf.cli import main
 from swarf.config import GlobalConfig, write_global_config
 
 
@@ -14,8 +13,7 @@ class TestEnter:
         root = initialized_swarf
         (root / ".swarf" / "links" / "AGENTS.md").write_text("# Agents\n")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["enter"])
+        result = invoke(["enter"])
         assert result.exit_code == 0, result.output
         assert (root / "AGENTS.md").is_symlink()
 
@@ -24,8 +22,7 @@ class TestEnter:
         write_global_config(GlobalConfig(backend="git", remote="origin", auto_sweep=["AGENTS.md"]))
         (root / "AGENTS.md").write_text("# Agents\n")
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["enter"])
+        result = invoke(["enter"])
         assert result.exit_code == 0, result.output
         assert (root / "AGENTS.md").is_symlink()
         assert (root / ".swarf" / "links" / "AGENTS.md").exists()
@@ -36,30 +33,25 @@ class TestEnter:
         write_global_config(
             GlobalConfig(backend="git", remote="origin", auto_sweep=["NONEXISTENT.md"])
         )
-        runner = CliRunner()
-        result = runner.invoke(main, ["enter"])
+        result = invoke(["enter"])
         assert result.exit_code == 0, result.output
 
     def test_enter_skips_already_swept(self, initialized_swarf):
         """Files already symlinked are not re-swept."""
         root = initialized_swarf
         write_global_config(GlobalConfig(backend="git", remote="origin", auto_sweep=["AGENTS.md"]))
-        # Pre-sweep it
         dest = root / ".swarf" / "links" / "AGENTS.md"
         dest.write_text("# Agents\n")
         (root / "AGENTS.md").symlink_to(dest)
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["enter"])
+        result = invoke(["enter"])
         assert result.exit_code == 0, result.output
-        # Still a symlink, not double-swept
         assert (root / "AGENTS.md").is_symlink()
 
     @pytest.mark.usefixtures("git_repo")
     def test_enter_no_swarf_dir(self):
         """Enter silently does nothing if no .swarf/ exists."""
-        runner = CliRunner()
-        result = runner.invoke(main, ["enter"])
+        result = invoke(["enter"])
         assert result.exit_code == 0
 
     def test_enter_no_auto_sweep_config(self, initialized_swarf):
@@ -68,7 +60,6 @@ class TestEnter:
         (root / ".swarf" / "links" / "AGENTS.md").write_text("# Agents\n")
         write_global_config(GlobalConfig(backend="git", remote="origin"))
 
-        runner = CliRunner()
-        result = runner.invoke(main, ["enter"])
+        result = invoke(["enter"])
         assert result.exit_code == 0, result.output
         assert (root / "AGENTS.md").is_symlink()

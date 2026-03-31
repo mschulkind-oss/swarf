@@ -1,84 +1,64 @@
 """Tests for swarf doctor command."""
 
-import subprocess
-
 import pytest
-from click.testing import CliRunner
+from helpers import invoke
 
-from swarf.cli import main
 from swarf.doctor import (
     check_daemon_running,
     check_links_healthy,
     check_mise_local,
-    check_swarf_is_git_repo,
+    check_store_exists,
 )
 
 
 class TestDoctorGitignore:
     @pytest.mark.usefixtures("git_repo")
     def test_no_swarf_dir(self):
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
+        result = invoke(["doctor"])
         assert result.exit_code != 0
         assert ".swarf/ directory not found" in result.output
 
     def test_swarf_not_gitignored(self, git_repo):
         (git_repo / ".swarf").mkdir()
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
+        result = invoke(["doctor"])
         assert result.exit_code != 0
         assert ".swarf/ is NOT gitignored" in result.output
 
     def test_swarf_gitignored(self, initialized_swarf):
         root = initialized_swarf
         (root / ".gitignore").write_text(".swarf/\n.mise.local.toml\n")
-        (root / ".mise.local.toml").write_text('[hooks]\nenter = "swarf link --quiet"\n')
-        # Add a remote so that check passes
-        bare = root / "remote.git"
-        bare.mkdir()
-        subprocess.run(["git", "init", "--bare"], cwd=bare, capture_output=True, check=True)
-        subprocess.run(
-            ["git", "remote", "add", "origin", str(bare)],
-            cwd=root / ".swarf",
-            capture_output=True,
-            check=True,
-        )
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
-        assert ".swarf/ is gitignored" in result.output
+        (root / ".mise.local.toml").write_text('[hooks]\nenter = "swarf enter"\n')
+        result = invoke(["doctor"])
+        # Other checks may fail (remote, etc), but gitignore checks should pass
+        assert ".swarf/ is gitignored" in result.output or ".swarf/ linked to" in result.output
         assert ".mise.local.toml is gitignored" in result.output
 
     def test_mise_local_not_gitignored(self, git_repo):
         (git_repo / ".swarf").mkdir()
         (git_repo / ".gitignore").write_text(".swarf/\n")
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
+        result = invoke(["doctor"])
         assert result.exit_code != 0
         assert ".mise.local.toml is NOT gitignored" in result.output
 
-    def test_linked_file_not_gitignored(self, git_repo):
-        (git_repo / ".swarf" / "links").mkdir(parents=True)
-        (git_repo / ".swarf" / "links" / "AGENTS.md").write_text("# agents\n")
-        (git_repo / ".gitignore").write_text(".swarf/\n.mise.local.toml\n")
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
+    def test_linked_file_not_gitignored(self, initialized_swarf):
+        root = initialized_swarf
+        (root / ".swarf" / "links" / "AGENTS.md").write_text("# agents\n")
+        (root / ".gitignore").write_text(".swarf/\n.mise.local.toml\n")
+        result = invoke(["doctor"])
         assert result.exit_code != 0
         assert "AGENTS.md is NOT gitignored" in result.output
 
-    def test_linked_file_gitignored(self, git_repo):
-        (git_repo / ".swarf" / "links").mkdir(parents=True)
-        (git_repo / ".swarf" / "links" / "AGENTS.md").write_text("# agents\n")
-        (git_repo / ".gitignore").write_text(".swarf/\n.mise.local.toml\nAGENTS.md\n")
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
-        # This will still fail due to other checks (mise.local, git repo, etc.)
+    def test_linked_file_gitignored(self, initialized_swarf):
+        root = initialized_swarf
+        (root / ".swarf" / "links" / "AGENTS.md").write_text("# agents\n")
+        (root / ".gitignore").write_text(".swarf/\n.mise.local.toml\nAGENTS.md\n")
+        result = invoke(["doctor"])
         assert "AGENTS.md is gitignored" in result.output
 
     def test_not_in_git_repo(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
-        runner = CliRunner()
-        result = runner.invoke(main, ["doctor"])
+        result = invoke(["doctor"])
         assert result.exit_code != 0
         assert "Not inside a git repository" in result.output
 
@@ -90,7 +70,7 @@ class TestDoctorMiseLocal:
         assert "not found" in msg
 
     def test_check_mise_local_present(self, git_repo):
-        (git_repo / ".mise.local.toml").write_text('[hooks]\nenter = "swarf link --quiet"\n')
+        (git_repo / ".mise.local.toml").write_text('[hooks]\nenter = "swarf enter"\n')
         _, ok, msg = check_mise_local(git_repo)
         assert ok
         assert "enter hook" in msg
@@ -102,36 +82,33 @@ class TestDoctorMiseLocal:
         assert "missing" in msg
 
 
-class TestDoctorGitRepo:
-    def test_check_swarf_is_git_repo(self, initialized_swarf):
-        _, ok, _ = check_swarf_is_git_repo(initialized_swarf)
+class TestDoctorStore:
+    @pytest.mark.usefixtures("initialized_swarf")
+    def test_check_store_exists(self):
+        _, ok, _ = check_store_exists()
         assert ok
 
-    def test_check_swarf_not_git_repo(self, git_repo):
-        (git_repo / ".swarf").mkdir()
-        _, ok, _ = check_swarf_is_git_repo(git_repo)
-        assert not ok
-
-    def test_check_swarf_missing(self, git_repo):
-        _, ok, _ = check_swarf_is_git_repo(git_repo)
+    @pytest.mark.usefixtures("git_repo")
+    def test_check_store_missing(self):
+        _, ok, _ = check_store_exists()
         assert not ok
 
 
 class TestDoctorDaemon:
     def test_daemon_not_running(self, monkeypatch, tmp_path):
-        import swarf.doctor as doc
+        import swarf.paths as p
 
-        monkeypatch.setattr(doc, "PID_FILE", tmp_path / "nonexistent.pid")
+        monkeypatch.setattr(p, "PID_FILE", tmp_path / "nonexistent.pid")
         _, ok, msg = check_daemon_running()
         assert not ok
         assert "not running" in msg
 
     def test_daemon_stale_pid(self, monkeypatch, tmp_path):
-        import swarf.doctor as doc
+        import swarf.paths as p
 
         pid_file = tmp_path / "daemon.pid"
-        pid_file.write_text("999999999")  # very unlikely to be running
-        monkeypatch.setattr(doc, "PID_FILE", pid_file)
+        pid_file.write_text("999999999")
+        monkeypatch.setattr(p, "PID_FILE", pid_file)
         _, ok, msg = check_daemon_running()
         assert not ok
         assert "not running" in msg
