@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+import shutil
 import signal
+import subprocess
 from pathlib import Path
 
+from swarf.config import read_global_config
 from swarf.exclude import read_managed_excludes
 from swarf.git import check_ignore, git_remote_url, is_inside_work_tree
-from swarf.paths import PID_FILE
+from swarf.paths import GLOBAL_CONFIG_TOML, PID_FILE
 
 
 def check_swarf_dir_exists(cwd: Path | None = None) -> tuple[str, bool, str]:
@@ -136,14 +139,70 @@ def check_links_healthy(cwd: Path | None = None) -> tuple[str, bool, str]:
     return ("links", True, "All links healthy")
 
 
+def check_global_config() -> tuple[str, bool, str]:
+    """Check that the global config exists and is valid."""
+    config = read_global_config()
+    if config is None:
+        return (
+            "global config",
+            False,
+            f"Global config not found — create {GLOBAL_CONFIG_TOML}",
+        )
+    if not config.remote:
+        return ("global config", False, "Global config has no remote configured")
+    msg = f"Global config: backend={config.backend}, remote={config.remote}"
+    return ("global config", True, msg)
+
+
+def check_remote_reachable() -> tuple[str, bool, str]:
+    """Check that the configured remote backend is reachable."""
+    config = read_global_config()
+    if config is None:
+        return ("remote", False, "No global config — cannot check remote")
+
+    if config.backend == "git":
+        try:
+            subprocess.run(
+                ["git", "ls-remote", config.remote],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
+            )
+            return ("remote", True, f"Git remote reachable: {config.remote}")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return ("remote", False, f"Git remote not reachable: {config.remote}")
+
+    if config.backend == "rclone":
+        if not shutil.which("rclone"):
+            return ("remote", False, "rclone not installed")
+        try:
+            subprocess.run(
+                ["rclone", "lsd", config.remote],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
+            )
+            return ("remote", True, f"Rclone remote reachable: {config.remote}")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return ("remote", False, f"Rclone remote not reachable: {config.remote}")
+
+    return ("remote", False, f"Unknown backend: {config.backend}")
+
+
 def run_all_checks(cwd: Path | None = None) -> list[tuple[str, bool, str]]:
     """Run all doctor checks and return results."""
     results: list[tuple[str, bool, str]] = []
+    # Global checks
+    results.append(check_global_config())
+    results.append(check_remote_reachable())
+    results.append(check_daemon_running())
+    # Per-project checks (only if inside a swarf project)
     results.append(check_swarf_dir_exists(cwd))
     results.extend(check_gitignore(cwd))
     results.append(check_mise_local(cwd))
     results.append(check_swarf_is_git_repo(cwd))
     results.append(check_remote_configured(cwd))
-    results.append(check_daemon_running())
     results.append(check_links_healthy(cwd))
     return results

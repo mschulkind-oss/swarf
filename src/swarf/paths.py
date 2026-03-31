@@ -6,6 +6,7 @@ from pathlib import Path
 
 SWARF_DIR_NAME = ".swarf"
 CONFIG_DIR = Path("~/.config/swarf").expanduser()
+GLOBAL_CONFIG_TOML = CONFIG_DIR / "config.toml"
 DRAWERS_TOML = CONFIG_DIR / "drawers.toml"
 PID_FILE = CONFIG_DIR / "daemon.pid"
 LOG_FILE = CONFIG_DIR / "daemon.log"

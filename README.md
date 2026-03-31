@@ -51,64 +51,65 @@ uv tool install swarf
 
 ## Quick start
 
-No setup needed — `swarf init` automatically configures your repo's
-`.git/info/exclude` so `.swarf/` and related files stay invisible. If you
-use [mise](https://mise.jdx.dev/), swarf also installs an enter hook that
-auto-links files when you `cd` into a project.
+### 1. Configure your backend (one-time)
 
-### Option A: Git backend (you control the remote)
+Create `~/.config/swarf/config.toml` with your backup destination. This is
+a single location shared across every project on your machine.
 
-Best when you can create a private companion repo (personal projects, GitHub).
+**Option A: Git backend** — best for personal use (GitHub, Gitea, etc.)
 
 ```bash
-cd ~/projects/my-app
+# Create one private repo for all your swarf
+gh repo create my-swarf --private
 
-# Create a private repo for your swarf (GitHub, Gitea, bare local, etc.)
-# Example with a local bare repo for testing:
-git init --bare ~/swarf-remotes/my-app.git
-
-# Initialize
-swarf init --backend git --remote ~/swarf-remotes/my-app.git
-
-# Push the initial commit so the daemon can sync later
-cd .swarf && git push -u origin master && cd ..
-
-# Start the daemon
-swarf daemon start
+mkdir -p ~/.config/swarf
+cat > ~/.config/swarf/config.toml << 'EOF'
+[sync]
+backend = "git"
+remote = "git@github.com:you/my-swarf.git"
+EOF
 ```
 
-### Option B: Rclone backend (Google Drive, Dropbox, S3, etc.)
-
-Best for work environments where you can't easily create a private git repo.
+**Option B: Google Drive** — best for work (no repo needed)
 
 ```bash
-# 1. Install rclone (if not already)
-brew install rclone        # macOS
-# or: sudo apt install rclone  # Debian/Ubuntu
-# or: mise use rclone          # via mise
-
-# 2. Configure a Google Drive remote (one-time, interactive)
+# Install rclone and configure a Google Drive remote
+brew install rclone   # or: mise use rclone
 rclone config
-#   -> n (new remote)
-#   -> name: gdrive
-#   -> type: drive
+#   -> n (new remote), name: gdrive, type: drive
 #   -> scope: drive.file (option 2 — can only see files rclone created)
 #   -> auto config: y (opens browser)
-#   -> done
 
-# 3. Verify it works
+# Verify it works
 rclone lsd gdrive:
 
-# 4. Initialize swarf
-cd ~/projects/my-app
-swarf init --backend rclone --remote "gdrive:swarf/my-app"
+mkdir -p ~/.config/swarf
+cat > ~/.config/swarf/config.toml << 'EOF'
+[sync]
+backend = "rclone"
+remote = "gdrive:swarf"
+EOF
+```
 
-# 5. Start the daemon
+### 2. Verify your setup
+
+```bash
+swarf doctor
+# ✓ Global config exists
+# ✓ Backend reachable
+```
+
+### 3. Start using swarf in any project
+
+```bash
+cd ~/projects/my-app
+swarf init
 swarf daemon start
 ```
 
-The `drive.file` scope means the OAuth token can only access files swarf
-created — it cannot read your other Google Drive documents.
+That's it. `swarf init` creates `.swarf/`, configures `.git/info/exclude`,
+and installs a [mise](https://mise.jdx.dev/) enter hook. The daemon syncs
+all your projects to the backend you configured in step 1.
 
 ## Using swarf
 
@@ -160,20 +161,12 @@ swarf status    # show all projects, sync state, daemon status
 |---------|-------------|
 | `swarf init` | Initialize `.swarf/` in current project |
 | `swarf sweep <file>...` | Move files into `.swarf/links/` and symlink back |
-| `swarf doctor` | Validate setup health |
-| `swarf status` | Show all drawers and sync status |
+| `swarf doctor` | Validate setup and backend health |
+| `swarf status` | Show all projects and sync status |
 | `swarf daemon start` | Start background sync daemon |
 | `swarf daemon stop` | Stop the daemon |
 | `swarf daemon status` | Check if daemon is running |
 | `swarf daemon install` | Install as systemd user service (auto-start on login) |
-
-### Init options
-
-```bash
-swarf init --backend git --remote <url>     # git backend with remote
-swarf init --backend rclone --remote <path> # rclone backend
-swarf init                                  # git backend, no remote (local only)
-```
 
 ### Daemon as a system service
 
@@ -197,8 +190,7 @@ no permission needed.
 
 ```bash
 cd ~/work/big-monorepo
-swarf init --backend rclone --remote "gdrive:swarf/work"
-swarf daemon start
+swarf init
 ```
 
 Your agent config, personal notes, and research are now durable and synced,
@@ -214,17 +206,16 @@ never need credentials.
 
 ## Configuration
 
-Each `.swarf/` directory has a `config.toml`:
+Global config lives at `~/.config/swarf/config.toml`:
 
 ```toml
 [sync]
 backend = "git"          # or "rclone"
-remote = "origin"        # git remote name, or rclone remote path
+remote = "origin"        # git remote or rclone remote path
 debounce = "5s"          # wait this long after last change before syncing
 ```
 
-The daemon reads a central registry at `~/.config/swarf/drawers.toml` that
-lists all known `.swarf/` directories and their backends.
+This is set once and applies to all projects.
 
 ## Contributing
 

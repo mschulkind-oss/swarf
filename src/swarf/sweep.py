@@ -11,7 +11,7 @@ from swarf.exclude import add_linked_excludes
 from swarf.paths import find_host_root, links_dir
 
 
-def run_sweep(paths: tuple[str, ...], host_root: Path | None = None) -> None:
+def run_sweep(paths: tuple[str, ...] | list[str], host_root: Path | None = None) -> None:
     """Move files into .swarf/links/ and replace with symlinks."""
     if host_root is None:
         host_root = find_host_root()

@@ -15,39 +15,54 @@ from swarf.daemon.debounce import Debouncer
 
 logger = logging.getLogger(__name__)
 
-# Minimum seconds between pushes per drawer
-PUSH_RATE_LIMIT = 30.0
+# How often to check drawers.toml for new projects
+_REGISTRY_POLL_INTERVAL = 10.0
 
 
 class DaemonRunner:
     """Watches all registered drawers and syncs on changes."""
 
     def __init__(self) -> None:
-        self._last_push: dict[str, float] = {}
+        self._watcher_tasks: dict[str, asyncio.Task] = {}
 
     async def run(self) -> None:
-        """Load drawers and start watching them concurrently."""
-        drawers = read_drawers()
-        active = [d for d in drawers if d.path.is_dir()]
+        """Load drawers and watch them, re-reading registry for new ones."""
+        self._load_and_start_drawers()
 
-        if not active:
-            logger.info("No active drawers found. Nothing to watch.")
-            return
+        if not self._watcher_tasks:
+            logger.info("No active drawers found. Waiting for registrations...")
 
-        logger.info("Watching %d drawer(s)", len(active))
-        tasks = [asyncio.create_task(self._watch_drawer(d)) for d in active]
         try:
-            await asyncio.gather(*tasks)
+            while True:
+                await asyncio.sleep(_REGISTRY_POLL_INTERVAL)
+                self._load_and_start_drawers()
         except asyncio.CancelledError:
             logger.info("Daemon shutting down")
-            for t in tasks:
+            for t in self._watcher_tasks.values():
                 t.cancel()
             # Final sync for any pending changes
-            for d in active:
-                backend = self._make_backend(d)
-                if backend.has_changes(d.path):
-                    logger.info("Final sync for %s", d.path)
-                    backend.sync(d.path)
+            drawers = read_drawers()
+            for d in drawers:
+                if d.path.is_dir():
+                    backend = self._make_backend(d)
+                    if backend.has_changes(d.path):
+                        logger.info("Final sync for %s", d.path)
+                        backend.sync(d.path)
+
+    def _load_and_start_drawers(self) -> None:
+        """Read drawers.toml and start watchers for any new drawers."""
+        drawers = read_drawers()
+        for d in drawers:
+            key = str(d.path)
+            if key in self._watcher_tasks:
+                task = self._watcher_tasks[key]
+                if not task.done():
+                    continue
+                # Task finished (maybe drawer was removed), clean up
+                del self._watcher_tasks[key]
+            if d.path.is_dir():
+                logger.info("Starting watcher for %s", d.path)
+                self._watcher_tasks[key] = asyncio.create_task(self._watch_drawer(d))
 
     async def _watch_drawer(self, drawer: DrawerEntry) -> None:
         """Watch a single drawer for changes."""

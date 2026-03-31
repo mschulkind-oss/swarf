@@ -8,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from swarf.cli import main
+from swarf.config import GlobalConfig, write_global_config
 
 
 class TestInit:
@@ -26,18 +27,18 @@ class TestInit:
         runner.invoke(main, ["init"])
         assert (git_repo / ".swarf" / ".git").is_dir()
 
-    def test_init_writes_config(self, git_repo):
+    def test_init_writes_config_from_global(self, git_repo):
         runner = CliRunner()
         runner.invoke(main, ["init"])
         config = (git_repo / ".swarf" / "config.toml").read_text()
         assert 'backend = "git"' in config
         assert 'remote = "origin"' in config
 
-    def test_init_with_remote(self, git_repo, bare_remote):
+    def test_init_with_git_remote(self, git_repo, bare_remote):
+        write_global_config(GlobalConfig(backend="git", remote=str(bare_remote)))
         runner = CliRunner()
-        result = runner.invoke(main, ["init", "--remote", str(bare_remote)])
+        result = runner.invoke(main, ["init"])
         assert result.exit_code == 0, result.output
-        # Verify remote is configured
         r = subprocess.run(
             ["git", "remote", "-v"],
             cwd=git_repo / ".swarf",
@@ -52,15 +53,12 @@ class TestInit:
         mise = git_repo / ".mise.local.toml"
         assert mise.exists()
         content = mise.read_text()
-        assert "swarf link" in content
+        assert "swarf enter" in content
         assert "[hooks]" in content
 
-    def test_init_registers_drawer(self, git_repo, monkeypatch):
+    @pytest.mark.usefixtures("git_repo")
+    def test_init_registers_drawer(self):
         import swarf.config as cfg
-
-        config_dir = git_repo / ".config" / "swarf"
-        monkeypatch.setattr(cfg, "CONFIG_DIR", config_dir)
-        monkeypatch.setattr(cfg, "DRAWERS_TOML", config_dir / "drawers.toml")
 
         runner = CliRunner()
         runner.invoke(main, ["init"])
@@ -88,8 +86,9 @@ class TestInit:
         assert "swarf managed" in content
 
     def test_init_rclone_backend(self, git_repo):
+        write_global_config(GlobalConfig(backend="rclone", remote="gdrive:swarf"))
         runner = CliRunner()
-        runner.invoke(main, ["init", "--backend", "rclone"])
+        runner.invoke(main, ["init"])
         config = (git_repo / ".swarf" / "config.toml").read_text()
         assert 'backend = "rclone"' in config
 
@@ -107,7 +106,6 @@ class TestInit:
         result = runner.invoke(main, ["init"])
         assert result.exit_code == 0, result.output
         assert "already exists" in result.output
-        # Should not have overwritten
         content = (git_repo / ".mise.local.toml").read_text()
         assert "python" in content
 
@@ -122,11 +120,10 @@ class TestInit:
         )
         assert "init: swarf drawer" in r.stdout
 
-
-class TestInitCLI:
     @pytest.mark.usefixtures("git_repo")
-    def test_backend_choice_validation(self):
+    def test_init_no_backend_remote_flags(self):
+        """--backend and --remote flags should not exist."""
         runner = CliRunner()
-        result = runner.invoke(main, ["init", "--backend", "invalid"])
+        result = runner.invoke(main, ["init", "--backend", "git"])
         assert result.exit_code != 0
-        assert "Invalid value" in result.output
+        assert "No such option" in result.output

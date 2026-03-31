@@ -6,6 +6,9 @@ import subprocess
 
 import pytest
 
+import swarf.config as cfg
+import swarf.paths as paths
+
 
 @pytest.fixture()
 def git_repo(tmp_path, monkeypatch):
@@ -30,6 +33,24 @@ def git_repo(tmp_path, monkeypatch):
         check=True,
         cwd=tmp_path,
     )
+
+    # Isolate global swarf config to tmp_path
+    config_dir = fake_config / "swarf"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setattr(paths, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(paths, "GLOBAL_CONFIG_TOML", config_dir / "config.toml")
+    monkeypatch.setattr(paths, "DRAWERS_TOML", config_dir / "drawers.toml")
+    monkeypatch.setattr(paths, "PID_FILE", config_dir / "daemon.pid")
+    monkeypatch.setattr(paths, "LOG_FILE", config_dir / "daemon.log")
+    monkeypatch.setattr(cfg, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(cfg, "GLOBAL_CONFIG_TOML", config_dir / "config.toml")
+    monkeypatch.setattr(cfg, "DRAWERS_TOML", config_dir / "drawers.toml")
+
+    # Pre-create a default global config so init doesn't prompt
+    from swarf.config import GlobalConfig, write_global_config
+
+    write_global_config(GlobalConfig(backend="git", remote="origin"))
+
     return tmp_path
 
 

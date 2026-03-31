@@ -7,17 +7,12 @@ import subprocess
 from click.testing import CliRunner
 
 from swarf.cli import main
+from swarf.config import GlobalConfig, write_global_config
 from swarf.daemon.backends.git import GitBackend
 
 
-def test_full_lifecycle(git_repo, monkeypatch):
+def test_full_lifecycle(git_repo):
     """Test the complete swarf lifecycle: init -> link -> sync -> status -> doctor."""
-    import swarf.config as cfg
-
-    config_dir = git_repo / ".config" / "swarf"
-    monkeypatch.setattr(cfg, "CONFIG_DIR", config_dir)
-    monkeypatch.setattr(cfg, "DRAWERS_TOML", config_dir / "drawers.toml")
-
     runner = CliRunner()
 
     # 1. Create a bare remote for pushing
@@ -25,8 +20,9 @@ def test_full_lifecycle(git_repo, monkeypatch):
     bare.mkdir()
     subprocess.run(["git", "init", "--bare"], cwd=bare, capture_output=True, check=True)
 
-    # 2. swarf init --backend git --remote <bare_repo>
-    result = runner.invoke(main, ["init", "--backend", "git", "--remote", str(bare)])
+    # 2. Set global config to use bare remote, then init
+    write_global_config(GlobalConfig(backend="git", remote=str(bare)))
+    result = runner.invoke(main, ["init"])
     assert result.exit_code == 0, result.output
     assert "Initialized swarf" in result.output
 
@@ -82,7 +78,6 @@ def test_full_lifecycle(git_repo, monkeypatch):
     assert result.exit_code == 0
     assert "git" in result.output
 
-    # 10. swarf doctor — check output (will have some failures due to gitignore in test env)
+    # 10. swarf doctor
     result = runner.invoke(main, ["doctor"])
-    # Doctor should at least run without crashing
     assert ".swarf/ directory exists" in result.output
