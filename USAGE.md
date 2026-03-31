@@ -12,24 +12,10 @@ uv tool install . --force
 swarf --version
 ```
 
-## 1. Global gitignore setup (one-time)
+## 1. No global setup needed
 
-Swarf relies on your global gitignore to hide `.swarf/` from host repos.
-Find your global gitignore:
-
-```bash
-git config --global core.excludesfile
-# If empty, create one:
-git config --global core.excludesfile ~/.config/git/ignore
-```
-
-Add these lines:
-
-```gitignore
-# Swarf
-.swarf/
-.mise.local.toml
-```
+Swarf automatically manages `.git/info/exclude` in each repo so `.swarf/`
+and related files stay invisible. No global gitignore configuration required.
 
 ## 2. Testing the git backend
 
@@ -56,7 +42,7 @@ swarf init --backend git --remote /tmp/test-swarf-git-remote
 You should see:
 - `.swarf/` directory created with `docs/`, `links/`, `open-questions.md`
 - `.mise.local.toml` created
-- Gitignore warnings (if you haven't set up global gitignore)
+- `.git/info/exclude` updated with swarf-managed entries
 - Summary with backend and remote
 
 ### 2d. Verify the setup
@@ -72,11 +58,11 @@ echo "# Research Notes" > .swarf/docs/research/notes.md
 echo "# Agent Config" > .swarf/links/AGENTS.md
 ```
 
-### 2f. Create the link
+### 2f. Sweep a file into swarf
 
 ```bash
-swarf link
-# Should show: linked AGENTS.md
+swarf sweep AGENTS.md
+# Should show: swept AGENTS.md
 ls -la AGENTS.md
 # Should be a symlink -> .swarf/links/AGENTS.md
 ```
@@ -222,8 +208,7 @@ just restart-service   # or: systemctl --user restart swarf
 |---------|-------------|
 | `swarf init --backend git --remote <url>` | Initialize with git backend |
 | `swarf init --backend rclone --remote <path>` | Initialize with rclone backend |
-| `swarf link` | Create symlinks from `.swarf/links/` |
-| `swarf link --quiet` | Same, but only show warnings |
+| `swarf sweep <file>...` | Move files into `.swarf/links/` and symlink back |
 | `swarf doctor` | Validate setup health |
 | `swarf status` | Show all drawers and sync status |
 | `swarf daemon start` | Start background sync |
@@ -236,7 +221,7 @@ just restart-service   # or: systemctl --user restart swarf
 
 ```
 your-project/
-├── .swarf/                    # git repo, globally gitignored
+├── .swarf/                    # git repo, hidden via .git/info/exclude
 │   ├── config.toml            # backend + remote + debounce
 │   ├── docs/
 │   │   ├── research/          # put research notes here
@@ -244,7 +229,7 @@ your-project/
 │   ├── links/                 # files here get symlinked into host tree
 │   │   └── AGENTS.md          # → ./AGENTS.md
 │   └── open-questions.md
-├── .mise.local.toml           # auto-link on cd (globally gitignored)
+├── .mise.local.toml           # auto-link on cd (hidden via .git/info/exclude)
 ├── AGENTS.md → .swarf/links/AGENTS.md
 └── (your code)
 ```
@@ -253,7 +238,7 @@ your-project/
 
 **"swarf is already initialized here"** — `.swarf/` exists. Remove it to re-init: `rm -rf .swarf`
 
-**Gitignore warnings** — Add `.swarf/` and `.mise.local.toml` to your global gitignore (see step 1).
+**Gitignore warnings** — Run `swarf init` to auto-configure `.git/info/exclude`.
 
 **Daemon exits immediately** — No drawers registered. Run `swarf init` first in at least one project.
 

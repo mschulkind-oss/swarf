@@ -24,15 +24,15 @@ repos). Neither is good.
 ## How it works
 
 Swarf creates a `.swarf/` directory inside your project — a separate git repo,
-invisible to the host repo via your global gitignore. A background daemon
-watches for changes and syncs to a remote backend (a git repo or any
-rclone-supported cloud storage).
+invisible to the host repo via `.git/info/exclude` (managed automatically by
+swarf). A background daemon watches for changes and syncs to a remote backend
+(a git repo or any rclone-supported cloud storage).
 
 ```
 my-project/                      <- your repo (public)
 ├── src/
 ├── tests/
-├── .swarf/                      <- swarf repo (private, globally gitignored)
+├── .swarf/                      <- swarf repo (private, auto-excluded)
 │   ├── docs/research/           <- durable notes
 │   ├── docs/design/             <- specs and decisions
 │   ├── links/                   <- files projected into the host tree
@@ -49,30 +49,12 @@ Requires Python 3.13+.
 uv tool install swarf
 ```
 
-## Setup (one-time)
-
-Before using swarf, add these to your **global** gitignore so `.swarf/`
-stays invisible in every repo on your machine:
-
-```bash
-# Find (or create) your global gitignore
-git config --global core.excludesfile
-# If empty:
-git config --global core.excludesfile ~/.config/git/ignore
-```
-
-Add these lines to that file:
-
-```gitignore
-.swarf/
-.mise.local.toml
-```
-
-If you use [mise](https://mise.jdx.dev/), swarf installs an enter hook that
-auto-links files when you `cd` into a project. Mise is optional — you can
-run `swarf link` manually instead.
-
 ## Quick start
+
+No setup needed — `swarf init` automatically configures your repo's
+`.git/info/exclude` so `.swarf/` and related files stay invisible. If you
+use [mise](https://mise.jdx.dev/), swarf also installs an enter hook that
+auto-links files when you `cd` into a project.
 
 ### Option A: Git backend (you control the remote)
 
@@ -142,34 +124,28 @@ echo "# Open Questions" >> .swarf/open-questions.md
 
 The daemon auto-commits and syncs after a 5-second quiet period.
 
-### Linking files into the host tree
+### Sweeping files into swarf
 
-Files in `.swarf/links/` are symlinked into your project root. This is how
-you make agent config files appear in the right place:
+Use `swarf sweep` to move existing files into `.swarf/links/` and replace
+them with symlinks. The host repo automatically ignores the symlinks via
+`.git/info/exclude`.
 
 ```bash
-# Create an AGENTS.md that appears at the project root
-echo "# Agent Instructions" > .swarf/links/AGENTS.md
+# Sweep an existing file into swarf
+swarf sweep AGENTS.md
+# AGENTS.md -> .swarf/links/AGENTS.md
 
-# Create the symlinks
-swarf link
+# Sweep multiple files at once
+swarf sweep .copilot/skills/SKILL.md .cursor/rules/project.md
 
 # Verify
 ls -la AGENTS.md
 # AGENTS.md -> .swarf/links/AGENTS.md
 ```
 
-Directory structure in `links/` mirrors the host tree:
-
-```bash
-# This creates ./.copilot/skills/my-skill/SKILL.md
-mkdir -p .swarf/links/.copilot/skills/my-skill/
-echo "# Skill" > .swarf/links/.copilot/skills/my-skill/SKILL.md
-swarf link
-```
-
-Add any linked filenames to your global gitignore so the host repo ignores
-the symlinks too (e.g., add `AGENTS.md` to `~/.config/git/ignore`).
+You can also create files directly in `.swarf/links/` — the mise enter hook
+runs `swarf link` automatically when you `cd` into the project, creating
+symlinks for any new files.
 
 ### Checking health
 
@@ -183,7 +159,7 @@ swarf status    # show all projects, sync state, daemon status
 | Command | Description |
 |---------|-------------|
 | `swarf init` | Initialize `.swarf/` in current project |
-| `swarf link` | Create/repair symlinks from `.swarf/links/` |
+| `swarf sweep <file>...` | Move files into `.swarf/links/` and symlink back |
 | `swarf doctor` | Validate setup health |
 | `swarf status` | Show all drawers and sync status |
 | `swarf daemon start` | Start background sync daemon |
@@ -215,9 +191,9 @@ journalctl --user -u swarf -f
 
 ## How it works on a company monorepo
 
-The same way. Your global gitignore hides `.swarf/` from every repo on your
-machine, including ones you don't control. No changes to the monorepo's
-`.gitignore`, no submodules, no permission needed.
+The same way. `swarf init` writes to `.git/info/exclude`, which is per-repo
+and never committed. No changes to the monorepo's `.gitignore`, no submodules,
+no permission needed.
 
 ```bash
 cd ~/work/big-monorepo

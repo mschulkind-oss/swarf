@@ -6,6 +6,7 @@ import os
 import signal
 from pathlib import Path
 
+from swarf.exclude import read_managed_excludes
 from swarf.git import check_ignore, git_remote_url, is_inside_work_tree
 from swarf.paths import PID_FILE
 
@@ -21,6 +22,9 @@ def check_swarf_dir_exists(cwd: Path | None = None) -> tuple[str, bool, str]:
 def check_gitignore(cwd: Path | None = None) -> list[tuple[str, bool, str]]:
     """Check that required paths are gitignored.
 
+    Checks the .git/info/exclude managed section first, then falls back to
+    git check-ignore (which covers global gitignore and .gitignore).
+
     Returns a list of (path, ok, message) tuples.
     """
     checks: list[tuple[str, bool, str]] = []
@@ -29,31 +33,39 @@ def check_gitignore(cwd: Path | None = None) -> list[tuple[str, bool, str]]:
         checks.append(("git", False, "Not inside a git repository"))
         return checks
 
+    root = cwd or Path.cwd()
+    managed = read_managed_excludes(root)
+
     required_ignored = {
-        ".swarf/": "swarf data directory must be gitignored",
-        ".mise.local.toml": "mise local config (used by swarf enter hook) must be gitignored",
+        ".swarf/": ("/.swarf/", "swarf data directory must be gitignored"),
+        ".mise.local.toml": ("/.mise.local.toml", "mise local config must be gitignored"),
     }
 
-    for path, reason in required_ignored.items():
-        ignored = check_ignore(path, cwd=cwd)
-        if ignored:
+    for path, (exclude_entry, reason) in required_ignored.items():
+        if exclude_entry in managed or check_ignore(path, cwd=cwd):
             checks.append((path, True, f"{path} is gitignored"))
         else:
-            checks.append((path, False, f"{path} is NOT gitignored — {reason}"))
+            checks.append(
+                (path, False, f"{path} is NOT gitignored — run 'swarf init' to fix, or {reason}")
+            )
 
     # Check linked files if .swarf/links/ exists
-    swarf_links = Path(".swarf/links") if cwd is None else cwd / ".swarf" / "links"
+    swarf_links = root / ".swarf" / "links"
     if swarf_links.is_dir():
         for link_source in swarf_links.rglob("*"):
             if not link_source.is_file():
                 continue
             projected = str(link_source.relative_to(swarf_links))
-            ignored = check_ignore(projected, cwd=cwd)
-            if ignored:
+            exclude_entry = f"/{projected}"
+            if exclude_entry in managed or check_ignore(projected, cwd=cwd):
                 checks.append((projected, True, f"{projected} is gitignored"))
             else:
                 checks.append(
-                    (projected, False, f"{projected} is NOT gitignored — linked from .swarf/links/")
+                    (
+                        projected,
+                        False,
+                        f"{projected} is NOT gitignored — run 'swarf link' to fix",
+                    )
                 )
 
     return checks

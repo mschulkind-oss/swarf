@@ -7,8 +7,8 @@ from pathlib import Path
 import click
 
 from swarf.config import DrawerConfig, register_drawer, write_drawer_config
+from swarf.exclude import update_excludes
 from swarf.git import (
-    check_ignore,
     get_repo_root,
     git_add_all,
     git_add_remote,
@@ -89,8 +89,8 @@ def run_init(
         mise_local.write_text(_MISE_LOCAL_TOML)
         click.echo("Created .mise.local.toml with enter hook.")
 
-    # 8. Check global gitignore
-    _warn_gitignore(host_root)
+    # 8. Update .git/info/exclude
+    update_excludes(host_root)
 
     # 9. Register drawer
     register_drawer(sd, backend)
@@ -107,20 +107,3 @@ def run_init(
     click.echo(f"  Backend: {backend}")
     if remote:
         click.echo(f"  Remote: {remote}")
-
-
-def _warn_gitignore(host_root: Path) -> None:
-    """Warn if .swarf/ or .mise.local.toml are not globally gitignored."""
-    missing = []
-    if not check_ignore(".swarf/", cwd=host_root):
-        missing.append("/.swarf/")
-    if not check_ignore(".mise.local.toml", cwd=host_root):
-        missing.append("/.mise.local.toml")
-
-    if missing:
-        click.echo(
-            click.style("Warning:", fg="yellow")
-            + " The following paths are not gitignored. Add them to your global gitignore:"
-        )
-        for path in missing:
-            click.echo(f"  {path}")
