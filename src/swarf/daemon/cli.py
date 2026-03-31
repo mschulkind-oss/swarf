@@ -22,9 +22,6 @@ def daemon() -> None:
 @click.option("--foreground", is_flag=True, help="Run in foreground (for systemd).")
 def start(foreground: bool) -> None:
     """Start the daemon."""
-    from swarf.daemon.runner import DaemonRunner
-
-    # Check if already running
     if PID_FILE.exists():
         try:
             pid = int(PID_FILE.read_text().strip())
@@ -34,16 +31,9 @@ def start(foreground: bool) -> None:
         except (ValueError, ProcessLookupError):
             PID_FILE.unlink(missing_ok=True)
 
-    if foreground:
-        _setup_logging()
-        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-        PID_FILE.write_text(str(os.getpid()))
-        try:
-            asyncio.run(DaemonRunner().run())
-        finally:
-            PID_FILE.unlink(missing_ok=True)
-    else:
-        _daemonize()
+    do_start(foreground=foreground)
+    if not foreground:
+        click.echo("Daemon started.")
 
 
 @daemon.command()
@@ -83,10 +73,8 @@ def status_cmd() -> None:
 @daemon.command()
 def install() -> None:
     """Install systemd user service."""
-    from swarf.daemon.service import install_systemd_service
-
     try:
-        install_systemd_service()
+        do_install()
         click.echo("Systemd user service installed and started.")
     except RuntimeError as e:
         click.echo(click.style("Error:", fg="red") + f" {e}", err=True)
@@ -94,6 +82,37 @@ def install() -> None:
     except Exception as e:
         click.echo(click.style("Error:", fg="red") + f" Failed to install service: {e}", err=True)
         raise SystemExit(1) from None
+
+
+def do_start(foreground: bool = False) -> None:
+    """Start the daemon programmatically (used by swarf init)."""
+    from swarf.daemon.runner import DaemonRunner
+
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            os.kill(pid, signal.SIG_DFL)
+            return  # already running
+        except (ValueError, ProcessLookupError):
+            PID_FILE.unlink(missing_ok=True)
+
+    if foreground:
+        _setup_logging()
+        PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        PID_FILE.write_text(str(os.getpid()))
+        try:
+            asyncio.run(DaemonRunner().run())
+        finally:
+            PID_FILE.unlink(missing_ok=True)
+    else:
+        _daemonize()
+
+
+def do_install() -> None:
+    """Install systemd user service programmatically (used by swarf init)."""
+    from swarf.daemon.service import install_systemd_service
+
+    install_systemd_service()
 
 
 def _setup_logging() -> None:

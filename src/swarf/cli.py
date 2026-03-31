@@ -12,13 +12,11 @@ def main() -> None:
 
 
 @main.command()
-@click.option("--backend", type=click.Choice(["git", "rclone"]), default="git")
-@click.option("--remote", type=str, default=None, help="Remote URL for the swarf git repo.")
-def init(backend: str, remote: str | None) -> None:
+def init() -> None:
     """Initialize a .swarf/ directory in the current project."""
     from swarf.init import run_init
 
-    run_init(backend=backend, remote=remote)
+    run_init()
 
 
 @main.command()
@@ -65,6 +63,14 @@ def link(quiet: bool) -> None:
     from swarf.link import run_link
 
     run_link(quiet=quiet)
+
+
+@main.command()
+def enter() -> None:
+    """Run on project enter (mise hook). Links files and auto-sweeps."""
+    from swarf.enter import run_enter
+
+    run_enter()
 
 
 @main.command()

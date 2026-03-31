@@ -9,7 +9,49 @@ from pathlib import Path
 
 import tomli_w
 
-from swarf.paths import CONFIG_DIR, DRAWERS_TOML
+from swarf.paths import CONFIG_DIR, DRAWERS_TOML, GLOBAL_CONFIG_TOML
+
+
+@dataclass
+class GlobalConfig:
+    """Global user configuration stored in ~/.config/swarf/config.toml."""
+
+    backend: str = "git"  # "git" | "rclone"
+    remote: str = ""
+    debounce: str = "5s"
+    auto_sweep: list[str] | None = None
+
+
+def read_global_config() -> GlobalConfig | None:
+    """Read the global config.toml. Returns None if it doesn't exist."""
+    if not GLOBAL_CONFIG_TOML.exists():
+        return None
+    with open(GLOBAL_CONFIG_TOML, "rb") as f:
+        data = tomllib.load(f)
+    sync = data.get("sync", {})
+    auto = data.get("auto_sweep", {})
+    return GlobalConfig(
+        backend=sync.get("backend", "git"),
+        remote=sync.get("remote", ""),
+        debounce=sync.get("debounce", "5s"),
+        auto_sweep=auto.get("paths"),
+    )
+
+
+def write_global_config(config: GlobalConfig) -> None:
+    """Write the global config.toml."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    data: dict = {
+        "sync": {
+            "backend": config.backend,
+            "remote": config.remote,
+            "debounce": config.debounce,
+        },
+    }
+    if config.auto_sweep:
+        data["auto_sweep"] = {"paths": config.auto_sweep}
+    with open(GLOBAL_CONFIG_TOML, "wb") as f:
+        tomli_w.dump(data, f)
 
 
 @dataclass
