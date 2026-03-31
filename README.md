@@ -24,112 +24,194 @@ repos). Neither is good.
 ## How it works
 
 Swarf creates a `.swarf/` directory inside your project — a separate git repo,
-invisible to the host repo via your global gitignore. Files in `.swarf/` are
-version-controlled and automatically synced to a remote backend.
+invisible to the host repo via your global gitignore. A background daemon
+watches for changes and syncs to a remote backend (a git repo or any
+rclone-supported cloud storage).
 
 ```
-my-project/                      ← your repo (public)
+my-project/                      <- your repo (public)
 ├── src/
 ├── tests/
-├── .swarf/                      ← swarf repo (private, globally gitignored)
-│   ├── docs/research/           ← durable notes
-│   ├── docs/design/             ← specs and decisions
-│   ├── links/                   ← files projected into the host tree
-│   │   ├── AGENTS.md            ← symlinked to ./AGENTS.md
-│   │   └── .copilot/skills/     ← symlinked to ./.copilot/skills/
+├── .swarf/                      <- swarf repo (private, globally gitignored)
+│   ├── docs/research/           <- durable notes
+│   ├── docs/design/             <- specs and decisions
+│   ├── links/                   <- files projected into the host tree
+│   │   └── AGENTS.md            <- symlinked to ./AGENTS.md
 │   └── open-questions.md
-└── scratch/                     ← ephemeral, untracked by anything
+└── AGENTS.md -> .swarf/links/AGENTS.md
 ```
 
-### Linking
-
-Files in `.swarf/links/` are automatically symlinked into the host repo tree.
-A file at `.swarf/links/AGENTS.md` appears as `./AGENTS.md`. A file at
-`.swarf/links/.copilot/skills/my-skill/SKILL.md` appears at
-`./.copilot/skills/my-skill/SKILL.md`. The directory structure is the manifest.
-
-Linking runs automatically via a [mise](https://mise.jdx.dev/) enter hook —
-every time you `cd` into the project, links are verified and fixed. You never
-run it manually.
-
-### Syncing
-
-A background daemon watches all your `.swarf/` directories for file changes.
-When files change, it waits for a quiet period (debounce), then commits and
-syncs to the configured backend. You never think about it.
-
 ## Install
+
+Requires Python 3.13+.
 
 ```bash
 uv tool install swarf
 ```
 
+## Setup (one-time)
+
+Before using swarf, add these to your **global** gitignore so `.swarf/`
+stays invisible in every repo on your machine:
+
+```bash
+# Find (or create) your global gitignore
+git config --global core.excludesfile
+# If empty:
+git config --global core.excludesfile ~/.config/git/ignore
+```
+
+Add these lines to that file:
+
+```gitignore
+.swarf/
+.mise.local.toml
+```
+
+If you use [mise](https://mise.jdx.dev/), swarf installs an enter hook that
+auto-links files when you `cd` into a project. Mise is optional — you can
+run `swarf link` manually instead.
+
 ## Quick start
+
+### Option A: Git backend (you control the remote)
+
+Best when you can create a private companion repo (personal projects, GitHub).
 
 ```bash
 cd ~/projects/my-app
 
-# Initialize with git backend
-swarf init --backend git --remote git@github.com:you/my-app-internal.git
+# Create a private repo for your swarf (GitHub, Gitea, bare local, etc.)
+# Example with a local bare repo for testing:
+git init --bare ~/swarf-remotes/my-app.git
 
-# Initialize with Google Drive backend (for work repos you don't control)
-swarf init --backend rclone --remote "gdrive:swarf/my-app"
+# Initialize
+swarf init --backend git --remote ~/swarf-remotes/my-app.git
 
-# That's it. The daemon handles everything from here.
+# Push the initial commit so the daemon can sync later
+cd .swarf && git push -u origin master && cd ..
+
+# Start the daemon
+swarf daemon start
 ```
 
-After `swarf init`:
-- `.swarf/` exists with standard directory structure
-- A mise enter hook is installed (auto-linking on `cd`)
-- The daemon is watching for changes (auto-syncing)
-- Your global gitignore hides `.swarf/` from the host repo
+### Option B: Rclone backend (Google Drive, Dropbox, S3, etc.)
 
-## Usage
+Best for work environments where you can't easily create a private git repo.
 
 ```bash
-# Check sync status across all projects
-swarf status
+# 1. Install rclone (if not already)
+brew install rclone        # macOS
+# or: sudo apt install rclone  # Debian/Ubuntu
+# or: mise use rclone          # via mise
 
-# Validate setup is healthy
-swarf doctor
+# 2. Configure a Google Drive remote (one-time, interactive)
+rclone config
+#   -> n (new remote)
+#   -> name: gdrive
+#   -> type: drive
+#   -> scope: drive.file (option 2 — can only see files rclone created)
+#   -> auto config: y (opens browser)
+#   -> done
 
-# Start/stop the background daemon
+# 3. Verify it works
+rclone lsd gdrive:
+
+# 4. Initialize swarf
+cd ~/projects/my-app
+swarf init --backend rclone --remote "gdrive:swarf/my-app"
+
+# 5. Start the daemon
 swarf daemon start
-swarf daemon stop
-swarf daemon status
+```
 
-# Install daemon as a system service (auto-start on login)
+The `drive.file` scope means the OAuth token can only access files swarf
+created — it cannot read your other Google Drive documents.
+
+## Using swarf
+
+### Adding content
+
+Put files directly into `.swarf/`:
+
+```bash
+# Research notes, design docs, anything you want backed up
+echo "# Architecture Notes" > .swarf/docs/design/architecture.md
+echo "# Open Questions" >> .swarf/open-questions.md
+```
+
+The daemon auto-commits and syncs after a 5-second quiet period.
+
+### Linking files into the host tree
+
+Files in `.swarf/links/` are symlinked into your project root. This is how
+you make agent config files appear in the right place:
+
+```bash
+# Create an AGENTS.md that appears at the project root
+echo "# Agent Instructions" > .swarf/links/AGENTS.md
+
+# Create the symlinks
+swarf link
+
+# Verify
+ls -la AGENTS.md
+# AGENTS.md -> .swarf/links/AGENTS.md
+```
+
+Directory structure in `links/` mirrors the host tree:
+
+```bash
+# This creates ./.copilot/skills/my-skill/SKILL.md
+mkdir -p .swarf/links/.copilot/skills/my-skill/
+echo "# Skill" > .swarf/links/.copilot/skills/my-skill/SKILL.md
+swarf link
+```
+
+Add any linked filenames to your global gitignore so the host repo ignores
+the symlinks too (e.g., add `AGENTS.md` to `~/.config/git/ignore`).
+
+### Checking health
+
+```bash
+swarf doctor    # validate setup: gitignore, git repo, remote, links
+swarf status    # show all projects, sync state, daemon status
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `swarf init` | Initialize `.swarf/` in current project |
+| `swarf link` | Create/repair symlinks from `.swarf/links/` |
+| `swarf doctor` | Validate setup health |
+| `swarf status` | Show all drawers and sync status |
+| `swarf daemon start` | Start background sync daemon |
+| `swarf daemon stop` | Stop the daemon |
+| `swarf daemon status` | Check if daemon is running |
+| `swarf daemon install` | Install as systemd user service (auto-start on login) |
+
+### Init options
+
+```bash
+swarf init --backend git --remote <url>     # git backend with remote
+swarf init --backend rclone --remote <path> # rclone backend
+swarf init                                  # git backend, no remote (local only)
+```
+
+### Daemon as a system service
+
+To have the daemon start automatically on login:
+
+```bash
 swarf daemon install
 ```
 
-## Backends
-
-### Git (default)
-
-Commits changes after a quiet period, pushes to a remote. Best for personal
-projects where you can create a private companion repo.
+This creates a systemd user service. Check logs with:
 
 ```bash
-swarf init --backend git --remote git@github.com:you/project-internal.git
+journalctl --user -u swarf -f
 ```
-
-### Rclone
-
-Syncs the `.swarf/` directory to any rclone-supported remote: Google Drive,
-Dropbox, S3, OneDrive, etc. Best for work environments where you can't
-easily create a private git repo.
-
-```bash
-# First: configure rclone with Google Drive (one-time)
-# Use drive.file scope for minimal permissions
-rclone config
-
-# Then:
-swarf init --backend rclone --remote "gdrive:swarf/work-monorepo"
-```
-
-The `drive.file` OAuth scope means the token can only access files swarf
-created — it can't read your other Google Drive documents.
 
 ## How it works on a company monorepo
 
@@ -140,6 +222,7 @@ machine, including ones you don't control. No changes to the monorepo's
 ```bash
 cd ~/work/big-monorepo
 swarf init --backend rclone --remote "gdrive:swarf/work"
+swarf daemon start
 ```
 
 Your agent config, personal notes, and research are now durable and synced,
@@ -152,21 +235,6 @@ the daemon runs on the **host**, not inside the container. The container
 mounts the workspace directory, so file changes from agents are visible to
 the host filesystem. The daemon picks them up and syncs automatically. Agents
 never need credentials.
-
-## Global gitignore
-
-Swarf relies on your global gitignore (`~/.config/git/ignore` or equivalent)
-to hide `.swarf/` and linked files from host repos. `swarf init` checks and
-prompts you to add entries if missing:
-
-```gitignore
-/.swarf/
-/.mise.local.toml
-AGENTS.md
-```
-
-This is the invisible layer that makes swarf work on any repo without
-modifying it.
 
 ## Configuration
 
