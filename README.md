@@ -51,65 +51,63 @@ uv tool install swarf
 
 ## Quick start
 
-### 1. Configure your backend (one-time)
-
-Create `~/.config/swarf/config.toml` with your backup destination. This is
-a single location shared across every project on your machine.
-
-**Option A: Git backend** — best for personal use (GitHub, Gitea, etc.)
-
 ```bash
-# Create one private repo for all your swarf
-gh repo create my-swarf --private
-
-mkdir -p ~/.config/swarf
-cat > ~/.config/swarf/config.toml << 'EOF'
-[sync]
-backend = "git"
-remote = "git@github.com:you/my-swarf.git"
-EOF
+cd ~/projects/my-app
+swarf init
 ```
 
-**Option B: Google Drive** — best for work (no repo needed)
+That's it. If this is your first time, `swarf init` walks you through
+everything:
+
+```
+$ swarf init
+
+No global config found. Let's set one up.
+
+Backend (git/rclone) [git]: git
+Remote URL: git@github.com:you/my-swarf.git
+✓ Wrote ~/.config/swarf/config.toml
+
+Created .mise.local.toml with enter hook.
+
+✓ Initialized swarf in /home/you/projects/my-app/.swarf
+  Backend: git
+  Remote: git@github.com:you/my-swarf.git
+
+Daemon is not running. Install as system service? [Y/n]: y
+✓ Installed and started swarf daemon
+```
+
+Next time you run `swarf init` in another project, it reuses your config
+and the daemon picks it up automatically — no prompts.
+
+### Rclone backend (Google Drive, Dropbox, S3, etc.)
+
+If you prefer cloud storage over a git repo, install rclone first:
 
 ```bash
-# Install rclone and configure a Google Drive remote
 brew install rclone   # or: mise use rclone
 rclone config
 #   -> n (new remote), name: gdrive, type: drive
 #   -> scope: drive.file (option 2 — can only see files rclone created)
 #   -> auto config: y (opens browser)
-
-# Verify it works
-rclone lsd gdrive:
-
-mkdir -p ~/.config/swarf
-cat > ~/.config/swarf/config.toml << 'EOF'
-[sync]
-backend = "rclone"
-remote = "gdrive:swarf"
-EOF
 ```
 
-### 2. Verify your setup
+Then run `swarf init` and enter `rclone` as the backend and `gdrive:swarf`
+as the remote. The `drive.file` scope means the OAuth token can only access
+files swarf created — it cannot read your other Google Drive documents.
+
+### Verify your setup
 
 ```bash
 swarf doctor
-# ✓ Global config exists
-# ✓ Backend reachable
+# ✓ Global config: backend=git, remote=git@github.com:you/my-swarf.git
+# ✓ Git remote reachable
+# ✓ Daemon is running
+# ✓ .swarf/ directory exists
+# ✓ .swarf/ is gitignored
+# ...
 ```
-
-### 3. Start using swarf in any project
-
-```bash
-cd ~/projects/my-app
-swarf init
-swarf daemon start
-```
-
-That's it. `swarf init` creates `.swarf/`, configures `.git/info/exclude`,
-and installs a [mise](https://mise.jdx.dev/) enter hook. The daemon syncs
-all your projects to the backend you configured in step 1.
 
 ## Using swarf
 
@@ -144,9 +142,9 @@ ls -la AGENTS.md
 # AGENTS.md -> .swarf/links/AGENTS.md
 ```
 
-You can also create files directly in `.swarf/links/` — the mise enter hook
-runs `swarf link` automatically when you `cd` into the project, creating
-symlinks for any new files.
+You can also configure auto-sweep in `~/.config/swarf/config.toml` to
+automatically sweep common files (like `AGENTS.md`) whenever you `cd` into
+a project. See [Configuration](#configuration).
 
 ### Checking health
 
@@ -206,13 +204,19 @@ never need credentials.
 
 ## Configuration
 
-Global config lives at `~/.config/swarf/config.toml`:
+Global config lives at `~/.config/swarf/config.toml` (created automatically
+by `swarf init` on first run):
 
 ```toml
 [sync]
 backend = "git"          # or "rclone"
 remote = "origin"        # git remote or rclone remote path
 debounce = "5s"          # wait this long after last change before syncing
+
+[auto_sweep]
+# Files to automatically sweep into .swarf/links/ when entering a project.
+# Only swept if the file exists and isn't already a symlink.
+paths = ["AGENTS.md", "CLAUDE.md", ".copilot/skills/"]
 ```
 
 This is set once and applies to all projects.
