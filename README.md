@@ -43,10 +43,17 @@ my-project/                      <- your repo (public)
 
 ## Install
 
-Requires Python 3.13+.
-
 ```bash
-uv tool install swarf
+# Via pip / uvx (any platform — no Go required)
+pip install swarf
+# or: uvx swarf
+
+# Via Go
+go install github.com/mschulkind-oss/swarf@latest
+
+# From source
+git clone https://github.com/mschulkind-oss/swarf && cd swarf
+just deploy   # builds and copies to ~/.local/bin/
 ```
 
 ## Quick start

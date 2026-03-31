@@ -55,3 +55,43 @@ func TestInfof(t *testing.T) {
 		t.Fatalf("unexpected output: %q", buf.String())
 	}
 }
+
+func TestHeader(t *testing.T) {
+	var buf bytes.Buffer
+	Stdout = &buf
+	defer func() { Stdout = nil }()
+	Header("Section Title")
+	if !strings.Contains(buf.String(), "Section Title") {
+		t.Fatalf("unexpected output: %q", buf.String())
+	}
+}
+
+func TestHint(t *testing.T) {
+	var buf bytes.Buffer
+	Stdout = &buf
+	defer func() { Stdout = nil }()
+	Hint("a hint")
+	if !strings.Contains(buf.String(), "a hint") {
+		t.Fatalf("unexpected output: %q", buf.String())
+	}
+}
+
+func TestColorNonTTY(t *testing.T) {
+	// When Stdout is a buffer (not a TTY), Color should strip codes
+	var buf bytes.Buffer
+	Stdout = &buf
+	defer func() { Stdout = nil }()
+	got := Color(Green, "hello")
+	if got != "hello" {
+		t.Fatalf("expected plain text, got %q", got)
+	}
+}
+
+func TestIsTTYNonFile(t *testing.T) {
+	var buf bytes.Buffer
+	Stdout = &buf
+	defer func() { Stdout = nil }()
+	if IsTTY() {
+		t.Fatal("expected false for non-file writer")
+	}
+}
