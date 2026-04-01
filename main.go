@@ -315,8 +315,29 @@ entries, mise hooks, and symlink integrity.
 Green checks pass, red checks need attention.`,
 		Example: `  swarf doctor`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			result := doctor.RunAllChecks("")
 			allOk := true
-			for _, c := range doctor.RunAllChecks("") {
+
+			if result.InJail {
+				console.Header("Project checks (no global config — running in container?)")
+				console.Hint("Only local commands work here: sweep, link, enter.")
+				console.Hint("The host daemon handles sync and backup.")
+				console.Info("")
+			} else {
+				console.Header("System")
+				for _, c := range result.System {
+					if c.OK {
+						console.Ok(c.Msg)
+					} else {
+						console.Error(c.Msg)
+						allOk = false
+					}
+				}
+				console.Info("")
+				console.Header("Project")
+			}
+
+			for _, c := range result.Project {
 				if c.OK {
 					console.Ok(c.Msg)
 				} else {
@@ -324,6 +345,7 @@ Green checks pass, red checks need attention.`,
 					allOk = false
 				}
 			}
+
 			if !allOk {
 				return fmt.Errorf("some checks failed")
 			}
