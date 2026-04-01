@@ -33,12 +33,6 @@ func EnsureStore(hostRoot string, gc *config.GlobalConfig) error {
 		return fmt.Errorf("git init store: %w", err)
 	}
 
-	for _, key := range []string{"user.name", "user.email"} {
-		if val := gitexec.ConfigGet(hostRoot, key); val != "" {
-			gitexec.ConfigSet(paths.StoreDir, key, val)
-		}
-	}
-
 	if gc.Backend == "git" && gc.Remote != "" {
 		gitexec.AddRemote(paths.StoreDir, "origin", gc.Remote)
 	}
