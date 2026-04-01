@@ -43,7 +43,8 @@ func Run(ctx context.Context) error {
 	return watchProjects(ctx, debouncer)
 }
 
-// mirrorAllProjects copies each project's .swarf/ content into the central store.
+// mirrorAllProjects copies each project's .swarf/ content into the central store,
+// including deletions (files removed from .swarf/ are removed from the store).
 func mirrorAllProjects() {
 	drawers := config.ReadDrawers()
 	for _, d := range drawers {
@@ -58,37 +59,84 @@ func mirrorAllProjects() {
 	}
 }
 
-// mirrorDir recursively copies src into dst, preserving structure.
+// mirrorDir recursively syncs src into dst, preserving structure.
+// Files that exist in dst but not in src are deleted.
 func mirrorDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+
+	// Phase 1: Copy new/changed files from src to dst.
+	var copyErr error
+	filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			slog.Warn("mirror: walk error", "path", path, "err", err)
+			return nil // continue walking
 		}
 		rel, _ := filepath.Rel(src, path)
 		if rel == "." {
-			return os.MkdirAll(dst, 0o755)
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		// Only copy if source is newer or different size
-		srcInfo, err := d.Info()
-		if err != nil {
 			return nil
 		}
+		target := filepath.Join(dst, rel)
+
+		if d.IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				slog.Warn("mirror: mkdir failed", "path", target, "err", err)
+				copyErr = err
+			}
+			return nil
+		}
+
+		// Resolve symlinks: read the content, copy as regular file.
+		srcInfo, err := os.Stat(path) // follows symlinks
+		if err != nil {
+			slog.Warn("mirror: stat failed", "path", path, "err", err)
+			return nil
+		}
+
+		// Skip if destination is already up-to-date.
 		if dstInfo, err := os.Stat(target); err == nil {
 			if srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
 				return nil
 			}
 		}
+
 		data, err := os.ReadFile(path)
 		if err != nil {
+			slog.Warn("mirror: read failed", "path", path, "err", err)
+			copyErr = err
 			return nil
 		}
 		os.MkdirAll(filepath.Dir(target), 0o755)
-		return os.WriteFile(target, data, srcInfo.Mode())
+		if err := os.WriteFile(target, data, srcInfo.Mode()); err != nil {
+			slog.Warn("mirror: write failed", "path", target, "err", err)
+			copyErr = err
+		}
+		return nil
 	})
+
+	// Phase 2: Delete files/dirs in dst that no longer exist in src.
+	filepath.WalkDir(dst, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(dst, path)
+		if rel == "." {
+			return nil
+		}
+		srcPath := filepath.Join(src, rel)
+		if _, err := os.Lstat(srcPath); os.IsNotExist(err) {
+			if d.IsDir() {
+				os.RemoveAll(path)
+				return filepath.SkipDir
+			}
+			os.Remove(path)
+			slog.Debug("mirror: deleted stale file", "path", rel)
+		}
+		return nil
+	})
+
+	return copyErr
 }
 
 func makeBackend(backendType, remote string) backends.SyncBackend {
@@ -111,15 +159,27 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 
 	watched := make(map[string]bool)
 	refreshWatches := func() {
+		// Build set of current project dirs.
+		current := make(map[string]bool)
 		drawers := config.ReadDrawers()
 		for _, d := range drawers {
 			sd := paths.SwarfDir(d.Host)
+			current[sd] = true
 			if !paths.IsDir(sd) || watched[sd] {
 				continue
 			}
 			if err := addRecursive(watcher, sd); err == nil {
 				watched[sd] = true
 				slog.Info("Watching project", "name", d.Slug, "path", sd)
+			}
+		}
+
+		// Remove watches for projects that are no longer registered.
+		for sd := range watched {
+			if !current[sd] {
+				watcher.Remove(sd)
+				delete(watched, sd)
+				slog.Info("Unwatched removed project", "path", sd)
 			}
 		}
 	}
@@ -139,8 +199,8 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 	for {
 		select {
 		case <-ctx.Done():
-			// Final mirror + sync before shutdown
-			mirrorAllProjects()
+			// Flush pending changes before shutdown.
+			debouncer.Flush()
 			return ctx.Err()
 		case <-ticker.C:
 			refreshWatches()
