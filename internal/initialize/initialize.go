@@ -75,11 +75,11 @@ func Run(globalConfig *config.GlobalConfig) error {
 			return fmt.Errorf("seed from store: %w", err)
 		}
 		console.Ok(fmt.Sprintf("Restored %s from store.", slug))
-	} else {
-		linksDir := filepath.Join(sd, ".links")
-		if err := os.MkdirAll(linksDir, 0o755); err != nil {
-			return fmt.Errorf("create swarf/: %w", err)
-		}
+	}
+
+	// Always ensure .links/ exists, even if the store didn't have one.
+	if err := os.MkdirAll(paths.LinksDir(hostRoot), 0o755); err != nil {
+		return fmt.Errorf("create .links/: %w", err)
 	}
 
 	exclude.UpdateExcludes(hostRoot, nil)
