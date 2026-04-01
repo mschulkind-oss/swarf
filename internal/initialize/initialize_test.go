@@ -38,7 +38,7 @@ func TestInitCreatesLinksDir(t *testing.T) {
 	linksDir := paths.LinksDir(repo)
 	fi, err := os.Stat(linksDir)
 	if err != nil || !fi.IsDir() {
-		t.Fatal("expected swarf/links/ to be a directory")
+		t.Fatal("expected swarf/.links/ to be a directory")
 	}
 }
 

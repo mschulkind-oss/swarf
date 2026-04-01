@@ -117,7 +117,7 @@ func TestCheckSwarfDirPlainDir(t *testing.T) {
 
 func TestCheckAndFixLinksHealthy(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	target := filepath.Join(repo, "AGENTS.md")
 	os.Symlink(source, target)
@@ -129,7 +129,7 @@ func TestCheckAndFixLinksHealthy(t *testing.T) {
 
 func TestCheckAndFixLinksMissing(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	// Don't create the symlink — CheckAndFixLinks should create it
 	c := doctor.CheckAndFixLinks(repo)
@@ -156,7 +156,7 @@ func TestCheckAndFixLinksNoDir(t *testing.T) {
 
 func TestCheckSymlinksRelativeAllGood(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	// Create a correct relative symlink.
 	target := filepath.Join(repo, "AGENTS.md")
@@ -174,7 +174,7 @@ func TestCheckSymlinksRelativeAllGood(t *testing.T) {
 
 func TestCheckSymlinksRelativeFixesAbsolute(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	// Create an absolute symlink (the old behavior).
 	target := filepath.Join(repo, "AGENTS.md")

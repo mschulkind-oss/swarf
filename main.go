@@ -53,7 +53,7 @@ are gitignored too.
 
 Only use 'swarf sweep' for files that must appear at a specific path in
 the project tree (e.g. AGENTS.md, CLAUDE.md). Sweep moves the file into
-swarf/links/ and symlinks it back so tools find it where they expect.
+swarf/.links/ and symlinks it back so tools find it where they expect.
 For everything else, just write directly to swarf/.
 
 Get started:
@@ -127,12 +127,12 @@ must appear at a specific path in the project tree (like AGENTS.md).`,
 func sweepCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "sweep <file>...",
-		Short:   "Move a file into swarf/links/ and symlink it back",
+		Short:   "Move a file into swarf/.links/ and symlink it back",
 		GroupID: groupCore,
 		Args:    cobra.MinimumNArgs(1),
 		Long: `Sweep is for files that must live at a specific path in the project tree
 (e.g. AGENTS.md, CLAUDE.md, .copilot/skills/). It moves the file into
-swarf/links/ and replaces it with a symlink, so tools find it where they
+swarf/.links/ and replaces it with a symlink, so tools find it where they
 expect while swarf owns the actual content.
 
 For files that don't need a fixed location, skip sweep — just put them
@@ -155,8 +155,8 @@ func unlinkCmd() *cobra.Command {
 		GroupID: groupCore,
 		Args:    cobra.MinimumNArgs(1),
 		Long: `Unlink reverses a previous sweep. It reads the file content from
-swarf/links/, writes it back as a regular file in the project tree,
-removes the symlink and the swarf/links/ copy, and cleans up the
+swarf/.links/, writes it back as a regular file in the project tree,
+removes the symlink and the swarf/.links/ copy, and cleans up the
 git exclude entry.
 
 This works inside jails and containers where the daemon isn't running.`,

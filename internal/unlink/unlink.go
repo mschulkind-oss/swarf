@@ -14,11 +14,11 @@ import (
 
 var (
 	ErrNoProject = errors.New("not inside a swarf project — run 'swarf init' first")
-	ErrNoLinks   = errors.New("swarf links/ does not exist")
+	ErrNoLinks   = errors.New("swarf .links/ does not exist")
 )
 
 // Run reverses sweep: replaces symlinks with the actual file contents and
-// removes the file from swarf/links/. Works inside jails where the daemon
+// removes the file from swarf/.links/. Works inside jails where the daemon
 // isn't available.
 func Run(filePaths []string, hostRoot string) error {
 	if hostRoot == "" {
@@ -60,13 +60,13 @@ func unlinkOne(pathStr, hostRoot, linksDir string) (string, bool) {
 
 	source := filepath.Join(linksDir, rel)
 
-	// Verify the source exists in swarf/links/.
+	// Verify the source exists in swarf/.links/.
 	if _, err := os.Stat(source); os.IsNotExist(err) {
-		console.Error(fmt.Sprintf("%s is not a swept file (not in %s/links/).", rel, paths.SwarfDirName))
+		console.Error(fmt.Sprintf("%s is not a swept file (not in %s/.links/).", rel, paths.SwarfDirName))
 		return "", false
 	}
 
-	// Read the content from swarf/links/.
+	// Read the content from swarf/.links/.
 	data, err := os.ReadFile(source)
 	if err != nil {
 		console.Error(fmt.Sprintf("Failed to read %s: %v", rel, err))
@@ -88,10 +88,10 @@ func unlinkOne(pathStr, hostRoot, linksDir string) (string, bool) {
 		return "", false
 	}
 
-	// Remove from swarf/links/.
+	// Remove from swarf/.links/.
 	os.Remove(source)
 
-	// Clean up empty parent dirs in swarf/links/.
+	// Clean up empty parent dirs in swarf/.links/.
 	cleanEmptyParents(filepath.Dir(source), linksDir)
 
 	console.Infof("  unlinked %s", rel)

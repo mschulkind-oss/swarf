@@ -25,7 +25,7 @@ func xdg(env, fallback string) string {
 }
 
 func SwarfDir(hostRoot string) string     { return filepath.Join(hostRoot, SwarfDirName) }
-func LinksDir(hostRoot string) string     { return filepath.Join(SwarfDir(hostRoot), "links") }
+func LinksDir(hostRoot string) string     { return filepath.Join(SwarfDir(hostRoot), ".links") }
 func StoreProjectDir(hostRoot string) string { return filepath.Join(StoreDir, ProjectSlug(hostRoot)) }
 
 func ProjectSlug(hostRoot string) string {

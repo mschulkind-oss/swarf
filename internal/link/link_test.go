@@ -12,7 +12,7 @@ import (
 
 func TestLinkCreatesSymlinks(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 
 	result, err := link.Run(repo, false)
@@ -41,7 +41,7 @@ func TestLinkCreatesSymlinks(t *testing.T) {
 
 func TestLinkIdempotent(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 
 	link.Run(repo, false)
@@ -59,7 +59,7 @@ func TestLinkIdempotent(t *testing.T) {
 
 func TestLinkNestedDirs(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	nested := filepath.Join(paths.SwarfDir(repo), "links", "docs", "notes.md")
+	nested := filepath.Join(paths.LinksDir(repo), "docs", "notes.md")
 	os.MkdirAll(filepath.Dir(nested), 0o755)
 	os.WriteFile(nested, []byte("# Notes\n"), 0o644)
 
@@ -89,7 +89,7 @@ func TestLinkNestedDirs(t *testing.T) {
 
 func TestLinkWarnsOnRealFile(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("real file\n"), 0o644)
 
@@ -127,7 +127,7 @@ func TestLinkNoProject(t *testing.T) {
 
 func TestLinkFixesStaleSymlink(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 
 	// Create stale symlink pointing to wrong location

@@ -84,11 +84,11 @@ const architecture = `
   my-project/
   ├── src/
   ├── swarf/                     Real directory (auto-excluded from git)
-  │   ├── links/                 Files projected into the host tree
+  │   ├── .links/                Files projected into the host tree
   │   │   ├── AGENTS.md
   │   │   └── CLAUDE.md
   │   └── docs/                  Free-form storage (research, design, etc.)
-  ├── AGENTS.md -> swarf/links/AGENTS.md   (symlink)
+  ├── AGENTS.md -> swarf/.links/AGENTS.md  (symlink)
   └── .git/info/exclude          Auto-managed by swarf
 
   Central backup store
@@ -111,7 +111,7 @@ const architecture = `
      changes to ~/.local/share/swarf/ (a git repo), then pushes to remote.
      One daemon, one remote, one backup for all projects.
 
-  3. Swept links: Files in swarf/links/ are symlinked into the host tree.
+  3. Swept links: Files in swarf/.links/ are symlinked into the host tree.
      This lets AGENTS.md appear in the project root while living in swarf/.
 
   4. .git/info/exclude: Swarf manages exclude entries in a fenced section.
@@ -151,7 +151,7 @@ const quickstart = `
 
      swarf sweep AGENTS.md
 
-     This moves the file into swarf/links/ and replaces it with a symlink.
+     This moves the file into swarf/.links/ and replaces it with a symlink.
      The original path is auto-excluded from git.
 
   5. Verify everything
@@ -204,7 +204,7 @@ const configDoc = `
 const sweepDoc = `
   SWEEPING FILES
 
-  'swarf sweep' moves a file from the host repo into swarf/links/ and
+  'swarf sweep' moves a file from the host repo into swarf/.links/ and
   replaces it with a symlink. This lets files like AGENTS.md appear in
   the repo tree while actually living in swarf's store.
 
@@ -214,8 +214,8 @@ const sweepDoc = `
 
   What happens:
 
-    1. File is moved to swarf/links/<path>
-    2. A symlink is created: <path> -> swarf/links/<path>
+    1. File is moved to swarf/.links/<path>
+    2. A symlink is created: <path> -> swarf/.links/<path>
     3. An exclude entry is added to .git/info/exclude
     4. The daemon picks up the change and syncs
 
@@ -227,7 +227,7 @@ const sweepDoc = `
   Notes:
 
   - Sweep is idempotent — running it on an already-swept file is a no-op
-  - Nested paths work: 'swarf sweep docs/design.md' creates swarf/links/docs/design.md
+  - Nested paths work: 'swarf sweep docs/design.md' creates swarf/.links/docs/design.md
   - The symlink target is relative, so it works across machines
 `
 
@@ -261,7 +261,7 @@ const daemonDoc = `
     3. Also watches project roots for auto-sweep target files
     4. On any file change, resets a debounce timer (default 5s)
     5. When the timer fires:
-       a. Re-links any missing symlinks from swarf/links/
+       a. Re-links any missing symlinks from swarf/.links/
        b. Mirrors each project's swarf/ to ~/.local/share/swarf/<project>/
        c. Commits and pushes the central store (git or rclone)
     6. New projects are picked up automatically (polled every 30s)

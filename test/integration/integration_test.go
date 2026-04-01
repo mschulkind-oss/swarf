@@ -175,9 +175,9 @@ func TestE2ESweepAndRelink(t *testing.T) {
 		t.Fatal("expected symlink after sweep")
 	}
 
-	// Should exist in .swarf/links/
-	if _, err := os.Stat(filepath.Join(e.repo, "swarf", "links", "AGENTS.md")); err != nil {
-		t.Fatal("expected file in .swarf/links/")
+	// Should exist in swarf/.links/
+	if _, err := os.Stat(filepath.Join(e.repo, "swarf", ".links", "AGENTS.md")); err != nil {
+		t.Fatal("expected file in swarf/.links/")
 	}
 
 	// Remove the symlink, then doctor should re-create it

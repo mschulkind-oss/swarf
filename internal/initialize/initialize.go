@@ -76,7 +76,7 @@ func Run(globalConfig *config.GlobalConfig) error {
 		}
 		console.Ok(fmt.Sprintf("Restored %s from store.", slug))
 	} else {
-		linksDir := filepath.Join(sd, "links")
+		linksDir := filepath.Join(sd, ".links")
 		if err := os.MkdirAll(linksDir, 0o755); err != nil {
 			return fmt.Errorf("create swarf/: %w", err)
 		}
@@ -85,7 +85,7 @@ func Run(globalConfig *config.GlobalConfig) error {
 	exclude.UpdateExcludes(hostRoot, nil)
 	config.RegisterDrawer(slug, hostRoot)
 
-	// Re-create symlinks from swarf/links/ (e.g. after clone + init).
+	// Re-create symlinks from swarf/.links/ (e.g. after clone + init).
 	link.Run(hostRoot, true)
 
 	console.Ok(fmt.Sprintf("Initialized swarf for %s", slug))

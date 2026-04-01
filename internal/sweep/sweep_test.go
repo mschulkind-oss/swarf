@@ -34,9 +34,9 @@ func TestSweepMoveAndSymlink(t *testing.T) {
 		t.Fatalf("expected relative symlink, got absolute: %s", linkTarget)
 	}
 
-	dest := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	dest := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
-		t.Fatal("expected file in swarf/links/")
+		t.Fatal("expected file in swarf/.links/")
 	}
 }
 
@@ -59,7 +59,7 @@ func TestSweepNestedPath(t *testing.T) {
 
 func TestSweepAlreadySymlink(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	target := filepath.Join(repo, "AGENTS.md")
 	os.Symlink(source, target)
@@ -94,7 +94,7 @@ func TestSweepAlreadyInLinks(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	// Put file in links and in project root, then sweep
 	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# Agents\n"), 0o644)
-	os.WriteFile(filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md"), []byte("# Old\n"), 0o644)
+	os.WriteFile(filepath.Join(paths.LinksDir(repo), "AGENTS.md"), []byte("# Old\n"), 0o644)
 
 	sweep.Run([]string{"AGENTS.md"}, repo)
 	// Should skip — file already in links

@@ -162,7 +162,7 @@ func CheckGitignore(cwd string) []Check {
 	return checks
 }
 
-// CheckAndFixLinks checks that all files in swarf/links/ have corresponding
+// CheckAndFixLinks checks that all files in swarf/.links/ have corresponding
 // symlinks in the project root. Missing symlinks are created automatically.
 func CheckAndFixLinks(cwd string) Check {
 	linksDir := paths.LinksDir(cwd)
