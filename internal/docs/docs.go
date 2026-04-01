@@ -130,16 +130,21 @@ const quickstart = `
 
   1. Install swarf
 
-     pip install swarf          # or: uvx swarf
-     go install github.com/mschulkind-oss/swarf@latest   # if you have Go
+     brew install swarf                                     # macOS / Linux
+     pipx install swarf                                     # via PyPI
+     go install github.com/mschulkind-oss/swarf@latest      # via Go
+
+     Don't use 'pip install' in a venv or 'uvx' — the daemon breaks
+     when the venv disappears.
 
   2. Initialize your first project
 
      cd ~/projects/my-app
      swarf init
 
-     On first run, swarf walks you through global config (backend, remote).
-     This only happens once — subsequent projects reuse your config.
+     On first run, init walks you through global config (backend, remote)
+     and offers to install the daemon service. This only happens once —
+     subsequent projects reuse your config.
 
   3. Add content to swarf/
 
@@ -156,17 +161,13 @@ const quickstart = `
 
   5. Verify everything
 
+     swarf status       # show sync state and remote verification
      swarf doctor       # check config, store, remote, daemon, links
-     swarf status       # show all projects and sync state
 
   6. Set up another project (reuses existing config and store)
 
      cd ~/projects/other-app
      swarf init          # instant — no prompts
-
-  7. Start the daemon as a system service (auto-start on login)
-
-     swarf daemon install
 `
 
 const configDoc = `
@@ -180,6 +181,12 @@ const configDoc = `
   remote = ""              # git remote URL or rclone remote:path
   debounce = "5s"          # wait time after last change before syncing
 
+  [auto_sweep]
+  paths = ["AGENTS.md"]    # files to sweep automatically when they appear
+
+  See docs/CONFIGURATION.md for the full reference (all options, all
+  file locations, troubleshooting).
+
   Drawer registry: ~/.config/swarf/drawers.toml
   (Managed automatically — one entry per initialized project)
 
@@ -187,12 +194,10 @@ const configDoc = `
   slug = "my-project"
   host = "/home/you/projects/my-project"
 
-  [[drawer]]
-  slug = "other-project"
-  host = "/home/you/work/other-project"
-
   Per-project files (auto-created by 'swarf init'):
 
+  swarf/                   local storage directory
+  swarf/.links/            files projected into the host tree
   .git/info/exclude        fenced section hiding swarf/ and swept files
 
   Environment variables:
