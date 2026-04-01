@@ -167,7 +167,13 @@ func CheckGitignore(cwd string) []Check {
 func CheckAndFixLinks(cwd string) Check {
 	linksDir := paths.LinksDir(cwd)
 	if fi, err := os.Stat(linksDir); err != nil || !fi.IsDir() {
-		return Check{"links", true, "No links directory"}
+		// Create .links/ if swarf/ exists but .links/ is missing.
+		if paths.IsDir(paths.SwarfDir(cwd)) {
+			if err := os.MkdirAll(linksDir, 0o755); err != nil {
+				return Check{"links", false, fmt.Sprintf("Failed to create .links/: %v", err)}
+			}
+		}
+		return Check{"links", true, "No linked files"}
 	}
 
 	result, err := link.Run(cwd, true)
