@@ -134,12 +134,10 @@ func TestE2EInitAndDoctor(t *testing.T) {
 func TestE2EInitAlreadyInitialized(t *testing.T) {
 	e := setup(t)
 	e.swarf("init")
+	// Double init is idempotent — doctor just confirms everything is OK.
 	out, err := e.swarf("init")
-	if err == nil {
-		t.Fatal("expected error for double init")
-	}
-	if !strings.Contains(out, "already initialized") {
-		t.Fatalf("unexpected error: %s", out)
+	if err != nil {
+		t.Fatalf("double init should succeed (idempotent), got error: %s\n%s", err, out)
 	}
 }
 
@@ -150,7 +148,7 @@ func TestE2EInitNotGitRepo(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for non-git directory")
 	}
-	if !strings.Contains(out, "not inside a git repository") {
+	if !strings.Contains(strings.ToLower(out), "not inside a git repository") {
 		t.Fatalf("unexpected error: %s", out)
 	}
 }
