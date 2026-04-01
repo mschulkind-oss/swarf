@@ -14,43 +14,52 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
 
-func TestCheckGlobalConfigMissing(t *testing.T) {
+func TestCheckAndFixGlobalConfigMissing(t *testing.T) {
 	testutil.GitRepo(t)
-	c := doctor.CheckGlobalConfig()
+	gc, c := doctor.CheckAndFixGlobalConfig(false)
 	if c.OK {
 		t.Fatal("expected config missing")
 	}
+	if gc != nil {
+		t.Fatal("expected nil config")
+	}
 }
 
-func TestCheckGlobalConfigPresent(t *testing.T) {
+func TestCheckAndFixGlobalConfigPresent(t *testing.T) {
 	testutil.GitRepo(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "test", Debounce: "5s"})
-	c := doctor.CheckGlobalConfig()
+	gc, c := doctor.CheckAndFixGlobalConfig(false)
 	if !c.OK {
 		t.Fatalf("expected config present: %s", c.Msg)
 	}
-}
-
-func TestCheckGlobalConfigNoRemote(t *testing.T) {
-	testutil.GitRepo(t)
-	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
-	c := doctor.CheckGlobalConfig()
-	if c.OK {
-		t.Fatal("expected no remote error")
+	if gc == nil {
+		t.Fatal("expected non-nil config")
 	}
 }
 
-func TestCheckStoreExists(t *testing.T) {
+func TestCheckAndFixGlobalConfigNoRemote(t *testing.T) {
+	testutil.GitRepo(t)
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
+	gc, c := doctor.CheckAndFixGlobalConfig(false)
+	if c.OK {
+		t.Fatal("expected no remote error")
+	}
+	if gc == nil {
+		t.Fatal("expected non-nil config even without remote")
+	}
+}
+
+func TestCheckAndFixStoreExists(t *testing.T) {
 	testutil.InitializedSwarf(t)
-	c := doctor.CheckStoreExists()
+	c := doctor.CheckAndFixStore(nil)
 	if !c.OK {
 		t.Fatalf("expected store to exist: %s", c.Msg)
 	}
 }
 
-func TestCheckStoreMissing(t *testing.T) {
+func TestCheckAndFixStoreMissing(t *testing.T) {
 	testutil.GitRepo(t)
-	c := doctor.CheckStoreExists()
+	c := doctor.CheckAndFixStore(nil)
 	if c.OK {
 		t.Fatal("expected store to not exist")
 	}
@@ -81,37 +90,6 @@ func TestCheckDaemonStalePid(t *testing.T) {
 	c := doctor.CheckDaemonRunning()
 	if c.OK {
 		t.Fatal("expected daemon not running (stale)")
-	}
-}
-
-func TestCheckSwarfDirExists(t *testing.T) {
-	repo := testutil.InitializedSwarf(t)
-	c := doctor.CheckSwarfDirExists(repo)
-	if !c.OK {
-		t.Fatalf("expected swarf dir to exist: %s", c.Msg)
-	}
-	if !strings.Contains(c.Msg, "directory exists") {
-		t.Fatalf("expected 'directory exists' in message: %s", c.Msg)
-	}
-}
-
-func TestCheckSwarfDirMissing(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	c := doctor.CheckSwarfDirExists(repo)
-	if c.OK {
-		t.Fatal("expected swarf dir missing")
-	}
-}
-
-func TestCheckSwarfDirPlainDir(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	os.MkdirAll(paths.SwarfDir(repo), 0o755)
-	c := doctor.CheckSwarfDirExists(repo)
-	if !c.OK {
-		t.Fatalf("expected swarf dir dir ok: %s", c.Msg)
-	}
-	if !strings.Contains(c.Msg, "directory exists") {
-		t.Fatalf("expected 'directory exists': %s", c.Msg)
 	}
 }
 
@@ -230,12 +208,9 @@ func TestCheckStoreNotGitRepo(t *testing.T) {
 	testutil.GitRepo(t)
 	// Create store dir that isn't a git repo
 	os.MkdirAll(paths.StoreDir, 0o755)
-	c := doctor.CheckStoreExists()
+	c := doctor.CheckAndFixStore(nil)
 	if c.OK {
 		t.Fatal("expected failure for non-git store")
-	}
-	if !strings.Contains(c.Msg, "not a git repository") {
-		t.Fatalf("expected 'not a git repository': %s", c.Msg)
 	}
 }
 
@@ -323,7 +298,7 @@ func TestCheckGitignoreLinkedFiles(t *testing.T) {
 func TestRunAllChecks(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "test", Debounce: "5s"})
-	result := doctor.RunAllChecks(repo)
+	result := doctor.RunAllChecks(repo, false)
 	if len(result.Project) == 0 {
 		t.Fatal("expected project checks")
 	}
@@ -336,14 +311,11 @@ func TestRunAllChecks(t *testing.T) {
 }
 
 func TestRunAllChecksJailMode(t *testing.T) {
-	repo := testutil.InitializedSwarf(t)
+	testutil.InitializedSwarf(t)
 	// Don't write global config — simulates jail environment.
-	result := doctor.RunAllChecks(repo)
+	result := doctor.RunAllChecks("", false)
 	if !result.InJail {
 		t.Fatal("expected InJail=true without global config")
-	}
-	if len(result.Project) == 0 {
-		t.Fatal("expected project checks even in jail mode")
 	}
 	if len(result.System) != 0 {
 		t.Fatal("expected no system checks in jail mode")
