@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,10 +23,6 @@ func Run(ctx context.Context) error {
 		return nil
 	}
 
-	if err := waitForStore(ctx); err != nil {
-		return err
-	}
-
 	duration, err := config.ParseDuration(gc.Debounce)
 	if err != nil {
 		duration = 5 * time.Second
@@ -31,28 +30,65 @@ func Run(ctx context.Context) error {
 
 	backend := makeBackend(gc.Backend, gc.Remote)
 	debouncer := NewDebouncer(duration, func() {
+		mirrorAllProjects()
 		result := backend.Sync(paths.StoreDir)
 		if result.Success && result.FilesChanged > 0 {
-			slog.Info("store: " + result.Message)
+			slog.Info("sync: " + result.Message)
 		} else if !result.Success {
-			slog.Warn("store: " + result.Message)
+			slog.Warn("sync: " + result.Message)
 		}
 	})
 	defer debouncer.Cancel()
 
-	return watchStore(ctx, backend, debouncer)
+	return watchProjects(ctx, debouncer)
 }
 
-func waitForStore(ctx context.Context) error {
-	for !paths.IsDir(paths.StoreDir) {
-		slog.Info("Store directory does not exist. Waiting...", "path", paths.StoreDir)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
+// mirrorAllProjects copies each project's .swarf/ content into the central store.
+func mirrorAllProjects() {
+	drawers := config.ReadDrawers()
+	for _, d := range drawers {
+		src := paths.SwarfDir(d.Host)
+		dst := filepath.Join(paths.StoreDir, d.Slug)
+		if !paths.IsDir(src) {
+			continue
+		}
+		if err := mirrorDir(src, dst); err != nil {
+			slog.Warn("mirror failed", "project", d.Slug, "err", err)
 		}
 	}
-	return nil
+}
+
+// mirrorDir recursively copies src into dst, preserving structure.
+func mirrorDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(src, path)
+		if rel == "." {
+			return os.MkdirAll(dst, 0o755)
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		// Only copy if source is newer or different size
+		srcInfo, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if dstInfo, err := os.Stat(target); err == nil {
+			if srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
+				return nil
+			}
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		os.MkdirAll(filepath.Dir(target), 0o755)
+		return os.WriteFile(target, data, srcInfo.Mode())
+	})
 }
 
 func makeBackend(backendType, remote string) backends.SyncBackend {
@@ -62,27 +98,49 @@ func makeBackend(backendType, remote string) backends.SyncBackend {
 	return &backends.GitBackend{}
 }
 
-func watchStore(ctx context.Context, backend backends.SyncBackend, debouncer *Debouncer) error {
+// watchProjects watches all registered project .swarf/ dirs for changes.
+func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
 	}
 	defer watcher.Close()
 
-	if err := addRecursive(watcher, paths.StoreDir); err != nil {
-		return err
+	// Ensure the store exists for the backend
+	os.MkdirAll(paths.StoreDir, 0o755)
+
+	watched := make(map[string]bool)
+	refreshWatches := func() {
+		drawers := config.ReadDrawers()
+		for _, d := range drawers {
+			sd := paths.SwarfDir(d.Host)
+			if !paths.IsDir(sd) || watched[sd] {
+				continue
+			}
+			if err := addRecursive(watcher, sd); err == nil {
+				watched[sd] = true
+				slog.Info("Watching project", "name", d.Slug, "path", sd)
+			}
+		}
 	}
 
-	slog.Info("Watching store", "path", paths.StoreDir)
+	refreshWatches()
+	if len(watched) == 0 {
+		slog.Info("No projects found. Waiting for first 'swarf init'...")
+	}
+
+	// Periodically check for new projects
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			if backend.HasChanges(paths.StoreDir) {
-				slog.Info("Final sync before shutdown")
-				backend.Sync(paths.StoreDir)
-			}
+			// Final mirror + sync before shutdown
+			mirrorAllProjects()
 			return ctx.Err()
+		case <-ticker.C:
+			refreshWatches()
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil

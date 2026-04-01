@@ -103,12 +103,8 @@ func CheckSwarfDirExists(cwd string) Check {
 	if err != nil {
 		return Check{".swarf/", false, ".swarf/ directory not found — run 'swarf init'"}
 	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		target, _ := filepath.EvalSymlinks(sd)
-		return Check{".swarf/", true, fmt.Sprintf(".swarf/ linked to %s", target)}
-	}
-	if fi.IsDir() {
-		return Check{".swarf/", true, ".swarf/ directory exists (not a symlink — consider migrating)"}
+	if fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+		return Check{".swarf/", true, ".swarf/ directory exists"}
 	}
 	return Check{".swarf/", false, ".swarf/ directory not found — run 'swarf init'"}
 }

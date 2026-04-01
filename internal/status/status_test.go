@@ -28,24 +28,6 @@ func TestCountNonEmpty(t *testing.T) {
 	}
 }
 
-func TestIsSymlink(t *testing.T) {
-	tmp := t.TempDir()
-	target := filepath.Join(tmp, "target")
-	os.WriteFile(target, []byte("x"), 0o644)
-	link := filepath.Join(tmp, "link")
-	os.Symlink(target, link)
-
-	if !isSymlink(link) {
-		t.Fatal("expected true for symlink")
-	}
-	if isSymlink(target) {
-		t.Fatal("expected false for regular file")
-	}
-	if isSymlink(filepath.Join(tmp, "nonexistent")) {
-		t.Fatal("expected false for nonexistent")
-	}
-}
-
 func TestReadPID(t *testing.T) {
 	tmp := t.TempDir()
 

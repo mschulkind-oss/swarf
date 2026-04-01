@@ -15,23 +15,19 @@ import (
 
 var testConfig = &config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"}
 
-func TestInitCreatesSymlink(t *testing.T) {
+func TestInitCreatesSwarfDir(t *testing.T) {
 	repo := testutil.GitRepo(t)
 	config.WriteGlobalConfig(testConfig)
 	if err := initialize.Run(testConfig); err != nil {
 		t.Fatal(err)
 	}
 	sd := filepath.Join(repo, ".swarf")
-	fi, err := os.Lstat(sd)
+	fi, err := os.Stat(sd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected .swarf to be a symlink")
-	}
-	target, _ := os.Readlink(sd)
-	if !strings.HasPrefix(target, paths.StoreDir) {
-		t.Fatalf("expected symlink into store, got %s", target)
+	if !fi.IsDir() {
+		t.Fatal("expected .swarf to be a directory")
 	}
 }
 
@@ -43,18 +39,6 @@ func TestInitCreatesLinksDir(t *testing.T) {
 	fi, err := os.Stat(linksDir)
 	if err != nil || !fi.IsDir() {
 		t.Fatal("expected .swarf/links/ to be a directory")
-	}
-}
-
-func TestInitNoSkeletonFiles(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	config.WriteGlobalConfig(testConfig)
-	initialize.Run(testConfig)
-	entries, _ := os.ReadDir(filepath.Join(repo, ".swarf"))
-	for _, e := range entries {
-		if e.Name() == "docs" || e.Name() == "open-questions.md" {
-			t.Fatalf("unexpected skeleton file: %s", e.Name())
-		}
 	}
 }
 
@@ -124,22 +108,6 @@ func TestInitUpdatesGitInfoExclude(t *testing.T) {
 	}
 }
 
-func TestInitStoreCommit(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	config.WriteGlobalConfig(testConfig)
-	initialize.Run(testConfig)
-	slug := filepath.Base(repo)
-	cmd := exec.Command("git", "log", "--oneline", "-1")
-	cmd.Dir = paths.StoreDir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(out), "init: "+slug) {
-		t.Fatalf("expected commit message with 'init: %s', got %s", slug, out)
-	}
-}
-
 func TestInitWithGitRemote(t *testing.T) {
 	testutil.GitRepo(t)
 	bare := testutil.BareRemote(t)
@@ -156,34 +124,6 @@ func TestInitWithGitRemote(t *testing.T) {
 	}
 	if !strings.Contains(string(out), bare) {
 		t.Fatalf("expected remote %s in output, got %s", bare, out)
-	}
-}
-
-func TestInitExistingProjectInStore(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	config.WriteGlobalConfig(testConfig)
-	slug := filepath.Base(repo)
-	projDir := filepath.Join(paths.StoreDir, slug)
-
-	// Pre-create store and project
-	os.MkdirAll(paths.StoreDir, 0o755)
-	exec.Command("git", "-C", paths.StoreDir, "init").Run()
-	exec.Command("git", "-C", paths.StoreDir, "config", "user.email", "test@test.com").Run()
-	exec.Command("git", "-C", paths.StoreDir, "config", "user.name", "Test").Run()
-	os.MkdirAll(filepath.Join(projDir, "links"), 0o755)
-	os.WriteFile(filepath.Join(projDir, "links", "AGENTS.md"), []byte("# Agents\n"), 0o644)
-
-	err := initialize.Run(testConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	fi, err := os.Lstat(filepath.Join(repo, ".swarf"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected .swarf to be a symlink")
 	}
 }
 

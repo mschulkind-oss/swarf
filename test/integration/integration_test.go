@@ -115,13 +115,13 @@ func TestE2EInitAndDoctor(t *testing.T) {
 		t.Fatalf("unexpected init output: %s", out)
 	}
 
-	// .swarf should be a symlink
-	fi, err := os.Lstat(filepath.Join(e.repo, ".swarf"))
+	// .swarf should be a real directory
+	fi, err := os.Stat(filepath.Join(e.repo, ".swarf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected .swarf to be symlink")
+	if !fi.IsDir() {
+		t.Fatal("expected .swarf to be a directory")
 	}
 
 	// .mise.local.toml should exist
@@ -336,11 +336,11 @@ func TestE2ESecondProjectReusesStore(t *testing.T) {
 		t.Fatalf("init proj2: %s", out)
 	}
 
-	fi, err := os.Lstat(filepath.Join(proj2, ".swarf"))
+	fi, err := os.Stat(filepath.Join(proj2, ".swarf"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected .swarf symlink in proj2")
+	if !fi.IsDir() {
+		t.Fatal("expected .swarf directory in proj2")
 	}
 }

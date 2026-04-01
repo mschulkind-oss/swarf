@@ -17,11 +17,11 @@ const MiseHook = `command -v swarf >/dev/null && [ -d .swarf/links ] && swarf en
 const MiseLocalTOML = "[hooks]\nenter = \"" + MiseHook + "\"\n"
 
 var (
-	ErrNotGitRepo        = errors.New("not inside a git repository")
+	ErrNotGitRepo         = errors.New("not inside a git repository")
 	ErrAlreadyInitialized = errors.New("swarf is already initialized here")
 )
 
-// EnsureStore initializes the central store if it doesn't exist yet.
+// EnsureStore initializes the central store (backup mirror) if it doesn't exist.
 func EnsureStore(hostRoot string, gc *config.GlobalConfig) error {
 	if paths.IsDir(paths.StoreDir) && gitexec.IsRepo(paths.StoreDir) {
 		return nil
@@ -49,7 +49,6 @@ func EnsureStore(hostRoot string, gc *config.GlobalConfig) error {
 }
 
 // Run initializes swarf for the current project.
-// globalConfig must be non-nil (caller handles prompting or reading config).
 func Run(globalConfig *config.GlobalConfig) error {
 	hostRoot := gitexec.GetRepoRoot("")
 	if hostRoot == "" {
@@ -58,7 +57,6 @@ func Run(globalConfig *config.GlobalConfig) error {
 
 	sd := paths.SwarfDir(hostRoot)
 	slug := paths.ProjectSlug(hostRoot)
-	projDir := paths.StoreProjectDir(hostRoot)
 
 	if fi, err := os.Lstat(sd); err == nil {
 		if fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
@@ -70,19 +68,21 @@ func Run(globalConfig *config.GlobalConfig) error {
 		return err
 	}
 
-	if paths.IsDir(projDir) {
-		console.Ok(fmt.Sprintf("Found existing project '%s' in store.", slug))
-	} else {
-		if err := os.MkdirAll(filepath.Join(projDir, "links"), 0o755); err != nil {
-			return fmt.Errorf("create project dir: %w", err)
+	// Create .swarf/ as a real directory in the project.
+	// If the store already has content for this project (e.g., after clone),
+	// seed the local .swarf/ from the store mirror.
+	storeProject := paths.StoreProjectDir(hostRoot)
+	if paths.IsDir(storeProject) {
+		if err := copyDir(storeProject, sd); err != nil {
+			return fmt.Errorf("seed from store: %w", err)
 		}
-		os.WriteFile(filepath.Join(projDir, "links", ".gitkeep"), []byte(""), 0o644)
+		console.Ok(fmt.Sprintf("Restored %s from store.", slug))
+	} else {
+		linksDir := filepath.Join(sd, "links")
+		if err := os.MkdirAll(linksDir, 0o755); err != nil {
+			return fmt.Errorf("create .swarf/: %w", err)
+		}
 	}
-
-	if err := os.Symlink(projDir, sd); err != nil {
-		return fmt.Errorf("create symlink: %w", err)
-	}
-	console.Ok(fmt.Sprintf("Linked .swarf → %s", projDir))
 
 	misePath := filepath.Join(hostRoot, ".mise.local.toml")
 	if _, err := os.Stat(misePath); err == nil {
@@ -96,13 +96,33 @@ func Run(globalConfig *config.GlobalConfig) error {
 	exclude.UpdateExcludes(hostRoot, nil)
 	config.RegisterDrawer(slug, hostRoot)
 
-	gitexec.AddAll(paths.StoreDir)
-	gitexec.Commit(paths.StoreDir, "init: "+slug) // ignore error (empty commit)
-
 	console.Ok(fmt.Sprintf("Initialized swarf for %s", slug))
 	console.Infof("  Backend: %s", globalConfig.Backend)
 	if globalConfig.Remote != "" {
 		console.Infof("  Remote: %s", globalConfig.Remote)
 	}
 	return nil
+}
+
+// copyDir recursively copies src into dst.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(src, path)
+		if rel == "." {
+			return os.MkdirAll(dst, 0o755)
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		os.MkdirAll(filepath.Dir(target), 0o755)
+		return os.WriteFile(target, data, info.Mode())
+	})
 }
