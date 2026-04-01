@@ -6,9 +6,3 @@ coverage.out
 # Build artifacts
 dist/
 
-# Swarf local
-.yolo/
-.swarf/
-.mise.local.toml
-.claude/
-.venv/
