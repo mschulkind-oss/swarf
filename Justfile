@@ -18,11 +18,12 @@ test-fast *ARGS:
     go test ./... -count=1 -short {{ ARGS }}
 
 build:
-    go build -ldflags '{{ LDFLAGS }}' -o swarf .
+    @mkdir -p dist
+    go build -ldflags '{{ LDFLAGS }}' -o dist/swarf .
 
 install: build
     rm -f ~/.local/bin/swarf
-    cp swarf ~/.local/bin/swarf
+    cp dist/swarf ~/.local/bin/swarf
 
 # Build, install, and restart the daemon
 deploy: build install
@@ -31,7 +32,7 @@ deploy: build install
 
 # Clean build artifacts
 clean:
-    rm -f swarf
+    rm -rf dist
     go clean -cache
 
 # Restart the systemd user service
