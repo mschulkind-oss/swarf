@@ -24,11 +24,11 @@ func TestReadManagedExcludesEmpty(t *testing.T) {
 
 func TestWriteAndReadManagedExcludes(t *testing.T) {
 	tmp := makeRepo(t)
-	WriteManagedExcludes(tmp, []string{"/swarf/", "/.mise.local.toml"})
+	WriteManagedExcludes(tmp, []string{"/swarf/"})
 
 	entries := ReadManagedExcludes(tmp)
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries, got %v", entries)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %v", entries)
 	}
 }
 
@@ -57,7 +57,7 @@ func TestUpdateExcludes(t *testing.T) {
 	for _, e := range entries {
 		found[e] = true
 	}
-	if !found["/swarf/"] || !found["/.mise.local.toml"] || !found["/AGENTS.md"] {
+	if !found["/swarf/"] || !found["/AGENTS.md"] {
 		t.Fatalf("missing expected entries: %v", entries)
 	}
 }

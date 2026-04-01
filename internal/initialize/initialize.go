@@ -14,9 +14,6 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
-const MiseHook = `command -v swarf >/dev/null && swarf enter`
-const MiseLocalTOML = "[hooks]\nenter = \"" + MiseHook + "\"\n"
-
 var (
 	ErrNotGitRepo         = errors.New("not inside a git repository")
 	ErrAlreadyInitialized = errors.New("swarf is already initialized here")
@@ -69,9 +66,9 @@ func Run(globalConfig *config.GlobalConfig) error {
 		return err
 	}
 
-	// Create .swarf/ as a real directory in the project.
+	// Create swarf/ as a real directory in the project.
 	// If the store already has content for this project (e.g., after clone),
-	// seed the local .swarf/ from the store mirror.
+	// seed the local swarf/ from the store mirror.
 	storeProject := paths.StoreProjectDir(hostRoot)
 	if paths.IsDir(storeProject) {
 		if err := copyDir(storeProject, sd); err != nil {
@@ -81,23 +78,14 @@ func Run(globalConfig *config.GlobalConfig) error {
 	} else {
 		linksDir := filepath.Join(sd, "links")
 		if err := os.MkdirAll(linksDir, 0o755); err != nil {
-			return fmt.Errorf("create .swarf/: %w", err)
+			return fmt.Errorf("create swarf/: %w", err)
 		}
-	}
-
-	misePath := filepath.Join(hostRoot, ".mise.local.toml")
-	if _, err := os.Stat(misePath); err == nil {
-		console.Warn(".mise.local.toml already exists. Add this hook manually:")
-		console.Info(fmt.Sprintf("  [hooks]\n  enter = \"%s\"", MiseHook))
-	} else {
-		os.WriteFile(misePath, []byte(MiseLocalTOML), 0o644)
-		console.Ok("Created .mise.local.toml with enter hook.")
 	}
 
 	exclude.UpdateExcludes(hostRoot, nil)
 	config.RegisterDrawer(slug, hostRoot)
 
-	// Re-create symlinks from .swarf/links/ (e.g. after clone + init).
+	// Re-create symlinks from swarf/links/ (e.g. after clone + init).
 	link.Run(hostRoot, true)
 
 	console.Ok(fmt.Sprintf("Initialized swarf for %s", slug))

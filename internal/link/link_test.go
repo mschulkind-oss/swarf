@@ -31,6 +31,12 @@ func TestLinkCreatesSymlinks(t *testing.T) {
 	if fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("expected symlink")
 	}
+
+	// Symlink must be relative for jail/remapped-dir portability.
+	linkTarget, _ := os.Readlink(target)
+	if filepath.IsAbs(linkTarget) {
+		t.Fatalf("expected relative symlink, got absolute: %s", linkTarget)
+	}
 }
 
 func TestLinkIdempotent(t *testing.T) {
@@ -72,6 +78,12 @@ func TestLinkNestedDirs(t *testing.T) {
 	}
 	if fi.Mode()&os.ModeSymlink == 0 {
 		t.Fatal("expected symlink")
+	}
+
+	// Nested symlinks must also be relative.
+	linkTarget, _ := os.Readlink(target)
+	if filepath.IsAbs(linkTarget) {
+		t.Fatalf("expected relative symlink, got absolute: %s", linkTarget)
 	}
 }
 
