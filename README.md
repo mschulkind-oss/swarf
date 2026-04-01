@@ -1,5 +1,10 @@
 # Swarf
 
+[![CI](https://github.com/mschulkind-oss/swarf/actions/workflows/ci.yml/badge.svg)](https://github.com/mschulkind-oss/swarf/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/swarf)](https://pypi.org/project/swarf/)
+[![Go](https://img.shields.io/badge/go-%3E%3D1.26-blue)](https://go.dev/)
+[![License](https://img.shields.io/github/license/mschulkind-oss/swarf)](LICENSE)
+
 Invisible, auto-syncing personal storage for any git repo.
 
 Swarf is the metal shavings left on the workshop floor after machining — the
@@ -47,9 +52,11 @@ to `~/.local/share/swarf/` (a git repo), then pushes to your remote.
 ## Install
 
 ```bash
-# Via pip / uvx (any platform — no Go required)
-pip install swarf
-# or: uvx swarf
+# macOS / Linux (recommended)
+brew install swarf
+
+# Via PyPI (any platform — no Go required)
+pipx install swarf        # or: uv tool install swarf
 
 # Via Go
 go install github.com/mschulkind-oss/swarf@latest
@@ -58,6 +65,10 @@ go install github.com/mschulkind-oss/swarf@latest
 git clone https://github.com/mschulkind-oss/swarf && cd swarf
 just deploy   # builds and copies to ~/.local/bin/
 ```
+
+> **Note:** Don't use `pip install swarf` inside a virtualenv or `uvx swarf` —
+> the daemon records the binary path and breaks when the venv disappears.
+> `swarf doctor` detects this and warns you.
 
 ## Quick start
 
@@ -167,14 +178,18 @@ swarf status    # show all projects, sync state, daemon status
 
 | Command | Description |
 |---------|-------------|
-| `swarf init` | Initialize `.swarf/` in current project |
+| `swarf init` | Initialize swarf in current project (creates `.swarf/`, sets up config/store/service) |
 | `swarf sweep <file>...` | Move files into `.swarf/links/` and symlink back |
-| `swarf doctor` | Validate setup and backend health |
-| `swarf status` | Show all projects and sync status |
+| `swarf unlink <file>...` | Reverse a sweep — restore symlinks to regular files |
+| `swarf doctor` | Check system & project health, fix what it can |
+| `swarf status` | Show all projects, sync state, remote verification |
+| `swarf clone` | Clone the store from your configured remote |
+| `swarf pull` | Pull latest changes from the remote |
 | `swarf daemon start` | Start background sync daemon |
 | `swarf daemon stop` | Stop the daemon |
 | `swarf daemon status` | Check if daemon is running |
-| `swarf daemon install` | Install as systemd user service (auto-start on login) |
+| `swarf daemon install` | Install as system service (systemd or launchd) |
+| `swarf docs [topic]` | Browse built-in documentation |
 
 ### Daemon as a system service
 
@@ -184,10 +199,15 @@ To have the daemon start automatically on login:
 swarf daemon install
 ```
 
-This creates a systemd user service. Check logs with:
+On **Linux** this creates a systemd user service. On **macOS** it creates a
+launchd agent. Check logs with:
 
 ```bash
+# Linux
 journalctl --user -u swarf -f
+
+# macOS
+tail -f ~/Library/Logs/swarf/swarf.out.log
 ```
 
 ## How it works on a company monorepo
