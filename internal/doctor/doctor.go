@@ -20,6 +20,14 @@ type Check struct {
 	Msg  string
 }
 
+// Result groups checks into project-local and system-level categories.
+type Result struct {
+	Project []Check
+	System  []Check
+	// InJail is true when global config is unavailable (e.g. inside a container).
+	InJail bool
+}
+
 func CheckGlobalConfig() Check {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
@@ -123,7 +131,7 @@ func CheckGitignore(cwd string) []Check {
 	var checks []Check
 
 	required := map[string]string{
-		".swarf/":         "/.swarf/",
+		".swarf/":          "/.swarf/",
 		".mise.local.toml": "/.mise.local.toml",
 	}
 	for path, excludeEntry := range required {
@@ -199,19 +207,34 @@ func CheckLinksHealthy(cwd string) Check {
 	return Check{"links", true, "All links healthy"}
 }
 
-func RunAllChecks(cwd string) []Check {
+// RunAllChecks returns project and system checks grouped in a Result.
+// When global config is missing (e.g. inside a container/jail), system
+// checks are skipped and InJail is set to true.
+func RunAllChecks(cwd string) Result {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	var results []Check
-	results = append(results, CheckGlobalConfig())
-	results = append(results, CheckStoreExists())
-	results = append(results, CheckStoreRemote())
-	results = append(results, CheckRemoteReachable())
-	results = append(results, CheckDaemonRunning())
-	results = append(results, CheckSwarfDirExists(cwd))
-	results = append(results, CheckGitignore(cwd)...)
-	results = append(results, CheckMiseLocal(cwd))
-	results = append(results, CheckLinksHealthy(cwd))
-	return results
+
+	var r Result
+
+	// Project-local checks — always run.
+	r.Project = append(r.Project, CheckSwarfDirExists(cwd))
+	r.Project = append(r.Project, CheckGitignore(cwd)...)
+	r.Project = append(r.Project, CheckMiseLocal(cwd))
+	r.Project = append(r.Project, CheckLinksHealthy(cwd))
+
+	// System checks — skip if no global config (jail/container).
+	gc := config.ReadGlobalConfig()
+	if gc == nil {
+		r.InJail = true
+		return r
+	}
+
+	r.System = append(r.System, CheckGlobalConfig())
+	r.System = append(r.System, CheckStoreExists())
+	r.System = append(r.System, CheckStoreRemote())
+	r.System = append(r.System, CheckRemoteReachable())
+	r.System = append(r.System, CheckDaemonRunning())
+
+	return r
 }
