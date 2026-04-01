@@ -24,8 +24,9 @@ install: build
     rm -f ~/.local/bin/swarf
     cp swarf ~/.local/bin/swarf
 
-# Build and install locally
+# Build, install, and restart the daemon
 deploy: build install
+    -systemctl --user restart swarf
     @echo "swarf deployed. Verify: swarf --version"
 
 # Clean build artifacts
