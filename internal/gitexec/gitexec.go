@@ -74,6 +74,13 @@ func Pull(dir string) error {
 	return err
 }
 
+// ResetHard resets the working tree to match HEAD. Used after rclone clone/pull
+// to reconstruct working files from the downloaded .git/ directory.
+func ResetHard(dir string) error {
+	_, err := run(dir, "reset", "--hard", "HEAD")
+	return err
+}
+
 func StatusPorcelain(dir string) string {
 	out, _ := runStdout(dir, "status", "--porcelain")
 	return out
