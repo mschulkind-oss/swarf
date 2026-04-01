@@ -71,28 +71,17 @@ func CheckAndFixGlobalConfig(interactive bool) (*config.GlobalConfig, Check) {
 		backend = "git"
 	}
 
-	var remotePrompt string
+	var remote string
 	if backend == "rclone" {
-		// Check for available rclone remotes.
-		if remotes := listRcloneRemotes(); len(remotes) > 0 {
-			console.Info("")
-			console.Info("  Available rclone remotes:")
-			for i, r := range remotes {
-				console.Infof("    %d. %s", i+1, r)
-			}
-			console.Info("")
-			fmt.Print("  Remote path (e.g. gdrive:swarf-store): ")
-		} else {
-			remotePrompt = "rclone"
-			fmt.Print("  Remote path (e.g. gdrive:swarf-store): ")
+		remote = promptRcloneRemote(reader)
+		if remote == "" {
+			return nil, Check{"global config", false, "No remote configured (cancelled)"}
 		}
 	} else {
-		remotePrompt = "git"
 		fmt.Print("  Remote URL (your private backup repo): ")
+		remote, _ = reader.ReadString('\n')
+		remote = strings.TrimSpace(remote)
 	}
-	_ = remotePrompt
-	remote, _ := reader.ReadString('\n')
-	remote = strings.TrimSpace(remote)
 
 	gc = &config.GlobalConfig{Backend: backend, Remote: remote, Debounce: "5s"}
 	config.WriteGlobalConfig(gc)
@@ -116,6 +105,55 @@ func listRcloneRemotes() []string {
 		}
 	}
 	return remotes
+}
+
+// promptRcloneRemote walks the user through picking an rclone remote and path.
+// Returns the full remote spec (e.g. "gdrive:swarf-store") or "" if cancelled.
+func promptRcloneRemote(reader *bufio.Reader) string {
+	remotes := listRcloneRemotes()
+	if len(remotes) == 0 {
+		console.Info("")
+		console.Warn("No rclone remotes found.")
+		console.Info("")
+		console.Info("  Set one up first:")
+		console.Info("    rclone config")
+		console.Info("")
+		console.Hint("Then re-run this command.")
+		return ""
+	}
+
+	console.Info("")
+	console.Info("  Pick an rclone remote:")
+	console.Info("")
+	for i, r := range remotes {
+		console.Infof("    %d. %s", i+1, r)
+	}
+	console.Info("")
+	fmt.Printf("  Enter a number (1-%d), or q to quit: ", len(remotes))
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(answer)
+
+	if answer == "q" || answer == "" {
+		return ""
+	}
+
+	var idx int
+	if _, err := fmt.Sscanf(answer, "%d", &idx); err != nil || idx < 1 || idx > len(remotes) {
+		console.Error(fmt.Sprintf("Invalid choice: %s", answer))
+		return ""
+	}
+
+	chosen := remotes[idx-1] // e.g. "gdrive:"
+	console.Info("")
+	fmt.Printf("  Directory path on %s (e.g. swarf-store): ", chosen)
+	dirPath, _ := reader.ReadString('\n')
+	dirPath = strings.TrimSpace(dirPath)
+
+	if dirPath == "" {
+		return chosen // bare remote, e.g. "gdrive:" — store at root
+	}
+	// Combine: "gdrive:" + "swarf-store" → "gdrive:swarf-store"
+	return chosen + dirPath
 }
 
 // CheckAndFixStore checks for the central store and creates it if missing.
@@ -272,10 +310,11 @@ func CheckAndFixService(interactive bool) Check {
 // existing projects — it won't create swarf/ in a new directory.
 func CheckAndFixProject(cwd string, gc *config.GlobalConfig, interactive bool, initProject bool) []Check {
 	if !gitexec.IsInsideWorkTree(cwd) {
-		if interactive {
+		if initProject {
 			return []Check{{"project", false, "Not inside a git repository — cd into a project first"}}
 		}
-		return []Check{{"project", false, "Not inside a git repository"}}
+		// Doctor in a non-git dir is fine — just note it.
+		return []Check{{"project", true, "Not inside a git repository."}}
 	}
 
 	hostRoot := gitexec.GetRepoRoot(cwd)
@@ -289,7 +328,8 @@ func CheckAndFixProject(cwd string, gc *config.GlobalConfig, interactive bool, i
 	// Check/create swarf/ directory.
 	if fi, err := os.Lstat(sd); err != nil || !(fi.IsDir() || fi.Mode()&os.ModeSymlink != 0) {
 		if !initProject || gc == nil {
-			return []Check{{paths.SwarfDirName + "/", false, fmt.Sprintf("%s/ not found — run 'swarf init'", paths.SwarfDirName)}}
+			// Not an error — just inform the user. Doctor doesn't create swarf/.
+			return []Check{{paths.SwarfDirName + "/", true, fmt.Sprintf("No %s/ here. Run 'swarf init' to set up this project.", paths.SwarfDirName)}}
 		}
 
 		// Initialize the project.
