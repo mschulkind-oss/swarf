@@ -14,6 +14,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/paths"
+	"github.com/mschulkind-oss/swarf/internal/sweep"
 )
 
 func Run(ctx context.Context) error {
@@ -204,6 +205,7 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 			return ctx.Err()
 		case <-ticker.C:
 			refreshWatches()
+			autoSweepAll()
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
@@ -231,4 +233,36 @@ func addRecursive(w *fsnotify.Watcher, root string) error {
 		}
 		return w.Add(dir)
 	})
+}
+
+// autoSweepAll checks auto-sweep targets across all projects and sweeps
+// any that exist as regular files (not already symlinks). This runs on
+// the 30s tick so files are swept promptly without waiting for a cd.
+func autoSweepAll() {
+	gc := config.ReadGlobalConfig()
+	if gc == nil || len(gc.AutoSweep) == 0 {
+		return
+	}
+
+	drawers := config.ReadDrawers()
+	for _, d := range drawers {
+		if !paths.IsDir(paths.SwarfDir(d.Host)) {
+			continue
+		}
+		var toSweep []string
+		for _, p := range gc.AutoSweep {
+			target := filepath.Join(d.Host, p)
+			fi, err := os.Lstat(target)
+			if err == nil && fi.Mode()&os.ModeSymlink == 0 && !fi.IsDir() {
+				toSweep = append(toSweep, p)
+			}
+		}
+		if len(toSweep) > 0 {
+			if err := sweep.Run(toSweep, d.Host); err != nil {
+				slog.Warn("auto-sweep failed", "project", d.Slug, "err", err)
+			} else {
+				slog.Info("auto-sweep", "project", d.Slug, "files", toSweep)
+			}
+		}
+	}
 }

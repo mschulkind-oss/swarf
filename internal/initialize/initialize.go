@@ -10,6 +10,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
+	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
@@ -95,6 +96,9 @@ func Run(globalConfig *config.GlobalConfig) error {
 
 	exclude.UpdateExcludes(hostRoot, nil)
 	config.RegisterDrawer(slug, hostRoot)
+
+	// Re-create symlinks from .swarf/links/ (e.g. after clone + init).
+	link.Run(hostRoot, true)
 
 	console.Ok(fmt.Sprintf("Initialized swarf for %s", slug))
 	console.Infof("  Backend: %s", globalConfig.Backend)

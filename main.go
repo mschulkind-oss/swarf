@@ -17,7 +17,6 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/docs"
 	"github.com/mschulkind-oss/swarf/internal/enter"
 	"github.com/mschulkind-oss/swarf/internal/initialize"
-	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/pull"
 	"github.com/mschulkind-oss/swarf/internal/status"
@@ -69,7 +68,6 @@ Learn more:
 	root.AddCommand(
 		initCmd(),
 		sweepCmd(),
-		linkCmd(),
 		enterCmd(),
 		cloneCmd(),
 		pullCmd(),
@@ -96,8 +94,9 @@ func initCmd() *cobra.Command {
 		Long: `Initialize swarf in the current git repository.
 
 Creates the central store (if it doesn't exist), registers this project,
-sets up .swarf/ symlink, configures .git/info/exclude, and creates the
-mise enter hook. On first run, walks you through global config setup.`,
+sets up .swarf/ directory, configures .git/info/exclude, re-links any
+swept files, and creates the mise enter hook. On first run, walks you
+through global config setup.`,
 		Example: `  swarf init              # interactive setup (first time)
   cd ~/other-project && swarf init   # instant (reuses config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -129,38 +128,13 @@ Run 'swarf docs sweep' for the full guide.`,
 	}
 }
 
-func linkCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "link",
-		Short:   "Re-create symlinks from .swarf/links/ into the host tree",
-		GroupID: groupCore,
-		Args:    cobra.NoArgs,
-		Long: `Scans .swarf/links/ and creates symlinks for any files that are missing
-in the host tree. Safe to run repeatedly — existing symlinks are skipped.
-
-This is useful after a fresh git clone, or if symlinks were accidentally
-deleted. 'swarf enter' does the same thing automatically via mise hooks.`,
-		Example: `  swarf link
-  swarf link --quiet      # only show warnings`,
-	}
-	quiet := cmd.Flags().BoolP("quiet", "q", false, "Only show warnings")
-	cmd.RunE = func(c *cobra.Command, args []string) error {
-		_, err := link.Run("", *quiet)
-		return err
-	}
-	return cmd
-}
-
 func enterCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "enter",
-		Short:   "Re-link on project enter (mise hook, usually automatic)",
-		GroupID: groupCore,
-		Args:    cobra.NoArgs,
-		Long: `Called automatically by mise when you cd into a project. Re-creates
-any missing symlinks from .swarf/links/. You rarely need to run this
-manually — it's wired up by 'swarf init' via .mise.local.toml.`,
-		Run: func(cmd *cobra.Command, args []string) { enter.Run() },
+		Use:    "enter",
+		Short:  "Re-link on project enter (internal, called by mise hook)",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		Run:    func(cmd *cobra.Command, args []string) { enter.Run() },
 	}
 }
 
@@ -320,7 +294,7 @@ Green checks pass, red checks need attention.`,
 
 			if result.InJail {
 				console.Header("Project checks (no global config — running in container?)")
-				console.Hint("Only local commands work here: sweep, link, enter.")
+				console.Hint("Only sweep works here — write files to .swarf/ directly.")
 				console.Hint("The host daemon handles sync and backup.")
 				console.Info("")
 			} else {
@@ -368,7 +342,7 @@ all available topics, or specify a topic name for details.`,
   swarf docs quickstart      # getting started guide
   swarf docs architecture    # how swarf works
   swarf docs config          # configuration reference
-  swarf docs sweep           # sweep and link guide
+  swarf docs sweep           # how sweep works
   swarf docs daemon          # daemon operations
   swarf docs backends        # git and rclone setup`,
 		RunE: func(cmd *cobra.Command, args []string) error {

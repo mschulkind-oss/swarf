@@ -154,7 +154,7 @@ func CheckGitignore(cwd string) []Check {
 			if managedSet[excludeEntry] || gitexec.CheckIgnore(rel, cwd) {
 				checks = append(checks, Check{rel, true, fmt.Sprintf("%s is gitignored", rel)})
 			} else {
-				checks = append(checks, Check{rel, false, fmt.Sprintf("%s is NOT gitignored — run 'swarf link' to fix", rel)})
+				checks = append(checks, Check{rel, false, fmt.Sprintf("%s is NOT gitignored — run 'swarf sweep' to fix", rel)})
 			}
 			return nil
 		})

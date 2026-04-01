@@ -164,7 +164,7 @@ func TestE2EInitNotGitRepo(t *testing.T) {
 	}
 }
 
-func TestE2ESweepAndLink(t *testing.T) {
+func TestE2ESweepAndRelink(t *testing.T) {
 	e := setup(t)
 	e.swarf("init")
 
@@ -189,11 +189,11 @@ func TestE2ESweepAndLink(t *testing.T) {
 		t.Fatal("expected file in .swarf/links/")
 	}
 
-	// Remove the symlink to test re-linking
+	// Remove the symlink, then enter should re-create it
 	os.Remove(filepath.Join(e.repo, "AGENTS.md"))
-	out, err = e.swarf("link")
+	out, err = e.swarf("enter")
 	if err != nil {
-		t.Fatalf("link failed: %s", out)
+		t.Fatalf("enter failed: %s", out)
 	}
 
 	fi, err = os.Lstat(filepath.Join(e.repo, "AGENTS.md"))
@@ -201,7 +201,7 @@ func TestE2ESweepAndLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected symlink after link")
+		t.Fatal("expected symlink after enter")
 	}
 }
 
