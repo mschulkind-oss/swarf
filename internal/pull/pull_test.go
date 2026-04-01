@@ -65,7 +65,7 @@ func TestPullGitSuccess(t *testing.T) {
 	os.WriteFile(filepath.Join(staging, "init.txt"), []byte("seed"), 0o644)
 	runGit(t, staging, "add", "-A")
 	runGit(t, staging, "commit", "-m", "seed")
-	runGit(t, staging, "push", "origin", "HEAD:refs/heads/master")
+	runGit(t, staging, "push", "origin", "HEAD")
 
 	// Clone the bare remote as the store.
 	storeDir := filepath.Join(t.TempDir(), "store")

@@ -82,7 +82,7 @@ func TestCloneGitWithProjects(t *testing.T) {
 
 	runGit(t, staging, "add", "-A")
 	runGit(t, staging, "commit", "-m", "init")
-	runGit(t, staging, "push", "origin", "HEAD:refs/heads/master")
+	runGit(t, staging, "push", "origin", "HEAD")
 
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s"})
 	paths.StoreDir = filepath.Join(t.TempDir(), "store")
