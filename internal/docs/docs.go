@@ -34,7 +34,7 @@ func Topics() []Topic {
 		{
 			Name:        "sweep",
 			Title:       "Sweeping Files",
-			Description: "How sweep and link work together",
+			Description: "How sweep works",
 			Content:     sweepDoc,
 		},
 		{
@@ -219,10 +219,8 @@ const sweepDoc = `
 
   Re-linking:
 
-    If symlinks break (e.g., after a fresh clone), restore them with:
-
-      swarf link           # re-create all symlinks from .swarf/links/
-      swarf enter          # same thing (runs automatically via mise hook)
+    If symlinks break (e.g., after a fresh clone), they are restored
+    automatically by 'swarf init' or the mise enter hook (on cd).
 
   Notes:
 
