@@ -415,6 +415,18 @@ func runDoctor(interactive bool, initProject bool) error {
 		console.Info("")
 		console.Ok("All checks passed.")
 	}
+
+	// Return an error only if project checks failed (e.g. not a git repo).
+	// System checks (remote, daemon) are advisory — they don't block init.
+	projectOk := true
+	for _, c := range result.Project {
+		if !c.OK {
+			projectOk = false
+		}
+	}
+	if !projectOk {
+		return fmt.Errorf("some checks failed")
+	}
 	return nil
 }
 
