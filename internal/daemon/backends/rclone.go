@@ -11,7 +11,8 @@ import (
 )
 
 type RcloneBackend struct {
-	Remote string
+	Remote      string
+	remoteMkdir bool // true after we've confirmed/created the remote dir
 }
 
 func (r *RcloneBackend) Sync(storePath string) SyncResult {
@@ -49,11 +50,14 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 		return SyncResult{Success: false, Message: "rclone not installed", FilesChanged: nFiles}
 	}
 
-	// Ensure the remote directory exists before syncing.
-	slog.Info("sync: ensuring remote directory exists", "remote", r.Remote)
-	mkdirCmd := exec.Command("rclone", "mkdir", r.Remote)
-	if mkOut, mkErr := mkdirCmd.CombinedOutput(); mkErr != nil {
-		slog.Warn("sync: rclone mkdir failed (may be ok)", "remote", r.Remote, "err", mkErr, "output", strings.TrimSpace(string(mkOut)))
+	// Create the remote directory on first sync only.
+	if !r.remoteMkdir {
+		slog.Info("sync: ensuring remote directory exists (first sync)", "remote", r.Remote)
+		mkdirCmd := exec.Command("rclone", "mkdir", r.Remote)
+		if mkOut, mkErr := mkdirCmd.CombinedOutput(); mkErr != nil {
+			slog.Warn("sync: rclone mkdir failed (may be ok)", "remote", r.Remote, "err", mkErr, "output", strings.TrimSpace(string(mkOut)))
+		}
+		r.remoteMkdir = true
 	}
 
 	// Sync the entire store including .git/ so history is preserved on the remote.
