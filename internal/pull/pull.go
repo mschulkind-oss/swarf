@@ -56,6 +56,13 @@ func pullRclone(remote string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("rclone copy: %s", string(out))
 	}
+
+	// The remote contains a full git repo. After pulling, update the working
+	// tree to match the latest commit.
+	if gitexec.IsRepo(paths.StoreDir) {
+		gitexec.ResetHard(paths.StoreDir)
+	}
+
 	console.Ok("Pulled latest changes via rclone.")
 	return nil
 }
