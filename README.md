@@ -7,19 +7,16 @@
 
 Invisible, auto-syncing personal storage for any git repo.
 
-Swarf is the metal shavings left on the workshop floor after machining — the
-byproduct of making something. When you build software (especially with AI
-agents), you generate a lot of byproduct: research docs, design specs, agent
-skills, open questions, scratch notes. Swarf gives this material a durable
-home alongside any project, without touching the project itself.
+You build software and generate byproduct — research docs, design specs,
+agent skills, scratch notes. Swarf gives this material a durable home
+alongside any project, without touching the project itself.
 
 ## The problem
 
 You have files that should live near your code but don't belong in the repo:
 
-- Agent-generated research and design docs
-- Personal notes, roadmaps, and open questions
-- Agent skill files and config (`.copilot/skills/`, `AGENTS.md`)
+- Agent instructions and skills (`AGENTS.md`, `.copilot/skills/`)
+- Research notes, design docs, open questions
 - Security audits, experiment logs, scratch work
 
 Today these files are either **untracked and local-only** (one `rm -rf` from
@@ -28,26 +25,27 @@ repos). Neither is good.
 
 ## How it works
 
-Swarf creates a `.swarf/` directory inside your project — regular files,
-invisible to the host repo via `.git/info/exclude` (managed automatically).
-A background daemon watches for changes, mirrors them to a central backup
-store, and syncs to a remote backend (git or rclone).
+Swarf creates a `swarf/` directory inside your project. Everything in it is
+automatically excluded from git via `.git/info/exclude`. A background daemon
+watches for changes, mirrors them to a central store, and syncs to your
+configured remote (a git repo or any rclone backend).
 
 ```
-my-project/                      <- your repo (public)
+my-project/
 ├── src/
-├── tests/
-├── .swarf/                      <- private storage (auto-excluded from git)
-│   ├── docs/research/           <- durable notes
-│   ├── docs/design/             <- specs and decisions
-│   ├── links/                   <- files projected into the host tree
-│   │   └── AGENTS.md            <- symlinked to ./AGENTS.md
+├── swarf/                         ← private storage (invisible to git)
+│   ├── docs/                      ← research, design, anything
+│   ├── .links/                    ← files projected into the host tree
+│   │   └── AGENTS.md
 │   └── open-questions.md
-└── AGENTS.md -> .swarf/links/AGENTS.md
+├── AGENTS.md → swarf/.links/AGENTS.md   ← symlink (also gitignored)
+└── .git/info/exclude              ← managed by swarf
 ```
 
-Files live locally in each project. The daemon mirrors all `.swarf/` dirs
-to `~/.local/share/swarf/` (a git repo), then pushes to your remote.
+The central store at `~/.local/share/swarf/` mirrors all projects into a
+single git repo. The daemon commits changes locally, then pushes to your
+remote. For rclone backends, the entire store (including `.git/` for history)
+is synced to the remote.
 
 ## Install
 
@@ -55,7 +53,7 @@ to `~/.local/share/swarf/` (a git repo), then pushes to your remote.
 # macOS / Linux (recommended)
 brew install swarf
 
-# Via PyPI (any platform — no Go required)
+# Via PyPI (persistent install to ~/.local/bin/)
 pipx install swarf        # or: uv tool install swarf
 
 # Via Go
@@ -66,9 +64,9 @@ git clone https://github.com/mschulkind-oss/swarf && cd swarf
 just deploy   # builds and copies to ~/.local/bin/
 ```
 
-> **Note:** Don't use `pip install swarf` inside a virtualenv or `uvx swarf` —
-> the daemon records the binary path and breaks when the venv disappears.
-> `swarf doctor` detects this and warns you.
+> **Warning:** Don't use `pip install swarf` inside a virtualenv or `uvx swarf`.
+> The daemon records the binary's absolute path and breaks when the venv
+> disappears. `swarf doctor` detects this and warns you.
 
 ## Quick start
 
@@ -77,183 +75,192 @@ cd ~/projects/my-app
 swarf init
 ```
 
-That's it. If this is your first time, `swarf init` walks you through
-everything:
+On first run, `init` walks you through setup:
 
 ```
-$ swarf init
-
 No global config found. Let's set one up.
 
-Backend (git/rclone) [git]: git
-Remote URL: git@github.com:you/my-swarf.git
+  Backend [git/rclone] (git): git
+  Remote URL (your private backup repo): git@github.com:you/my-swarf.git
 ✓ Wrote ~/.config/swarf/config.toml
+✓ Created central store at ~/.local/share/swarf
+✓ Initialized swarf/ for my-app
+  Install systemd service for auto-sync? [Y/n] y
+✓ Installed systemd service — daemon is running
+✓ Daemon is running (PID 12345)
 
-Created .mise.local.toml with enter hook.
-
-✓ Initialized swarf in /home/you/projects/my-app/.swarf
-  Backend: git
-  Remote: git@github.com:you/my-swarf.git
-
-Daemon is not running. Install as system service? [Y/n]: y
-✓ Installed and started swarf daemon
+✓ All checks passed.
 ```
 
-Next time you run `swarf init` in another project, it reuses your config
-and the daemon picks it up automatically — no prompts.
+Next time you run `swarf init` in another project — no prompts, instant setup.
 
 ### Rclone backend (Google Drive, Dropbox, S3, etc.)
 
-If you prefer cloud storage over a git repo, install rclone first:
+Set up an rclone remote first:
 
 ```bash
-brew install rclone   # or: mise use rclone
+brew install rclone
 rclone config
-#   -> n (new remote), name: gdrive, type: drive
-#   -> scope: drive.file (option 2 — can only see files rclone created)
-#   -> auto config: y (opens browser)
+#   → n (new remote), name: gdrive, type: drive
+#   → scope: drive.file (option 2 — only files rclone creates)
+#   → auto config: y (opens browser for OAuth)
 ```
 
-Then run `swarf init` and enter `rclone` as the backend and `gdrive:swarf`
-as the remote. The `drive.file` scope means the OAuth token can only access
-files swarf created — it cannot read your other Google Drive documents.
+Then run `swarf init`, pick `rclone`, and select your remote from the
+numbered menu. Swarf defaults to `swarf-store` as the directory path:
 
-### Verify your setup
-
-```bash
-swarf doctor
-# ✓ Global config: backend=git, remote=git@github.com:you/my-swarf.git
-# ✓ Git remote reachable
-# ✓ Daemon is running
-# ✓ .swarf/ directory exists
-# ✓ .swarf/ is gitignored
-# ...
 ```
+  Backend [git/rclone] (git): rclone
+
+  Pick an rclone remote:
+
+    1. gdrive:
+
+  Enter a number (1-1), or q to quit: 1
+
+  Directory path on gdrive: [swarf-store]:
+✓ Remote: gdrive:swarf-store
+```
+
+The store is always a local git repo — rclone transports the `.git/`
+directory to the remote so you get full history on every backend.
 
 ## Using swarf
 
-### Adding content
-
-Put files directly into `.swarf/`:
+### Drop files in
 
 ```bash
-# Research notes, design docs, anything you want backed up
-echo "# Architecture Notes" > .swarf/docs/design/architecture.md
-echo "# Open Questions" >> .swarf/open-questions.md
+echo "# Design Notes" > swarf/docs/design.md
 ```
 
-The daemon auto-commits and syncs after a 5-second quiet period.
+That's it. The daemon commits and syncs after a 5-second quiet period.
 
-### Sweeping files into swarf
+### Sweep files into the host tree
 
-Use `swarf sweep` to move existing files into `.swarf/links/` and replace
-them with symlinks. The host repo automatically ignores the symlinks via
-`.git/info/exclude`.
+Some files need to appear at a specific path in the project (like `AGENTS.md`
+in the root). Use `sweep` to move them into swarf while leaving a symlink:
 
 ```bash
-# Sweep an existing file into swarf
 swarf sweep AGENTS.md
-# AGENTS.md -> .swarf/links/AGENTS.md
+# AGENTS.md → swarf/.links/AGENTS.md
 
-# Sweep multiple files at once
-swarf sweep .copilot/skills/SKILL.md .cursor/rules/project.md
-
-# Verify
-ls -la AGENTS.md
-# AGENTS.md -> .swarf/links/AGENTS.md
+swarf sweep CLAUDE.md .copilot/skills/SKILL.md
 ```
 
-You can also configure auto-sweep in `~/.config/swarf/config.toml` to
-automatically sweep common files (like `AGENTS.md`) whenever you `cd` into
-a project. See [Configuration](#configuration).
+Both the original path and `swarf/` are automatically gitignored. Symlinks
+are relative, so they work across machines and inside containers.
 
-### Checking health
+To reverse a sweep:
 
 ```bash
-swarf doctor    # validate setup: gitignore, git repo, remote, links
-swarf status    # show all projects, sync state, daemon status
+swarf unlink AGENTS.md
 ```
+
+### Auto-sweep
+
+Configure files to be swept automatically whenever they appear:
+
+```toml
+# ~/.config/swarf/config.toml
+[auto_sweep]
+paths = ["AGENTS.md", "CLAUDE.md", ".copilot/skills/"]
+```
+
+The daemon watches for these files and sweeps them on creation.
+
+### Check status
+
+```bash
+swarf status
+```
+
+Shows store state, pending files, remote verification, and daemon health:
+
+```
+Store
+  Path           ~/.local/share/swarf
+  Backend        git
+  Remote         git@github.com:you/my-swarf.git
+  Pending        all synced to remote
+  Last commit    2 minutes ago — auto: sync 3 files
+  Local save     2m ago
+  Remote push    2m ago
+  Remote sync    verified — local and remote match (a1b2c3d4)
+
+Projects
+╭──────────┬─────────────────────┬──────────╮
+│ PROJECT  │ PATH                │ STATUS   │
+├──────────┼─────────────────────┼──────────┤
+│ my-app   │ ~/projects/my-app   │ ✓ ok     │
+│ api      │ ~/work/api          │ ✓ ok     │
+╰──────────┴─────────────────────┴──────────╯
+
+Daemon: running (PID 12345)
+```
+
+### Doctor
+
+`swarf doctor` checks everything and fixes what it can:
+
+```bash
+swarf doctor
+```
+
+Doctor handles: missing config, missing store, broken symlinks, absolute
+symlinks, missing gitignore entries, service installation, and remote
+reachability. Errors include the exact fix command or config file to edit.
+
+`init` and `doctor` share the same engine — the difference is that `init`
+creates `swarf/` in a new directory, while `doctor` only checks and repairs.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `swarf init` | Initialize swarf in current project (creates `.swarf/`, sets up config/store/service) |
-| `swarf sweep <file>...` | Move files into `.swarf/links/` and symlink back |
+| `swarf init` | Set up swarf in the current project |
+| `swarf sweep <file>...` | Move files into `swarf/.links/` and symlink back |
 | `swarf unlink <file>...` | Reverse a sweep — restore symlinks to regular files |
-| `swarf doctor` | Check system & project health, fix what it can |
-| `swarf status` | Show all projects, sync state, remote verification |
-| `swarf clone` | Clone the store from your configured remote |
-| `swarf pull` | Pull latest changes from the remote |
-| `swarf daemon start` | Start background sync daemon |
+| `swarf doctor` | Check health and fix problems (config, store, service, links) |
+| `swarf status` | Show projects, sync state, remote verification, daemon health |
+| `swarf clone` | Clone the store from your configured remote (new machine setup) |
+| `swarf pull` | Pull latest changes from the remote into the store |
+| `swarf daemon start` | Start the background sync daemon (`--foreground` for debugging) |
 | `swarf daemon stop` | Stop the daemon |
-| `swarf daemon status` | Check if daemon is running |
-| `swarf daemon install` | Install as system service (systemd or launchd) |
+| `swarf daemon status` | Check if the daemon is running |
+| `swarf daemon install` | Install as system service (systemd on Linux, launchd on macOS) |
 | `swarf docs [topic]` | Browse built-in documentation |
 
-### Daemon as a system service
-
-To have the daemon start automatically on login:
+## Second machine setup
 
 ```bash
-swarf daemon install
+brew install swarf
+swarf clone              # clones your store from the configured remote
+cd ~/projects/my-app
+swarf init               # re-links the project from the store
 ```
 
-On **Linux** this creates a systemd user service. On **macOS** it creates a
-launchd agent. Check logs with:
+`clone` requires global config to exist (with the remote URL). After cloning,
+run `swarf init` in each project directory to recreate the local `swarf/`
+directory and symlinks.
 
-```bash
-# Linux
-journalctl --user -u swarf -f
+## Containers and jails
 
-# macOS
-tail -f ~/Library/Logs/swarf/swarf.out.log
-```
+The daemon runs on the **host**. Containers mount the project directory, so
+`swarf/` comes along. Agents read and write to `swarf/` directly — the host
+daemon picks up changes and syncs.
 
-## How it works on a company monorepo
+Inside a container, `swarf doctor` detects the environment (no global config),
+skips system checks, and validates project-local state only. `sweep` and
+`unlink` work without the daemon. Symlinks are relative, so they resolve
+correctly regardless of mount path.
 
-The same way. `swarf init` writes to `.git/info/exclude`, which is per-repo
-and never committed. No changes to the monorepo's `.gitignore`, no submodules,
-no permission needed.
+## Guides
 
-```bash
-cd ~/work/big-monorepo
-swarf init
-```
-
-Your agent config, personal notes, and research are now durable and synced,
-completely invisible to your coworkers and CI.
-
-## How it works with AI agent containers
-
-If you use containerized agents (like [yolo-jail](https://github.com/mschulkind-oss/yolo-jail)),
-the daemon runs on the **host**, not inside the container. The container
-mounts the workspace directory, so file changes from agents are visible to
-the host filesystem. The daemon picks them up and syncs automatically. Agents
-never need credentials.
-
-## Configuration
-
-Global config lives at `~/.config/swarf/config.toml` (created automatically
-by `swarf init` on first run):
-
-```toml
-[sync]
-backend = "git"          # or "rclone"
-remote = "origin"        # git remote or rclone remote path
-debounce = "5s"          # wait this long after last change before syncing
-
-[auto_sweep]
-# Files to automatically sweep into .swarf/links/ when entering a project.
-# Only swept if the file exists and isn't already a symlink.
-paths = ["AGENTS.md", "CLAUDE.md", ".copilot/skills/"]
-```
-
-This is set once and applies to all projects.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
+- **[Configuration Guide](docs/CONFIGURATION.md)** — all config options,
+  file locations, environment variables, and examples
+- **[Roadmap](docs/ROADMAP.md)** — planned features and distribution channels
+- **Built-in docs:** `swarf docs` lists all topics (`quickstart`,
+  `architecture`, `config`, `sweep`, `daemon`, `backends`)
 
 ## License
 
