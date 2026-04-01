@@ -16,7 +16,7 @@ func TestSwarfDir(t *testing.T) {
 
 func TestLinksDir(t *testing.T) {
 	got := LinksDir("/home/user/project")
-	want := filepath.Join("/home/user/project", "swarf", "links")
+	want := filepath.Join("/home/user/project", "swarf", ".links")
 	if got != want {
 		t.Fatalf("LinksDir = %s, want %s", got, want)
 	}

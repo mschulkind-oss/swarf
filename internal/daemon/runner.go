@@ -46,7 +46,7 @@ func Run(ctx context.Context) error {
 	return watchProjects(ctx, debouncer)
 }
 
-// relinkAllProjects re-creates missing symlinks from swarf/links/ for all projects.
+// relinkAllProjects re-creates missing symlinks from swarf/.links/ for all projects.
 func relinkAllProjects() {
 	drawers := config.ReadDrawers()
 	for _, d := range drawers {

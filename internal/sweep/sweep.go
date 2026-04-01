@@ -84,7 +84,7 @@ func sweepOne(pathStr, hostRoot, linksDir string) (string, bool) {
 
 	dest := filepath.Join(linksDir, rel)
 	if _, err := os.Stat(dest); err == nil {
-		console.Warn(fmt.Sprintf("%s already exists in %s/links/, skipping.", rel, paths.SwarfDirName))
+		console.Warn(fmt.Sprintf("%s already exists in %s/.links/, skipping.", rel, paths.SwarfDirName))
 		return "", false
 	}
 

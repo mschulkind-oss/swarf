@@ -49,9 +49,9 @@ func TestUnlinkRestoresFile(t *testing.T) {
 		t.Fatalf("content mismatch: got %q", got)
 	}
 
-	// Should be removed from swarf/links/.
+	// Should be removed from swarf/.links/.
 	if _, err := os.Stat(filepath.Join(paths.LinksDir(repo), "AGENTS.md")); !os.IsNotExist(err) {
-		t.Fatal("expected file removed from swarf/links/")
+		t.Fatal("expected file removed from swarf/.links/")
 	}
 }
 
