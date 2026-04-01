@@ -55,12 +55,16 @@ func printStoreInfo(gc *config.GlobalConfig) {
 	}
 
 	if paths.IsDir(paths.StoreDir) && gitexec.IsRepo(paths.StoreDir) {
-		status := gitexec.StatusPorcelain(paths.StoreDir)
-		pending := countNonEmpty(strings.Split(strings.TrimSpace(status), "\n"))
+		// Count files across all project swarf/ dirs that haven't been
+		// mirrored to the store yet (new, modified, or not committed).
+		pending := countPendingFiles()
+		storeStatus := gitexec.StatusPorcelain(paths.StoreDir)
+		storeDirty := countNonEmpty(strings.Split(strings.TrimSpace(storeStatus), "\n"))
+		pending += storeDirty // also count uncommitted store changes
 		if pending > 0 {
-			rows = append(rows, []string{"Pending", yellowStyle.Render(fmt.Sprintf("%d file(s)", pending))})
+			rows = append(rows, []string{"Pending", yellowStyle.Render(fmt.Sprintf("%d file(s) waiting to sync", pending))})
 		} else {
-			rows = append(rows, []string{"Pending", greenStyle.Render("0 file(s)")})
+			rows = append(rows, []string{"Pending", greenStyle.Render("all synced")})
 		}
 		if out := gitLog(paths.StoreDir); out != "" {
 			rows = append(rows, []string{"Last commit", dimStyle.Render(out)})
@@ -182,6 +186,38 @@ func verifyRcloneRemote(remote string) [][]string {
 		{"Remote sync", yellowStyle.Render(fmt.Sprintf("mismatch — remote has %s, local has %s", remoteStr, localStr))},
 		{"", dimStyle.Render("The daemon may still be syncing. Check again shortly.")},
 	}
+}
+
+// countPendingFiles counts files in project swarf/ dirs that haven't been
+// mirrored to the store yet (new files or files with different size/mtime).
+func countPendingFiles() int {
+	drawers := config.ReadDrawers()
+	pending := 0
+	for _, d := range drawers {
+		src := paths.SwarfDir(d.Host)
+		dst := filepath.Join(paths.StoreDir, d.Slug)
+		if !paths.IsDir(src) {
+			continue
+		}
+		filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			rel, _ := filepath.Rel(src, path)
+			target := filepath.Join(dst, rel)
+			dstInfo, dstErr := os.Stat(target)
+			if dstErr != nil {
+				// File doesn't exist in store yet.
+				pending++
+				return nil
+			}
+			if info.Size() != dstInfo.Size() || info.ModTime().After(dstInfo.ModTime()) {
+				pending++
+			}
+			return nil
+		})
+	}
+	return pending
 }
 
 func countLocalStore() (int64, int64) {
