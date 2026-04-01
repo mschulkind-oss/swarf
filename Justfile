@@ -21,6 +21,7 @@ build:
     go build -ldflags '{{ LDFLAGS }}' -o swarf .
 
 install: build
+    rm -f ~/.local/bin/swarf
     cp swarf ~/.local/bin/swarf
 
 # Build and install locally
