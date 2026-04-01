@@ -298,7 +298,7 @@ func TestCheckGitignoreLinkedFiles(t *testing.T) {
 func TestRunAllChecks(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "test", Debounce: "5s"})
-	result := doctor.RunAllChecks(repo, false)
+	result := doctor.RunAllChecks(repo, false, false)
 	if len(result.Project) == 0 {
 		t.Fatal("expected project checks")
 	}
@@ -313,7 +313,7 @@ func TestRunAllChecks(t *testing.T) {
 func TestRunAllChecksJailMode(t *testing.T) {
 	testutil.InitializedSwarf(t)
 	// Don't write global config — simulates jail environment.
-	result := doctor.RunAllChecks("", false)
+	result := doctor.RunAllChecks("", false, false)
 	if !result.InJail {
 		t.Fatal("expected InJail=true without global config")
 	}

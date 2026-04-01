@@ -266,9 +266,11 @@ func CheckAndFixService(interactive bool) Check {
 
 // --- Project checks (and fixes) ---
 
-// CheckAndFixProject checks whether swarf is initialized for the current project
-// and initializes it if interactive. This replaces the standalone `swarf init` logic.
-func CheckAndFixProject(cwd string, gc *config.GlobalConfig, interactive bool) []Check {
+// CheckAndFixProject checks whether swarf is initialized for the current project.
+// When initProject is true (i.e. `swarf init`), it creates swarf/ if missing.
+// When initProject is false (i.e. `swarf doctor`), it only reports and fixes
+// existing projects — it won't create swarf/ in a new directory.
+func CheckAndFixProject(cwd string, gc *config.GlobalConfig, interactive bool, initProject bool) []Check {
 	if !gitexec.IsInsideWorkTree(cwd) {
 		if interactive {
 			return []Check{{"project", false, "Not inside a git repository — cd into a project first"}}
@@ -286,7 +288,7 @@ func CheckAndFixProject(cwd string, gc *config.GlobalConfig, interactive bool) [
 
 	// Check/create swarf/ directory.
 	if fi, err := os.Lstat(sd); err != nil || !(fi.IsDir() || fi.Mode()&os.ModeSymlink != 0) {
-		if !interactive || gc == nil {
+		if !initProject || gc == nil {
 			return []Check{{paths.SwarfDirName + "/", false, fmt.Sprintf("%s/ not found — run 'swarf init'", paths.SwarfDirName)}}
 		}
 
@@ -414,15 +416,17 @@ func CheckSymlinksRelative(cwd string) Check {
 // --- RunAllChecks ---
 
 // RunAllChecks is the universal health check and fix-it function.
-// When interactive is true, it acts as both doctor AND init:
+// When interactive is true, it prompts to fix system-level issues:
 //   - Missing global config → prompts to create
 //   - Missing store → creates it
-//   - Missing project registration → initializes the project
 //   - Missing service → offers to install
 //
-// When interactive is false, it only reports problems.
+// When initProject is true (i.e. called from `swarf init`), it also
+// creates swarf/ in the current directory if missing. When false
+// (i.e. called from `swarf doctor`), it only checks/fixes existing projects.
+//
 // When global config is absent and non-interactive, InJail is set.
-func RunAllChecks(cwd string, interactive bool) Result {
+func RunAllChecks(cwd string, interactive bool, initProject bool) Result {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
@@ -458,8 +462,8 @@ func RunAllChecks(cwd string, interactive bool) Result {
 	r.System = append(r.System, CheckAndFixService(interactive))
 	r.System = append(r.System, CheckDaemonRunning())
 
-	// Step 3: Project checks — initialize if needed.
-	r.Project = CheckAndFixProject(cwd, gc, interactive)
+	// Step 3: Project checks — initialize only if initProject is true.
+	r.Project = CheckAndFixProject(cwd, gc, interactive, initProject)
 
 	return r
 }
