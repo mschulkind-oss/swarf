@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strings"
@@ -10,12 +9,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mschulkind-oss/swarf/internal/clone"
-	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon"
 	"github.com/mschulkind-oss/swarf/internal/doctor"
 	"github.com/mschulkind-oss/swarf/internal/docs"
-	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/pull"
 	"github.com/mschulkind-oss/swarf/internal/status"
@@ -104,9 +101,9 @@ func initCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		Long: `Initialize swarf in the current git repository.
 
-Creates the central store (if it doesn't exist), registers this project,
-sets up swarf/ directory, configures .git/info/exclude, and re-links any
-swept files. On first run, walks you through global config setup.
+This is an alias for 'swarf doctor' — it checks everything and fixes
+what's missing: global config (prompts on first run), central store,
+project registration, symlinks, gitignore entries, and system service.
 
 After init, drop files directly into swarf/ — they sync automatically.
 Both swarf/ and any swept symlinks are automatically gitignored, so
@@ -115,11 +112,7 @@ must appear at a specific path in the project tree (like AGENTS.md).`,
 		Example: `  swarf init              # interactive setup (first time)
   cd ~/other-project && swarf init   # instant (reuses config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			gc := config.ReadGlobalConfig()
-			if gc == nil {
-				gc = promptGlobalConfig()
-			}
-			return initialize.Run(gc)
+			return runDoctor(true)
 		},
 	}
 }
@@ -181,7 +174,12 @@ new machine where the store doesn't exist yet.
 After cloning, run 'swarf init' in each project directory to re-link.`,
 		Example: `  swarf clone             # clone store from remote
   swarf init              # then init each project`,
-		RunE: func(cmd *cobra.Command, args []string) error { return clone.Run() },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := clone.Run(); err != nil {
+				return err
+			}
+			return runDoctor(true)
+		},
 	}
 }
 
@@ -269,18 +267,26 @@ the terminal). Use --foreground for debugging.`,
 
 	installCmd := &cobra.Command{
 		Use:   "install",
-		Short: "Install systemd user service (auto-start on login)",
+		Short: "Install system service for auto-start (systemd or launchd)",
 		Args:  cobra.NoArgs,
-		Long: `Installs a systemd user service that starts the daemon automatically
-on login. View logs with: journalctl --user -u swarf -f`,
-		Example: `  swarf daemon install
-  systemctl --user status swarf
-  journalctl --user -u swarf -f`,
+		Long: `Installs a system service that starts the daemon automatically on login.
+
+On Linux: systemd user service (~/.config/systemd/user/swarf.service)
+  View logs: journalctl --user -u swarf -f
+On macOS: launchd agent (~/Library/LaunchAgents/com.swarf.daemon.plist)
+  View logs: ~/Library/Logs/swarf/`,
+		Example: `  swarf daemon install`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := daemon.InstallSystemdService(); err != nil {
+			if inVenv, path := daemon.IsInVenv(); inVenv {
+				console.Warn(fmt.Sprintf("Swarf is running from an ephemeral location (%s).", path))
+				console.Warn("The service will break when this environment is removed.")
+				console.Hint("For a persistent install, use: brew install swarf, pipx install swarf, or uv tool install swarf")
+				return fmt.Errorf("cannot install service from ephemeral location")
+			}
+			if err := daemon.InstallService(); err != nil {
 				return err
 			}
-			console.Ok("Systemd user service installed and started.")
+			console.Ok(fmt.Sprintf("Installed %s service — daemon is running.", daemon.ServiceKind()))
 			return nil
 		},
 	}
@@ -310,50 +316,21 @@ func doctorCmd() *cobra.Command {
 		Short:   "Validate that swarf is set up correctly",
 		GroupID: groupInfo,
 		Args:    cobra.NoArgs,
-		Long: `Runs a series of health checks: global config, store existence,
-remote connectivity, daemon status, .swarf/ directory, gitignore
-entries, and symlink integrity. Missing links are auto-fixed.
+		Long: `Checks everything and fixes what's missing. This is swarf's
+universal setup and repair command.
 
-Green checks pass, red checks need attention.`,
+Doctor notices and fixes problems automatically:
+  - Missing global config → prompts to create
+  - Missing store → creates it
+  - Missing project → initializes it
+  - Missing symlinks → re-created
+  - Absolute symlinks → converted to relative
+  - Missing system service → offers to install
+
+'swarf init' is an alias for this command.`,
 		Example: `  swarf doctor`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			result := doctor.RunAllChecks("")
-			allOk := true
-
-			if result.InJail {
-				console.Header("Project checks (no global config — running in container?)")
-				console.Hint("Only sweep works here — write files to .swarf/ directly.")
-				console.Hint("The host daemon handles sync and backup.")
-				console.Info("")
-			} else {
-				console.Header("System")
-				for _, c := range result.System {
-					if c.OK {
-						console.Ok(c.Msg)
-					} else {
-						console.Error(c.Msg)
-						allOk = false
-					}
-				}
-				console.Info("")
-				console.Header("Project")
-			}
-
-			for _, c := range result.Project {
-				if c.OK {
-					console.Ok(c.Msg)
-				} else {
-					console.Error(c.Msg)
-					allOk = false
-				}
-			}
-
-			if !allOk {
-				return fmt.Errorf("some checks failed")
-			}
-			console.Info("")
-			console.Ok("All checks passed.")
-			return nil
+			return runDoctor(true)
 		},
 	}
 }
@@ -394,28 +371,54 @@ all available topics, or specify a topic name for details.`,
 
 // --- Helpers ---
 
-func promptGlobalConfig() *config.GlobalConfig {
-	console.Info("")
-	console.Header("No global config found. Let's set one up.")
-	console.Info("")
-	reader := bufio.NewReader(os.Stdin)
+func runDoctor(interactive bool) error {
+	result := doctor.RunAllChecks("", interactive)
 
-	fmt.Print("  Backend [git/rclone] (git): ")
-	backend, _ := reader.ReadString('\n')
-	backend = strings.TrimSpace(backend)
-	if backend == "" {
-		backend = "git"
+	console.Info("")
+	if result.InJail {
+		console.Header("Health checks (no global config — running in container?)")
+	} else {
+		console.Header("Health checks")
+		for _, c := range result.System {
+			if c.OK {
+				console.Ok(c.Msg)
+			} else {
+				console.Error(c.Msg)
+			}
+		}
+	}
+	for _, c := range result.Project {
+		if c.OK {
+			console.Ok(c.Msg)
+		} else {
+			console.Error(c.Msg)
+		}
 	}
 
-	fmt.Print("  Remote URL: ")
-	remote, _ := reader.ReadString('\n')
-	remote = strings.TrimSpace(remote)
+	if result.InJail {
+		console.Info("")
+		console.Hint("Running in container — write files to swarf/ directly.")
+		console.Hint("The host daemon handles sync and backup.")
+	}
 
-	gc := &config.GlobalConfig{Backend: backend, Remote: remote, Debounce: "5s"}
-	config.WriteGlobalConfig(gc)
-	console.Ok(fmt.Sprintf("Wrote %s", paths.GlobalConfigTOML))
-	return gc
+	allOk := true
+	for _, c := range result.System {
+		if !c.OK {
+			allOk = false
+		}
+	}
+	for _, c := range result.Project {
+		if !c.OK {
+			allOk = false
+		}
+	}
+	if allOk && !result.InJail {
+		console.Info("")
+		console.Ok("All checks passed.")
+	}
+	return nil
 }
+
 
 func readPID() (int, bool) {
 	data, err := os.ReadFile(paths.PIDFile)
