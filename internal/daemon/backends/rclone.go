@@ -49,6 +49,13 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 		return SyncResult{Success: false, Message: "rclone not installed", FilesChanged: nFiles}
 	}
 
+	// Ensure the remote directory exists before syncing.
+	slog.Info("sync: ensuring remote directory exists", "remote", r.Remote)
+	mkdirCmd := exec.Command("rclone", "mkdir", r.Remote)
+	if mkOut, mkErr := mkdirCmd.CombinedOutput(); mkErr != nil {
+		slog.Warn("sync: rclone mkdir failed (may be ok)", "remote", r.Remote, "err", mkErr, "output", strings.TrimSpace(string(mkOut)))
+	}
+
 	// Sync the entire store including .git/ so history is preserved on the remote.
 	slog.Info("sync: rclone sync starting", "from", storePath, "to", r.Remote)
 	cmd := exec.Command("rclone", "sync", storePath, r.Remote, "-v")

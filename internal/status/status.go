@@ -55,16 +55,25 @@ func printStoreInfo(gc *config.GlobalConfig) {
 	}
 
 	if paths.IsDir(paths.StoreDir) && gitexec.IsRepo(paths.StoreDir) {
-		// Count files across all project swarf/ dirs that haven't been
-		// mirrored to the store yet (new, modified, or not committed).
+		// Pending = files that haven't reached the remote yet.
+		// This includes: unmirrored project files + uncommitted store
+		// changes + committed-but-not-pushed commits.
 		pending := countPendingFiles()
 		storeStatus := gitexec.StatusPorcelain(paths.StoreDir)
 		storeDirty := countNonEmpty(strings.Split(strings.TrimSpace(storeStatus), "\n"))
-		pending += storeDirty // also count uncommitted store changes
-		if pending > 0 {
-			rows = append(rows, []string{"Pending", yellowStyle.Render(fmt.Sprintf("%d file(s) waiting to sync", pending))})
+		pending += storeDirty
+		unpushed := countUnpushedCommits(gc)
+		if pending > 0 || unpushed > 0 {
+			parts := []string{}
+			if pending > 0 {
+				parts = append(parts, fmt.Sprintf("%d file(s) not yet committed", pending))
+			}
+			if unpushed > 0 {
+				parts = append(parts, fmt.Sprintf("%d commit(s) not yet pushed", unpushed))
+			}
+			rows = append(rows, []string{"Pending", yellowStyle.Render(strings.Join(parts, ", "))})
 		} else {
-			rows = append(rows, []string{"Pending", greenStyle.Render("all synced")})
+			rows = append(rows, []string{"Pending", greenStyle.Render("all synced to remote")})
 		}
 		if out := gitLog(paths.StoreDir); out != "" {
 			rows = append(rows, []string{"Last commit", dimStyle.Render(out)})
@@ -186,6 +195,47 @@ func verifyRcloneRemote(remote string) [][]string {
 		{"Remote sync", yellowStyle.Render(fmt.Sprintf("mismatch — remote has %s, local has %s", remoteStr, localStr))},
 		{"", dimStyle.Render("The daemon may still be syncing. Check again shortly.")},
 	}
+}
+
+// countUnpushedCommits counts local commits not yet on the remote.
+func countUnpushedCommits(gc *config.GlobalConfig) int {
+	if gc.Backend == "git" {
+		// For git: count commits ahead of origin.
+		cmd := exec.Command("git", "rev-list", "--count", "HEAD", "--not", "--remotes=origin")
+		cmd.Dir = paths.StoreDir
+		out, err := cmd.Output()
+		if err != nil {
+			return 0
+		}
+		var n int
+		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &n)
+		return n
+	}
+	if gc.Backend == "rclone" {
+		// For rclone: if last-push is before last-commit, there are unpushed changes.
+		commitTime, commitOk := backends.ReadStamp(paths.LastCommitFile)
+		pushTime, pushOk := backends.ReadStamp(paths.LastPushFile)
+		if !commitOk {
+			return 0 // nothing committed
+		}
+		if !pushOk || pushTime.Before(commitTime) {
+			// Count commits since last push.
+			if !pushOk {
+				// Never pushed — count all commits.
+				cmd := exec.Command("git", "rev-list", "--count", "HEAD")
+				cmd.Dir = paths.StoreDir
+				out, err := cmd.Output()
+				if err != nil {
+					return 1 // at least signal something is pending
+				}
+				var n int
+				fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &n)
+				return n
+			}
+			return 1 // at least 1 unpushed
+		}
+	}
+	return 0
 }
 
 // countPendingFiles counts files in project swarf/ dirs that haven't been
