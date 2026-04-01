@@ -124,15 +124,6 @@ func TestE2EInitAndDoctor(t *testing.T) {
 		t.Fatal("expected .swarf to be a directory")
 	}
 
-	// .mise.local.toml should exist
-	data, err := os.ReadFile(filepath.Join(e.repo, ".mise.local.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), "swarf enter") {
-		t.Fatal("expected enter hook in .mise.local.toml")
-	}
-
 	// Doctor (some checks will fail — remote, daemon — but should not crash)
 	out, _ = e.swarf("doctor")
 	if !strings.Contains(out, "store") {
@@ -189,19 +180,16 @@ func TestE2ESweepAndRelink(t *testing.T) {
 		t.Fatal("expected file in .swarf/links/")
 	}
 
-	// Remove the symlink, then enter should re-create it
+	// Remove the symlink, then doctor should re-create it
 	os.Remove(filepath.Join(e.repo, "AGENTS.md"))
-	out, err = e.swarf("enter")
-	if err != nil {
-		t.Fatalf("enter failed: %s", out)
-	}
-
+	out, _ = e.swarf("doctor")
+	// Doctor auto-fixes missing links
 	fi, err = os.Lstat(filepath.Join(e.repo, "AGENTS.md"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("expected doctor to re-create missing symlink")
 	}
 	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected symlink after enter")
+		t.Fatal("expected symlink after doctor")
 	}
 }
 
@@ -221,27 +209,6 @@ func TestE2EStatus(t *testing.T) {
 	}
 }
 
-func TestE2EEnter(t *testing.T) {
-	e := setup(t)
-	e.swarf("init")
-
-	// Create a link source
-	source := filepath.Join(e.repo, "swarf", "links", "AGENTS.md")
-	os.WriteFile(source, []byte("# Agents\n"), 0o644)
-
-	out, err := e.swarf("enter")
-	if err != nil {
-		t.Fatalf("enter failed: %s", out)
-	}
-
-	fi, err := os.Lstat(filepath.Join(e.repo, "AGENTS.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected symlink after enter")
-	}
-}
 
 func TestE2EDocs(t *testing.T) {
 	e := setup(t)
@@ -298,12 +265,12 @@ func TestE2EFullLifecycle(t *testing.T) {
 		t.Fatal("CLAUDE.md should be symlink")
 	}
 
-	// 4. Remove symlink, re-enter
+	// 4. Remove symlink, doctor should re-create it
 	os.Remove(filepath.Join(e.repo, "CLAUDE.md"))
-	e.swarf("enter")
+	e.swarf("doctor")
 	fi, _ = os.Lstat(filepath.Join(e.repo, "CLAUDE.md"))
 	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("CLAUDE.md should be re-linked after enter")
+		t.Fatal("CLAUDE.md should be re-linked after doctor")
 	}
 
 	// 5. Status

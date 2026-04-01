@@ -87,7 +87,11 @@ func (r *Result) processLink(source, target, rel string, quiet bool) {
 	}
 
 	os.MkdirAll(filepath.Dir(target), 0o755)
-	if err := os.Symlink(source, target); err != nil {
+	relSource, err := filepath.Rel(filepath.Dir(target), source)
+	if err != nil {
+		relSource = source // fallback to absolute
+	}
+	if err := os.Symlink(relSource, target); err != nil {
 		console.Warn(fmt.Sprintf("Failed to link %s: %v", rel, err))
 		return
 	}

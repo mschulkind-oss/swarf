@@ -13,6 +13,7 @@ import (
 
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
+	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
 )
@@ -31,6 +32,7 @@ func Run(ctx context.Context) error {
 
 	backend := makeBackend(gc.Backend, gc.Remote)
 	debouncer := NewDebouncer(duration, func() {
+		relinkAllProjects()
 		mirrorAllProjects()
 		result := backend.Sync(paths.StoreDir)
 		if result.Success && result.FilesChanged > 0 {
@@ -44,8 +46,25 @@ func Run(ctx context.Context) error {
 	return watchProjects(ctx, debouncer)
 }
 
-// mirrorAllProjects copies each project's .swarf/ content into the central store,
-// including deletions (files removed from .swarf/ are removed from the store).
+// relinkAllProjects re-creates missing symlinks from swarf/links/ for all projects.
+func relinkAllProjects() {
+	drawers := config.ReadDrawers()
+	for _, d := range drawers {
+		if !paths.IsDir(paths.SwarfDir(d.Host)) {
+			continue
+		}
+		result, err := link.Run(d.Host, true)
+		if err != nil {
+			continue
+		}
+		if len(result.Created) > 0 {
+			slog.Info("re-linked", "project", d.Slug, "files", result.Created)
+		}
+	}
+}
+
+// mirrorAllProjects copies each project's swarf/ content into the central store,
+// including deletions (files removed from swarf/ are removed from the store).
 func mirrorAllProjects() {
 	drawers := config.ReadDrawers()
 	for _, d := range drawers {
@@ -72,7 +91,7 @@ func mirrorDir(src, dst string) error {
 	filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			slog.Warn("mirror: walk error", "path", path, "err", err)
-			return nil // continue walking
+			return nil
 		}
 		rel, _ := filepath.Rel(src, path)
 		if rel == "." {
@@ -89,13 +108,12 @@ func mirrorDir(src, dst string) error {
 		}
 
 		// Resolve symlinks: read the content, copy as regular file.
-		srcInfo, err := os.Stat(path) // follows symlinks
+		srcInfo, err := os.Stat(path)
 		if err != nil {
 			slog.Warn("mirror: stat failed", "path", path, "err", err)
 			return nil
 		}
 
-		// Skip if destination is already up-to-date.
 		if dstInfo, err := os.Stat(target); err == nil {
 			if srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
 				return nil
@@ -147,7 +165,8 @@ func makeBackend(backendType, remote string) backends.SyncBackend {
 	return &backends.GitBackend{}
 }
 
-// watchProjects watches all registered project .swarf/ dirs for changes.
+// watchProjects watches all registered project swarf/ dirs and project roots
+// (for auto-sweep targets) for changes.
 func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -155,52 +174,78 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 	}
 	defer watcher.Close()
 
-	// Ensure the store exists for the backend
 	os.MkdirAll(paths.StoreDir, 0o755)
 
-	watched := make(map[string]bool)
+	watchedSwarf := make(map[string]bool) // swarf/ dirs
+	watchedRoots := make(map[string]bool) // project roots for auto-sweep
+
 	refreshWatches := func() {
-		// Build set of current project dirs.
 		current := make(map[string]bool)
 		drawers := config.ReadDrawers()
 		for _, d := range drawers {
 			sd := paths.SwarfDir(d.Host)
 			current[sd] = true
-			if !paths.IsDir(sd) || watched[sd] {
-				continue
+
+			// Watch swarf/ dir for sync.
+			if paths.IsDir(sd) && !watchedSwarf[sd] {
+				if err := addRecursive(watcher, sd); err == nil {
+					watchedSwarf[sd] = true
+					slog.Info("Watching project", "name", d.Slug, "path", sd)
+				}
 			}
-			if err := addRecursive(watcher, sd); err == nil {
-				watched[sd] = true
-				slog.Info("Watching project", "name", d.Slug, "path", sd)
+
+			// Watch project root and auto-sweep target parent dirs.
+			if !watchedRoots[d.Host] {
+				watcher.Add(d.Host)
+				watchedRoots[d.Host] = true
+				// Watch parent dirs of auto-sweep targets (for nested paths).
+				gc := config.ReadGlobalConfig()
+				if gc != nil {
+					for _, p := range gc.AutoSweep {
+						parentDir := filepath.Dir(filepath.Join(d.Host, p))
+						if paths.IsDir(parentDir) {
+							watcher.Add(parentDir)
+						}
+					}
+				}
 			}
 		}
 
 		// Remove watches for projects that are no longer registered.
-		for sd := range watched {
+		for sd := range watchedSwarf {
 			if !current[sd] {
 				watcher.Remove(sd)
-				delete(watched, sd)
+				delete(watchedSwarf, sd)
 				slog.Info("Unwatched removed project", "path", sd)
 			}
 		}
 	}
 
 	refreshWatches()
-	if len(watched) == 0 {
+	if len(watchedSwarf) == 0 {
 		slog.Info("No projects found. Waiting for first 'swarf init'...")
 	}
 
-	// Catch up on any changes that happened while the daemon was stopped.
+	// Startup: auto-sweep, re-link, and catch up on missed changes.
+	autoSweepAll()
+	relinkAllProjects()
 	debouncer.Trigger()
 
-	// Periodically check for new projects
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+
+	// Build auto-sweep filename set for fast event filtering.
+	sweepNames := make(map[string]bool)
+	gc := config.ReadGlobalConfig()
+	if gc != nil {
+		for _, p := range gc.AutoSweep {
+			sweepNames[filepath.Base(p)] = true
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Flush pending changes before shutdown.
 			debouncer.Flush()
 			return ctx.Err()
 		case <-ticker.C:
@@ -216,7 +261,19 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 			if event.Has(fsnotify.Create) && paths.IsDir(event.Name) {
 				watcher.Add(event.Name)
 			}
-			debouncer.Trigger()
+
+			// If an auto-sweep target was created, sweep it immediately.
+			if event.Has(fsnotify.Create) && sweepNames[filepath.Base(event.Name)] {
+				autoSweepAll()
+			}
+
+			// Only trigger sync debouncer for changes inside swarf/ dirs.
+			for sd := range watchedSwarf {
+				if strings.HasPrefix(event.Name, sd) {
+					debouncer.Trigger()
+					break
+				}
+			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
@@ -236,8 +293,7 @@ func addRecursive(w *fsnotify.Watcher, root string) error {
 }
 
 // autoSweepAll checks auto-sweep targets across all projects and sweeps
-// any that exist as regular files (not already symlinks). This runs on
-// the 30s tick so files are swept promptly without waiting for a cd.
+// any that exist as regular files (not already symlinks).
 func autoSweepAll() {
 	gc := config.ReadGlobalConfig()
 	if gc == nil || len(gc.AutoSweep) == 0 {

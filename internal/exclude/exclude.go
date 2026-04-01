@@ -16,7 +16,7 @@ const (
 
 // BaseExcludes returns the default exclude entries using the current dir name.
 func BaseExcludes() []string {
-	return []string{"/" + paths.SwarfDirName + "/", "/.mise.local.toml"}
+	return []string{"/" + paths.SwarfDirName + "/"}
 }
 
 func excludeFile(hostRoot string) string {
@@ -115,6 +115,28 @@ func AddLinkedExcludes(hostRoot string, linkedPaths []string) error {
 		}
 	}
 	return UpdateExcludes(hostRoot, extra)
+}
+
+// RemoveExcludes removes the given entries from the managed exclude section.
+func RemoveExcludes(hostRoot string, entries []string) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	remove := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if !strings.HasPrefix(e, "/") {
+			e = "/" + e
+		}
+		remove[e] = true
+	}
+	current := ReadManagedExcludes(hostRoot)
+	var kept []string
+	for _, e := range current {
+		if !remove[e] {
+			kept = append(kept, e)
+		}
+	}
+	return WriteManagedExcludes(hostRoot, kept)
 }
 
 func dedupe(s []string) []string {

@@ -15,12 +15,12 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/daemon"
 	"github.com/mschulkind-oss/swarf/internal/doctor"
 	"github.com/mschulkind-oss/swarf/internal/docs"
-	"github.com/mschulkind-oss/swarf/internal/enter"
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/pull"
 	"github.com/mschulkind-oss/swarf/internal/status"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
+	"github.com/mschulkind-oss/swarf/internal/unlink"
 	"github.com/mschulkind-oss/swarf/internal/version"
 )
 
@@ -41,9 +41,16 @@ func main() {
 		Long: `Swarf gives your side-files a durable home alongside any project,
 without touching the project repo.
 
-Agent research, design docs, personal notes, skill files — swept into
-a private store that auto-syncs in the background. Invisible to git,
-durable across machines.
+Just drop files into the swarf/ directory — research notes, design docs,
+agent logs, anything. They sync automatically in the background, invisible
+to git, durable across machines.
+
+  echo "# Design Notes" > swarf/docs/design.md    # that's it
+
+Only use 'swarf sweep' for files that must appear at a specific path in
+the project tree (e.g. AGENTS.md, CLAUDE.md). Sweep moves the file into
+swarf/links/ and symlinks it back so tools find it where they expect.
+For everything else, just write directly to swarf/.
 
 Get started:
   swarf init              Set up swarf in the current project
@@ -68,7 +75,7 @@ Learn more:
 	root.AddCommand(
 		initCmd(),
 		sweepCmd(),
-		enterCmd(),
+		unlinkCmd(),
 		cloneCmd(),
 		pullCmd(),
 		daemonCmd(),
@@ -94,9 +101,12 @@ func initCmd() *cobra.Command {
 		Long: `Initialize swarf in the current git repository.
 
 Creates the central store (if it doesn't exist), registers this project,
-sets up .swarf/ directory, configures .git/info/exclude, re-links any
-swept files, and creates the mise enter hook. On first run, walks you
-through global config setup.`,
+sets up swarf/ directory, configures .git/info/exclude, and re-links any
+swept files. On first run, walks you through global config setup.
+
+After init, drop files directly into swarf/ — they sync automatically.
+Use 'swarf sweep' only for files that must appear at a specific path
+in the project tree (like AGENTS.md).`,
 		Example: `  swarf init              # interactive setup (first time)
   cd ~/other-project && swarf init   # instant (reuses config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -112,15 +122,19 @@ through global config setup.`,
 func sweepCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "sweep <file>...",
-		Short:   "Move files into .swarf/links/ and symlink them back",
+		Short:   "Move a file into swarf/links/ and symlink it back",
 		GroupID: groupCore,
 		Args:    cobra.MinimumNArgs(1),
-		Long: `Sweep moves files from the host repo into the swarf store and replaces
-them with symlinks. This lets files like AGENTS.md appear in the project
-tree while living in swarf's private, synced storage.
+		Long: `Sweep is for files that must live at a specific path in the project tree
+(e.g. AGENTS.md, CLAUDE.md, .copilot/skills/). It moves the file into
+swarf/links/ and replaces it with a symlink, so tools find it where they
+expect while swarf owns the actual content.
+
+For files that don't need a fixed location, skip sweep — just put them
+directly in swarf/ (e.g. swarf/docs/notes.md). That's simpler.
 
 The original path is automatically excluded from git via .git/info/exclude.
-Run 'swarf docs sweep' for the full guide.`,
+Use 'swarf unlink' to reverse a sweep.`,
 		Example: `  swarf sweep AGENTS.md
   swarf sweep CLAUDE.md .copilot/skills/SKILL.md
   swarf sweep docs/design.md`,
@@ -128,13 +142,21 @@ Run 'swarf docs sweep' for the full guide.`,
 	}
 }
 
-func enterCmd() *cobra.Command {
+func unlinkCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:    "enter",
-		Short:  "Re-link on project enter (internal, called by mise hook)",
-		Hidden: true,
-		Args:   cobra.NoArgs,
-		Run:    func(cmd *cobra.Command, args []string) { enter.Run() },
+		Use:     "unlink <file>...",
+		Short:   "Reverse a sweep: replace symlinks with regular files",
+		GroupID: groupCore,
+		Args:    cobra.MinimumNArgs(1),
+		Long: `Unlink reverses a previous sweep. It reads the file content from
+swarf/links/, writes it back as a regular file in the project tree,
+removes the symlink and the swarf/links/ copy, and cleans up the
+git exclude entry.
+
+This works inside jails and containers where the daemon isn't running.`,
+		Example: `  swarf unlink AGENTS.md
+  swarf unlink CLAUDE.md .copilot/skills/SKILL.md`,
+		RunE: func(cmd *cobra.Command, args []string) error { return unlink.Run(args, "") },
 	}
 }
 
@@ -284,7 +306,7 @@ func doctorCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		Long: `Runs a series of health checks: global config, store existence,
 remote connectivity, daemon status, .swarf/ directory, gitignore
-entries, mise hooks, and symlink integrity.
+entries, and symlink integrity. Missing links are auto-fixed.
 
 Green checks pass, red checks need attention.`,
 		Example: `  swarf doctor`,

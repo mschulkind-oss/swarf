@@ -9,8 +9,10 @@ import (
 	"syscall"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
+	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
@@ -131,16 +133,12 @@ func CheckGitignore(cwd string) []Check {
 
 	var checks []Check
 
-	required := map[string]string{
-		paths.SwarfDirName + "/": "/" + paths.SwarfDirName + "/",
-		".mise.local.toml":      "/.mise.local.toml",
-	}
-	for path, excludeEntry := range required {
-		if managedSet[excludeEntry] || gitexec.CheckIgnore(path, cwd) {
-			checks = append(checks, Check{path, true, fmt.Sprintf("%s is gitignored", path)})
-		} else {
-			checks = append(checks, Check{path, false, fmt.Sprintf("%s is NOT gitignored — run 'swarf init' to fix", path)})
-		}
+	swarfEntry := paths.SwarfDirName + "/"
+	swarfExclude := "/" + paths.SwarfDirName + "/"
+	if managedSet[swarfExclude] || gitexec.CheckIgnore(swarfEntry, cwd) {
+		checks = append(checks, Check{swarfEntry, true, fmt.Sprintf("%s is gitignored", swarfEntry)})
+	} else {
+		checks = append(checks, Check{swarfEntry, false, fmt.Sprintf("%s is NOT gitignored — run 'swarf init' to fix", swarfEntry)})
 	}
 
 	// Check linked files
@@ -164,53 +162,77 @@ func CheckGitignore(cwd string) []Check {
 	return checks
 }
 
-func CheckMiseLocal(cwd string) Check {
-	path := filepath.Join(cwd, ".mise.local.toml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return Check{".mise.local.toml", false, ".mise.local.toml not found — run 'swarf init'"}
-	}
-	content := string(data)
-	if strings.Contains(content, "swarf link") || strings.Contains(content, "swarf enter") {
-		return Check{".mise.local.toml", true, ".mise.local.toml has swarf enter hook"}
-	}
-	return Check{".mise.local.toml", false, ".mise.local.toml missing swarf enter hook"}
-}
-
-func CheckLinksHealthy(cwd string) Check {
+// CheckAndFixLinks checks that all files in swarf/links/ have corresponding
+// symlinks in the project root. Missing symlinks are created automatically.
+func CheckAndFixLinks(cwd string) Check {
 	linksDir := paths.LinksDir(cwd)
 	if fi, err := os.Stat(linksDir); err != nil || !fi.IsDir() {
 		return Check{"links", true, "No links directory"}
 	}
 
-	var broken []string
-	filepath.Walk(linksDir, func(path string, info os.FileInfo, err error) error {
+	result, err := link.Run(cwd, true)
+	if err != nil {
+		return Check{"links", false, fmt.Sprintf("Link error: %v", err)}
+	}
+
+	if len(result.Created) > 0 {
+		console.Ok(fmt.Sprintf("Fixed %d missing link(s): %s", len(result.Created), strings.Join(result.Created, ", ")))
+	}
+
+	if len(result.Warnings) > 0 {
+		return Check{"links", false, fmt.Sprintf("Link warnings: %s", strings.Join(result.Warnings, "; "))}
+	}
+	return Check{"links", true, "All links healthy"}
+}
+
+// CheckSymlinksRelative verifies that all swept symlinks use relative targets.
+// Absolute symlinks break in jails and containers with remapped directories.
+// Any absolute symlinks found are automatically fixed.
+func CheckSymlinksRelative(cwd string) Check {
+	linksDir := paths.LinksDir(cwd)
+	if fi, err := os.Stat(linksDir); err != nil || !fi.IsDir() {
+		return Check{"symlink paths", true, "No links directory"}
+	}
+
+	var absolute []string
+	filepath.Walk(linksDir, func(source string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
-		rel, _ := filepath.Rel(linksDir, path)
+		rel, _ := filepath.Rel(linksDir, source)
 		target := filepath.Join(cwd, rel)
-		fi, lerr := os.Lstat(target)
-		if lerr != nil {
+		fi, lErr := os.Lstat(target)
+		if lErr != nil || fi.Mode()&os.ModeSymlink == 0 {
 			return nil
 		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			if _, err := os.Stat(target); os.IsNotExist(err) {
-				broken = append(broken, rel)
+		linkDest, rErr := os.Readlink(target)
+		if rErr != nil {
+			return nil
+		}
+		if filepath.IsAbs(linkDest) {
+			// Auto-fix: rewrite as relative symlink.
+			relDest, err := filepath.Rel(filepath.Dir(target), source)
+			if err != nil {
+				return nil
+			}
+			os.Remove(target)
+			if err := os.Symlink(relDest, target); err == nil {
+				absolute = append(absolute, rel)
 			}
 		}
 		return nil
 	})
 
-	if len(broken) > 0 {
-		return Check{"links", false, fmt.Sprintf("Broken symlinks: %s", strings.Join(broken, ", "))}
+	if len(absolute) > 0 {
+		return Check{"symlink paths", true, fmt.Sprintf("Fixed %d absolute symlink(s): %s", len(absolute), strings.Join(absolute, ", "))}
 	}
-	return Check{"links", true, "All links healthy"}
+	return Check{"symlink paths", true, "All symlinks are relative"}
 }
 
 // RunAllChecks returns project and system checks grouped in a Result.
 // When global config is missing (e.g. inside a container/jail), system
 // checks are skipped and InJail is set to true.
+// Missing links are automatically fixed.
 func RunAllChecks(cwd string) Result {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
@@ -221,8 +243,8 @@ func RunAllChecks(cwd string) Result {
 	// Project-local checks — always run.
 	r.Project = append(r.Project, CheckSwarfDirExists(cwd))
 	r.Project = append(r.Project, CheckGitignore(cwd)...)
-	r.Project = append(r.Project, CheckMiseLocal(cwd))
-	r.Project = append(r.Project, CheckLinksHealthy(cwd))
+	r.Project = append(r.Project, CheckAndFixLinks(cwd))
+	r.Project = append(r.Project, CheckSymlinksRelative(cwd))
 
 	// System checks — skip if no global config (jail/container).
 	gc := config.ReadGlobalConfig()

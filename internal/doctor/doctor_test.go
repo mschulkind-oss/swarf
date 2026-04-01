@@ -115,59 +115,93 @@ func TestCheckSwarfDirPlainDir(t *testing.T) {
 	}
 }
 
-func TestCheckMiseLocalMissing(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	c := doctor.CheckMiseLocal(repo)
-	if c.OK {
-		t.Fatal("expected mise local missing")
-	}
-}
-
-func TestCheckMiseLocalPresent(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	os.WriteFile(filepath.Join(repo, ".mise.local.toml"), []byte("[hooks]\nenter = \"swarf enter\"\n"), 0o644)
-	c := doctor.CheckMiseLocal(repo)
-	if !c.OK {
-		t.Fatalf("expected mise local present: %s", c.Msg)
-	}
-}
-
-func TestCheckMiseLocalMissingHook(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	os.WriteFile(filepath.Join(repo, ".mise.local.toml"), []byte("[tools]\npython = '3.13'\n"), 0o644)
-	c := doctor.CheckMiseLocal(repo)
-	if c.OK {
-		t.Fatal("expected missing hook")
-	}
-}
-
-func TestCheckLinksHealthy(t *testing.T) {
+func TestCheckAndFixLinksHealthy(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	target := filepath.Join(repo, "AGENTS.md")
 	os.Symlink(source, target)
-	c := doctor.CheckLinksHealthy(repo)
+	c := doctor.CheckAndFixLinks(repo)
 	if !c.OK {
 		t.Fatalf("expected links healthy: %s", c.Msg)
 	}
 }
 
-func TestCheckBrokenSymlink(t *testing.T) {
+func TestCheckAndFixLinksMissing(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
-	target := filepath.Join(repo, "AGENTS.md")
-	os.Symlink(filepath.Join(repo, "nonexistent"), target)
-	c := doctor.CheckLinksHealthy(repo)
-	if c.OK {
-		t.Fatal("expected broken symlink detected")
+	// Don't create the symlink — CheckAndFixLinks should create it
+	c := doctor.CheckAndFixLinks(repo)
+	if !c.OK {
+		t.Fatalf("expected links fixed: %s", c.Msg)
+	}
+	// Verify symlink was created
+	fi, err := os.Lstat(filepath.Join(repo, "AGENTS.md"))
+	if err != nil {
+		t.Fatal("expected symlink to be created")
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected symlink")
 	}
 }
 
-func TestCheckLinksNoDir(t *testing.T) {
+func TestCheckAndFixLinksNoDir(t *testing.T) {
 	repo := testutil.GitRepo(t)
-	c := doctor.CheckLinksHealthy(repo)
+	c := doctor.CheckAndFixLinks(repo)
+	if !c.OK {
+		t.Fatal("expected ok when no links dir")
+	}
+}
+
+func TestCheckSymlinksRelativeAllGood(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	os.WriteFile(source, []byte("# Agents\n"), 0o644)
+	// Create a correct relative symlink.
+	target := filepath.Join(repo, "AGENTS.md")
+	relPath, _ := filepath.Rel(filepath.Dir(target), source)
+	os.Symlink(relPath, target)
+
+	c := doctor.CheckSymlinksRelative(repo)
+	if !c.OK {
+		t.Fatalf("expected ok: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "All symlinks are relative") {
+		t.Fatalf("unexpected msg: %s", c.Msg)
+	}
+}
+
+func TestCheckSymlinksRelativeFixesAbsolute(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
+	os.WriteFile(source, []byte("# Agents\n"), 0o644)
+	// Create an absolute symlink (the old behavior).
+	target := filepath.Join(repo, "AGENTS.md")
+	os.Symlink(source, target)
+
+	c := doctor.CheckSymlinksRelative(repo)
+	if !c.OK {
+		t.Fatalf("expected ok after fix: %s", c.Msg)
+	}
+	if !strings.Contains(c.Msg, "Fixed 1 absolute") {
+		t.Fatalf("expected fix message: %s", c.Msg)
+	}
+
+	// Verify it's now relative.
+	linkDest, _ := os.Readlink(target)
+	if filepath.IsAbs(linkDest) {
+		t.Fatalf("symlink should be relative after fix, got: %s", linkDest)
+	}
+	// Verify it still resolves correctly.
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("symlink should still resolve: %v", err)
+	}
+}
+
+func TestCheckSymlinksRelativeNoLinks(t *testing.T) {
+	repo := testutil.GitRepo(t)
+	c := doctor.CheckSymlinksRelative(repo)
 	if !c.OK {
 		t.Fatal("expected ok when no links dir")
 	}
@@ -180,9 +214,6 @@ func TestCheckGitignore(t *testing.T) {
 	for _, c := range checks {
 		if c.Name == paths.SwarfDirName+"/" && !c.OK {
 			t.Fatalf("swarf dir should be gitignored: %s", c.Msg)
-		}
-		if c.Name == ".mise.local.toml" && !c.OK {
-			t.Fatalf(".mise.local.toml should be gitignored: %s", c.Msg)
 		}
 	}
 }

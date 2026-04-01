@@ -84,7 +84,7 @@ func sweepOne(pathStr, hostRoot, linksDir string) (string, bool) {
 
 	dest := filepath.Join(linksDir, rel)
 	if _, err := os.Stat(dest); err == nil {
-		console.Warn(fmt.Sprintf("%s already exists in .swarf/links/, skipping.", rel))
+		console.Warn(fmt.Sprintf("%s already exists in %s/links/, skipping.", rel, paths.SwarfDirName))
 		return "", false
 	}
 
@@ -93,7 +93,11 @@ func sweepOne(pathStr, hostRoot, linksDir string) (string, bool) {
 		console.Error(fmt.Sprintf("Failed to move %s: %v", rel, err))
 		return "", false
 	}
-	if err := os.Symlink(dest, source); err != nil {
+	relTarget, err := filepath.Rel(filepath.Dir(source), dest)
+	if err != nil {
+		relTarget = dest // fallback to absolute
+	}
+	if err := os.Symlink(relTarget, source); err != nil {
 		console.Error(fmt.Sprintf("Failed to create symlink for %s: %v", rel, err))
 		return "", false
 	}

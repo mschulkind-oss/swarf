@@ -51,23 +51,6 @@ func TestInitCreatesStoreGitRepo(t *testing.T) {
 	}
 }
 
-func TestInitCreatesMiseLocal(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	config.WriteGlobalConfig(testConfig)
-	initialize.Run(testConfig)
-	data, err := os.ReadFile(filepath.Join(repo, ".mise.local.toml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	if !strings.Contains(content, "swarf enter") {
-		t.Fatal("expected swarf enter in .mise.local.toml")
-	}
-	if !strings.Contains(content, "[hooks]") {
-		t.Fatal("expected [hooks] section")
-	}
-}
-
 func TestInitRegistersDrawer(t *testing.T) {
 	testutil.GitRepo(t)
 	config.WriteGlobalConfig(testConfig)
@@ -103,9 +86,6 @@ func TestInitUpdatesGitInfoExclude(t *testing.T) {
 	if !strings.Contains(content, "/"+paths.SwarfDirName+"/") {
 		t.Fatal("expected swarf dir in exclude")
 	}
-	if !strings.Contains(content, "/.mise.local.toml") {
-		t.Fatal("expected /.mise.local.toml in exclude")
-	}
 }
 
 func TestInitWithGitRemote(t *testing.T) {
@@ -124,23 +104,6 @@ func TestInitWithGitRemote(t *testing.T) {
 	}
 	if !strings.Contains(string(out), bare) {
 		t.Fatalf("expected remote %s in output, got %s", bare, out)
-	}
-}
-
-func TestInitExistingMiseLocalWarns(t *testing.T) {
-	repo := testutil.GitRepo(t)
-	config.WriteGlobalConfig(testConfig)
-	os.WriteFile(filepath.Join(repo, ".mise.local.toml"), []byte("[tools]\npython = '3.13'\n"), 0o644)
-
-	err := initialize.Run(testConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Original content should be preserved
-	data, _ := os.ReadFile(filepath.Join(repo, ".mise.local.toml"))
-	if !strings.Contains(string(data), "python") {
-		t.Fatal("expected existing content preserved")
 	}
 }
 

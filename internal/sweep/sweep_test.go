@@ -28,6 +28,12 @@ func TestSweepMoveAndSymlink(t *testing.T) {
 		t.Fatal("expected original to be replaced with symlink")
 	}
 
+	// Symlink must be relative for jail/remapped-dir portability.
+	linkTarget, _ := os.Readlink(target)
+	if filepath.IsAbs(linkTarget) {
+		t.Fatalf("expected relative symlink, got absolute: %s", linkTarget)
+	}
+
 	dest := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
 		t.Fatal("expected file in swarf/links/")
