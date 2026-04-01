@@ -42,10 +42,14 @@ func main() {
 without touching the project repo.
 
 Just drop files into the swarf/ directory — research notes, design docs,
-agent logs, anything. They sync automatically in the background, invisible
+logs, anything. They sync automatically in the background, invisible
 to git, durable across machines.
 
   echo "# Design Notes" > swarf/docs/design.md    # that's it
+
+Everything in swarf/ is automatically gitignored — you never need to
+worry about accidentally committing it. Swept symlinks (via swarf sweep)
+are gitignored too.
 
 Only use 'swarf sweep' for files that must appear at a specific path in
 the project tree (e.g. AGENTS.md, CLAUDE.md). Sweep moves the file into
@@ -105,8 +109,9 @@ sets up swarf/ directory, configures .git/info/exclude, and re-links any
 swept files. On first run, walks you through global config setup.
 
 After init, drop files directly into swarf/ — they sync automatically.
-Use 'swarf sweep' only for files that must appear at a specific path
-in the project tree (like AGENTS.md).`,
+Both swarf/ and any swept symlinks are automatically gitignored, so
+nothing leaks into the repo. Use 'swarf sweep' only for files that
+must appear at a specific path in the project tree (like AGENTS.md).`,
 		Example: `  swarf init              # interactive setup (first time)
   cd ~/other-project && swarf init   # instant (reuses config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -133,7 +138,8 @@ expect while swarf owns the actual content.
 For files that don't need a fixed location, skip sweep — just put them
 directly in swarf/ (e.g. swarf/docs/notes.md). That's simpler.
 
-The original path is automatically excluded from git via .git/info/exclude.
+Both the original path and the swarf/ directory are automatically
+gitignored (via .git/info/exclude) — nothing extra to configure.
 Use 'swarf unlink' to reverse a sweep.`,
 		Example: `  swarf sweep AGENTS.md
   swarf sweep CLAUDE.md .copilot/skills/SKILL.md
