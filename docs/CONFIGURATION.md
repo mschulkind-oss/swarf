@@ -48,9 +48,11 @@ The sync transport. Two options:
   repo over SSH, etc. This is the recommended backend if you have a git host.
 
 - **`rclone`** — The daemon commits locally (the store is always a git repo),
-  then uses `rclone sync` to upload the entire store — including `.git/` — to
-  the remote. This gives you full commit history on any backend rclone supports
-  (Google Drive, Dropbox, S3, B2, SFTP, etc.).
+  then uses `rclone sync` to upload the entire store to the remote. Your
+  files are browseable directly in Google Drive (or wherever) — organized
+  by project, just like the local store. The `.git/` directory is synced
+  too, so you get full commit history. Works with any rclone backend:
+  Google Drive, Dropbox, S3, B2, SFTP, etc.
 
 #### `remote`
 
@@ -172,8 +174,9 @@ Each project gets a subdirectory matching its slug. The daemon mirrors
 file changes (including deletions) from project `swarf/` dirs into the
 store, then commits and pushes.
 
-For rclone backends, the entire store including `.git/` is synced to the
-remote, preserving full commit history.
+For rclone backends, the entire store is synced to the remote — working
+files are browseable directly in Google Drive (or wherever), and `.git/`
+is included for full commit history.
 
 ## Daemon service
 

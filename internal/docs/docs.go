@@ -305,15 +305,18 @@ const backendsDoc = `
 
   Rclone (Google Drive, Dropbox, S3, etc.)
   -----------------------------------------
-  Uses rclone to copy the store to any cloud provider.
+  Uses rclone to sync the store to any cloud provider. The entire store
+  is synced — your files are browseable directly in Google Drive (or
+  wherever), organized by project. The .git/ directory is included too,
+  so you get full commit history.
 
     Backend: rclone
-    Remote:  gdrive:swarf
+    Remote:  gdrive:swarf-store
 
   Setup:
     1. Install rclone: brew install rclone
     2. Configure a remote: rclone config
-    3. Run 'swarf init' with backend=rclone
+    3. Run 'swarf init', pick rclone, select your remote from the menu
 
   For Google Drive, use the 'drive.file' scope — this restricts the
   OAuth token to files rclone created, so it can't read your other docs.
@@ -323,5 +326,6 @@ const backendsDoc = `
     > scope: drive.file (option 2)
     > auto config: y (opens browser)
 
-  Then use 'gdrive:swarf' as your remote.
+  Then pick 'gdrive:' in the swarf init menu and accept the default
+  path 'swarf-store'.
 `

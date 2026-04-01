@@ -128,63 +128,21 @@ the config to clone, but the config is what you're trying to restore.
 
 ---
 
-### Git-Backed Rclone (Unified Store Format)
+### Git-Backed Rclone (Done)
 
-Today the git and rclone backends are separate paths: git stores commit
-history, rclone just copies files. This means rclone users lose history,
-and the two codepaths diverge in behavior.
+The store is always a local git repo. The rclone backend syncs the entire
+store directory to the remote — both working files and `.git/`. This means:
 
-**Proposed change:** The store is *always* a local git repo with auto-commits.
-The backend only controls transport — how the repo gets to the remote:
+- **Files are browseable.** Open Google Drive and see your projects organized
+  by name, with all your docs and notes right there. No opaque blob storage.
+- **Full history.** The `.git/` directory is on the remote too, so `swarf clone`
+  on a new machine gets the complete commit log.
+- **One codepath.** Both backends commit locally the same way. The only
+  difference is transport: `git push` vs `rclone sync`.
 
-- **git backend:** `git push` / `git pull` (unchanged)
-- **rclone backend:** `rclone sync` the store's `.git` directory (or a git
-  bundle) to Google Drive / Dropbox / S3 / etc.
-
-**Benefits:**
-- History on every backend. `swarf log` and `swarf restore` work identically.
-- One codepath for commits, mirroring, conflict detection.
-- Rclone remote doesn't need to be human-browseable — it's backup, not a
-  file browser. Cryptic `.git` objects on Drive are fine.
-- No encryption needed (but could be layered later with `git-crypt` or
-  similar).
-
-**Format options for rclone sync:**
-1. **Packed `.git/` directory.** Run `git repack -a -d` before each sync to
-   consolidate loose objects into a single pack file. A small personal store
-   ends up with ~10-15 files total (one .pack, one .idx, HEAD, config, refs).
-   Rclone syncs only changed files. This is the sweet spot.
-2. **Git bundle (`git bundle create`).** Single file, minimal API calls (1).
-   But it's a full rewrite every sync — uploads the entire history each time.
-   Worse for bandwidth as the store grows.
-3. **Loose `.git/` (no packing).** Hundreds of small object files. Each costs
-   one API call. Hits Drive's 3 writes/sec limit quickly.
-
-**Google Drive API limits (why this matters):**
-- Write limit: **3 requests/second sustained** (hard cap, can't be increased)
-- Read limit: 20,000 calls/100 seconds (not a concern)
-- Rclone does NOT batch API calls — each file operation costs one call
-- Syncing 500 loose git objects = 500 API calls = ~3 minutes of throttling
-- Syncing 10-15 packed files = 10-15 API calls = instant
-
-**Recommendation:** Option 1 (sync `.git/` directly). No special packing
-needed.
-
-The math works out: each commit creates 1 tree + 1 commit + 1 blob per
-changed file. The daemon debounces (5s), so multiple edits batch into one
-commit. Typical sync = 3-7 loose objects. At Drive's 3 writes/sec limit,
-that's 1-2 seconds. Editing a single file after a previous sync adds only
-1 new blob (tree and commit are shared across files in the same commit),
-so marginal cost is 1 API call per file.
-
-A swarf store is tiny text files — loose objects are bytes. Repacking is
-a space optimization that can wait indefinitely. Just let `git gc --auto`
-run with defaults and don't think about it.
-
-**Migration:** Existing rclone users have flat file mirrors without git.
-Add a `swarf migrate` or have doctor detect the old format and offer to
-convert (init a git repo in the store, commit everything, switch to
-git-backed sync).
+**API cost:** Each commit creates a few loose git objects. At Google Drive's
+3 writes/sec limit, a typical sync (3-7 new objects + working file changes)
+takes a few seconds. `git gc --auto` handles repacking when needed.
 
 ---
 

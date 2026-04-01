@@ -44,8 +44,9 @@ my-project/
 
 The central store at `~/.local/share/swarf/` mirrors all projects into a
 single git repo. The daemon commits changes locally, then pushes to your
-remote. For rclone backends, the entire store (including `.git/` for history)
-is synced to the remote.
+remote. For rclone backends, the entire store is synced — both working
+files and `.git/`. This means you can browse your files directly in Google
+Drive (or whatever backend), and you get full commit history too.
 
 ## Install
 
@@ -122,8 +123,9 @@ numbered menu. Swarf defaults to `swarf-store` as the directory path:
 ✓ Remote: gdrive:swarf-store
 ```
 
-The store is always a local git repo — rclone transports the `.git/`
-directory to the remote so you get full history on every backend.
+The store is always a local git repo. Rclone syncs the whole store to
+the remote — your files are browseable directly in Google Drive (or
+wherever), and you get full git history via the `.git/` directory.
 
 ## Using swarf
 
