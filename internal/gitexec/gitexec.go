@@ -47,7 +47,7 @@ func AddRemote(dir, name, url string) error {
 }
 
 func AddAll(dir string) error {
-	_, err := run(dir, "add", "-A")
+	_, err := run(dir, "add", "--force", "-A")
 	return err
 }
 
