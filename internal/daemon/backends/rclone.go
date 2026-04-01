@@ -60,7 +60,7 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 		r.remoteMkdir = true
 	}
 
-	// Sync the entire store including .git/ so history is preserved on the remote.
+	// Sync the entire store to the remote: working files (browseable) and .git/ (history).
 	slog.Info("sync: rclone sync starting", "from", storePath, "to", r.Remote)
 	cmd := exec.Command("rclone", "sync", storePath, r.Remote, "-v")
 	out, err := cmd.CombinedOutput()
