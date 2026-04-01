@@ -49,9 +49,9 @@ func CheckAndFixGlobalConfig(interactive bool) (*config.GlobalConfig, Check) {
 	gc := config.ReadGlobalConfig()
 	if gc != nil {
 		if gc.Remote == "" {
-			return gc, Check{"global config", false, "Global config has no remote configured"}
+			return gc, Check{"global config", false, fmt.Sprintf("Global config has no remote configured\n    Fix: edit %s and set remote", paths.GlobalConfigTOML)}
 		}
-		return gc, Check{"global config", true, fmt.Sprintf("Global config: backend=%s, remote=%s", gc.Backend, gc.Remote)}
+		return gc, Check{"global config", true, fmt.Sprintf("Global config: backend=%s, remote=%s (%s)", gc.Backend, gc.Remote, paths.GlobalConfigTOML)}
 	}
 
 	if !interactive {
@@ -200,23 +200,59 @@ func CheckRemoteReachable() Check {
 
 	if gc.Backend == "git" {
 		cmd := exec.Command("git", "ls-remote", gc.Remote)
-		if err := cmd.Run(); err != nil {
-			return Check{"remote", false, fmt.Sprintf("Git remote not reachable: %s", gc.Remote)}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return Check{"remote", false, fmt.Sprintf(
+				"Git remote not reachable: %s\n    Error: %s\n    Fix: edit %s and set remote to a valid git URL",
+				gc.Remote, strings.TrimSpace(string(out)), paths.GlobalConfigTOML)}
 		}
 		return Check{"remote", true, fmt.Sprintf("Git remote reachable: %s", gc.Remote)}
 	}
 
 	if gc.Backend == "rclone" {
 		if _, err := exec.LookPath("rclone"); err != nil {
-			return Check{"remote", false, "rclone not installed"}
+			return Check{"remote", false, "rclone not installed — install it: https://rclone.org/install/"}
 		}
+
+		// Validate remote format: must contain a colon (e.g. "gdrive:path").
+		if !strings.Contains(gc.Remote, ":") {
+			return Check{"remote", false, fmt.Sprintf(
+				"Invalid rclone remote: %q — expected format like gdrive:swarf-store\n    Fix: edit %s and set remote to remotename:path",
+				gc.Remote, paths.GlobalConfigTOML)}
+		}
+
+		remoteName := strings.Split(gc.Remote, ":")[0]
+
+		// Check that the named remote actually exists in rclone config.
+		knownRemotes := listRcloneRemotes()
+		found := false
+		for _, r := range knownRemotes {
+			if strings.TrimSuffix(r, ":") == remoteName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			available := "none"
+			if len(knownRemotes) > 0 {
+				available = strings.Join(knownRemotes, ", ")
+			}
+			return Check{"remote", false, fmt.Sprintf(
+				"Rclone remote %q not found in rclone config\n    Available remotes: %s\n    Fix: run 'rclone config' to add it, or edit %s",
+				remoteName+":", available, paths.GlobalConfigTOML)}
+		}
+
+		// Remote exists in rclone config — try to reach it.
 		cmd := exec.Command("rclone", "lsd", gc.Remote)
-		if err := cmd.Run(); err != nil {
-			// For rclone, the remote path might not exist yet (first sync creates it).
-			// lsd failing isn't necessarily an error — the remote itself might be fine.
-			cmd2 := exec.Command("rclone", "about", strings.Split(gc.Remote, ":")[0]+":")
-			if err2 := cmd2.Run(); err2 != nil {
-				return Check{"remote", false, fmt.Sprintf("Rclone remote not reachable: %s", gc.Remote)}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			// Path might not exist yet (first sync creates it). Check the remote itself.
+			cmd2 := exec.Command("rclone", "about", remoteName+":")
+			out2, err2 := cmd2.CombinedOutput()
+			if err2 != nil {
+				return Check{"remote", false, fmt.Sprintf(
+					"Rclone remote not reachable: %s\n    rclone lsd: %s\n    rclone about: %s\n    Fix: check your rclone config with 'rclone config show %s'",
+					gc.Remote, strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)), remoteName)}
 			}
 			return Check{"remote", true, fmt.Sprintf("Rclone remote reachable (path will be created on first sync): %s", gc.Remote)}
 		}
