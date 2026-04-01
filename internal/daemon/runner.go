@@ -13,6 +13,7 @@ import (
 
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
+	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
@@ -34,6 +35,7 @@ func Run(ctx context.Context) error {
 	debouncer := NewDebouncer(duration, func() {
 		relinkAllProjects()
 		mirrorAllProjects()
+		initialize.WriteStoreReadme()
 		result := backend.Sync(paths.StoreDir)
 		if result.Success && result.FilesChanged > 0 {
 			slog.Info("sync: " + result.Message)
