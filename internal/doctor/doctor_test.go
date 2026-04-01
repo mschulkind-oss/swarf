@@ -90,8 +90,8 @@ func TestCheckSwarfDirExists(t *testing.T) {
 	if !c.OK {
 		t.Fatalf("expected .swarf to exist: %s", c.Msg)
 	}
-	if !strings.Contains(c.Msg, "linked to") {
-		t.Fatalf("expected 'linked to' in message: %s", c.Msg)
+	if !strings.Contains(c.Msg, "directory exists") {
+		t.Fatalf("expected 'directory exists' in message: %s", c.Msg)
 	}
 }
 
@@ -110,8 +110,8 @@ func TestCheckSwarfDirPlainDir(t *testing.T) {
 	if !c.OK {
 		t.Fatalf("expected .swarf dir ok: %s", c.Msg)
 	}
-	if !strings.Contains(c.Msg, "not a symlink") {
-		t.Fatalf("expected migration warning: %s", c.Msg)
+	if !strings.Contains(c.Msg, "directory exists") {
+		t.Fatalf("expected 'directory exists': %s", c.Msg)
 	}
 }
 

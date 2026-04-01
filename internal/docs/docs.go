@@ -75,45 +75,48 @@ func ListTopics() string {
 const architecture = `
   ARCHITECTURE
 
-  Swarf uses a single central store shared across all your projects.
+  Files live as regular files inside each project's .swarf/ directory.
+  A background daemon mirrors changes to a central backup store, which
+  syncs to your configured remote (git or rclone).
 
-  Layout
-  ------
-  ~/.local/share/swarf/         The central store (a git repo)
-  ├── my-project/               One directory per project (called a "drawer")
-  │   ├── links/                Files projected into the host tree as symlinks
+  Per-project layout
+  ------------------
+  my-project/
+  ├── src/
+  ├── .swarf/                    Real directory (auto-excluded from git)
+  │   ├── links/                 Files projected into the host tree
   │   │   ├── AGENTS.md
   │   │   └── CLAUDE.md
-  │   └── docs/                 Free-form storage (research, design, etc.)
+  │   └── docs/                  Free-form storage (research, design, etc.)
+  ├── AGENTS.md -> .swarf/links/AGENTS.md   (symlink)
+  └── .git/info/exclude          Auto-managed by swarf
+
+  Central backup store
+  --------------------
+  ~/.local/share/swarf/          Mirror of all projects (a git repo)
+  ├── my-project/                Mirrored from my-project/.swarf/
   ├── another-project/
-  └── .git/                     The store is itself a git repo
+  └── .git/
 
   ~/.config/swarf/
-  ├── config.toml               Global config (backend, remote, debounce)
-  └── drawers.toml              Registry: maps project slugs to host paths
-
-  Per-project
-  -----------
-  my-project/
-  ├── .swarf/ -> ~/.local/share/swarf/my-project   (symlink)
-  ├── AGENTS.md -> .swarf/links/AGENTS.md          (symlink)
-  └── .git/info/exclude         Auto-managed by swarf (hides .swarf/, links)
+  ├── config.toml                Global config (backend, remote, debounce)
+  └── drawers.toml               Registry: maps project slugs to host paths
 
   Key design decisions:
 
-  1. Single store: All projects share one git repo. This means one remote,
-     one daemon, one backup. No per-project git submodules or nested repos.
+  1. Local-first: Files live in each project's .swarf/ as regular files.
+     No symlinks to a central store — your data is right where you work.
 
-  2. Symlinks, not copies: Files in .swarf/links/ are symlinked into the
-     host tree. Edits go straight to the store. No sync lag.
+  2. Mirror + sync: The daemon watches all project .swarf/ dirs, mirrors
+     changes to ~/.local/share/swarf/ (a git repo), then pushes to remote.
+     One daemon, one remote, one backup for all projects.
 
-  3. .git/info/exclude: Swarf manages exclude entries in a fenced section.
+  3. Swept links: Files in .swarf/links/ are symlinked into the host tree.
+     This lets AGENTS.md appear in the project root while living in .swarf/.
+
+  4. .git/info/exclude: Swarf manages exclude entries in a fenced section.
      This is per-clone and never committed, so it works on shared repos
      and monorepos without touching .gitignore.
-
-  4. Daemon watches the store: A single background process (fsnotify)
-     watches ~/.local/share/swarf/ for changes, debounces, and syncs
-     to the configured backend.
 
   5. mise integration: 'swarf enter' runs on directory enter (via mise
      hooks) to re-link any files that were deleted or not yet created.
@@ -253,15 +256,16 @@ const daemonDoc = `
 
   How it works:
 
-    1. Watches the store directory recursively (fsnotify)
-    2. On any file change, resets a debounce timer (default 5s)
-    3. When the timer fires: git add -A && git commit && git push
-       (or rclone copy, depending on backend)
-    4. New subdirectories are automatically watched
+    1. Reads drawers.toml to find all registered project .swarf/ dirs
+    2. Watches each project's .swarf/ directory recursively (fsnotify)
+    3. On any file change, resets a debounce timer (default 5s)
+    4. When the timer fires:
+       a. Mirrors each project's .swarf/ to ~/.local/share/swarf/<project>/
+       b. Commits and pushes the central store (git or rclone)
+    5. New projects are picked up automatically (polled every 30s)
 
-  The daemon is a single process for all projects (since they share
-  one store). It starts watching immediately if the store exists,
-  or waits for it to be created.
+  The daemon is a single process for all projects — one watcher,
+  one backup, one remote.
 
   PID file:   ~/.config/swarf/daemon.pid
   Log file:   ~/.config/swarf/daemon.log

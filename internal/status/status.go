@@ -64,17 +64,17 @@ func printProjects() {
 	console.Info("")
 	console.Infof("%-20s %-40s %s", console.Color(console.Bold, "PROJECT"),
 		console.Color(console.Bold, "HOST PATH"),
-		console.Color(console.Bold, "LINKED"))
+		console.Color(console.Bold, "STATUS"))
 	console.Infof("%-20s %-40s %s", "-------", "---------", "------")
 	home, _ := os.UserHomeDir()
 	for _, d := range drawers {
 		displayHost := strings.Replace(d.Host, home, "~", 1)
-		linked := isSymlink(d.Host + "/.swarf")
-		linkedStr := console.Color(console.Red, "no")
-		if linked {
-			linkedStr = console.Color(console.Green, "yes")
+		hasSwarfDir := paths.IsDir(d.Host + "/.swarf")
+		statusStr := console.Color(console.Red, "missing")
+		if hasSwarfDir {
+			statusStr = console.Color(console.Green, "ok")
 		}
-		console.Infof("%-20s %-40s %s", d.Slug, displayHost, linkedStr)
+		console.Infof("%-20s %-40s %s", d.Slug, displayHost, statusStr)
 	}
 }
 
@@ -110,11 +110,6 @@ func gitLog(dir string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
-}
-
-func isSymlink(path string) bool {
-	fi, err := os.Lstat(path)
-	return err == nil && fi.Mode()&os.ModeSymlink != 0
 }
 
 func readPID(path string) (int, bool) {

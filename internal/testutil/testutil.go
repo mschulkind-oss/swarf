@@ -41,25 +41,26 @@ func GitRepo(t *testing.T) string {
 }
 
 // InitializedSwarf creates a git repo with swarf fully initialized:
-// store as git repo, project dir with links/, .swarf symlink.
+// store as git repo, project dir with .swarf/ as a real directory.
 func InitializedSwarf(t *testing.T) string {
 	t.Helper()
 	repo := GitRepo(t)
 	slug := filepath.Base(repo)
 
-	// Create store
+	// Create store (backup mirror)
 	os.MkdirAll(paths.StoreDir, 0o755)
 	run(t, paths.StoreDir, "git", "init")
 	run(t, paths.StoreDir, "git", "config", "user.email", "test@test.com")
 	run(t, paths.StoreDir, "git", "config", "user.name", "Test")
 
-	// Create project dir in store
+	// Create project dir in store (mirror target)
 	projDir := filepath.Join(paths.StoreDir, slug)
-	linksDir := filepath.Join(projDir, "links")
-	os.MkdirAll(linksDir, 0o755)
+	os.MkdirAll(filepath.Join(projDir, "links"), 0o755)
 
-	// Symlink .swarf -> store project dir
-	os.Symlink(projDir, filepath.Join(repo, ".swarf"))
+	// Create .swarf/ as a real directory in the project
+	swarfDir := filepath.Join(repo, ".swarf")
+	linksDir := filepath.Join(swarfDir, "links")
+	os.MkdirAll(linksDir, 0o755)
 
 	return repo
 }

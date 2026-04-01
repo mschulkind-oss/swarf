@@ -23,16 +23,16 @@ repos). Neither is good.
 
 ## How it works
 
-Swarf creates a `.swarf/` directory inside your project — a separate git repo,
-invisible to the host repo via `.git/info/exclude` (managed automatically by
-swarf). A background daemon watches for changes and syncs to a remote backend
-(a git repo or any rclone-supported cloud storage).
+Swarf creates a `.swarf/` directory inside your project — regular files,
+invisible to the host repo via `.git/info/exclude` (managed automatically).
+A background daemon watches for changes, mirrors them to a central backup
+store, and syncs to a remote backend (git or rclone).
 
 ```
 my-project/                      <- your repo (public)
 ├── src/
 ├── tests/
-├── .swarf/                      <- swarf repo (private, auto-excluded)
+├── .swarf/                      <- private storage (auto-excluded from git)
 │   ├── docs/research/           <- durable notes
 │   ├── docs/design/             <- specs and decisions
 │   ├── links/                   <- files projected into the host tree
@@ -40,6 +40,9 @@ my-project/                      <- your repo (public)
 │   └── open-questions.md
 └── AGENTS.md -> .swarf/links/AGENTS.md
 ```
+
+Files live locally in each project. The daemon mirrors all `.swarf/` dirs
+to `~/.local/share/swarf/` (a git repo), then pushes to your remote.
 
 ## Install
 
