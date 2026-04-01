@@ -24,7 +24,7 @@ func TestReadManagedExcludesEmpty(t *testing.T) {
 
 func TestWriteAndReadManagedExcludes(t *testing.T) {
 	tmp := makeRepo(t)
-	WriteManagedExcludes(tmp, []string{"/.swarf/", "/.mise.local.toml"})
+	WriteManagedExcludes(tmp, []string{"/swarf/", "/.mise.local.toml"})
 
 	entries := ReadManagedExcludes(tmp)
 	if len(entries) != 2 {
@@ -37,13 +37,13 @@ func TestWritePreservesUserContent(t *testing.T) {
 	path := filepath.Join(tmp, ".git", "info", "exclude")
 	os.WriteFile(path, []byte("# my custom ignores\n*.log\n"), 0o644)
 
-	WriteManagedExcludes(tmp, []string{"/.swarf/"})
+	WriteManagedExcludes(tmp, []string{"/swarf/"})
 
 	content, _ := os.ReadFile(path)
 	if !strings.Contains(string(content), "*.log") {
 		t.Fatal("user content was lost")
 	}
-	if !strings.Contains(string(content), "/.swarf/") {
+	if !strings.Contains(string(content), "/swarf/") {
 		t.Fatal("managed entry not found")
 	}
 }
@@ -57,7 +57,7 @@ func TestUpdateExcludes(t *testing.T) {
 	for _, e := range entries {
 		found[e] = true
 	}
-	if !found["/.swarf/"] || !found["/.mise.local.toml"] || !found["/AGENTS.md"] {
+	if !found["/swarf/"] || !found["/.mise.local.toml"] || !found["/AGENTS.md"] {
 		t.Fatalf("missing expected entries: %v", entries)
 	}
 }

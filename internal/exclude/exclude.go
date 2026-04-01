@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
 const (
@@ -12,7 +14,10 @@ const (
 	fenceEnd   = "# --- end swarf ---"
 )
 
-var baseExcludes = []string{"/.swarf/", "/.mise.local.toml"}
+// BaseExcludes returns the default exclude entries using the current dir name.
+func BaseExcludes() []string {
+	return []string{"/" + paths.SwarfDirName + "/", "/.mise.local.toml"}
+}
 
 func excludeFile(hostRoot string) string {
 	return filepath.Join(hostRoot, ".git", "info", "exclude")
@@ -92,7 +97,7 @@ func WriteManagedExcludes(hostRoot string, entries []string) error {
 
 func UpdateExcludes(hostRoot string, extra []string) error {
 	current := ReadManagedExcludes(hostRoot)
-	all := append(append([]string{}, baseExcludes...), current...)
+	all := append(append([]string{}, BaseExcludes()...), current...)
 	all = append(all, extra...)
 	return WriteManagedExcludes(hostRoot, all)
 }

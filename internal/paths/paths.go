@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 )
 
-const SwarfDirName = ".swarf"
+var SwarfDirName = "swarf"
 
 var (
 	ConfigDir        = xdg("XDG_CONFIG_HOME", ".config") + "/swarf"

@@ -14,7 +14,7 @@ import (
 
 var (
 	ErrNoProject = errors.New("not inside a swarf project — run 'swarf init' first")
-	ErrNoLinks   = errors.New(".swarf/links/ does not exist — run 'swarf init' first")
+	ErrNoLinks   = errors.New("swarf links/ does not exist — run 'swarf init' first")
 )
 
 func Run(filePaths []string, hostRoot string) error {
@@ -56,11 +56,11 @@ func sweepOne(pathStr, hostRoot, linksDir string) (string, bool) {
 		return "", false
 	}
 
-	// Check if inside .swarf/ BEFORE resolving
+	// Check if inside swarf dir BEFORE resolving
 	if rel, err := filepath.Rel(hostRoot, source); err == nil {
 		for _, part := range strings.Split(rel, string(filepath.Separator)) {
-			if part == ".swarf" {
-				console.Error(fmt.Sprintf("%s is already inside .swarf/.", pathStr))
+			if part == paths.SwarfDirName {
+				console.Error(fmt.Sprintf("%s is already inside %s/.", pathStr, paths.SwarfDirName))
 				return "", false
 			}
 		}

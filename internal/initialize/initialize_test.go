@@ -21,13 +21,13 @@ func TestInitCreatesSwarfDir(t *testing.T) {
 	if err := initialize.Run(testConfig); err != nil {
 		t.Fatal(err)
 	}
-	sd := filepath.Join(repo, ".swarf")
+	sd := paths.SwarfDir(repo)
 	fi, err := os.Stat(sd)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !fi.IsDir() {
-		t.Fatal("expected .swarf to be a directory")
+		t.Fatal("expected swarf dir to be a directory")
 	}
 }
 
@@ -35,10 +35,10 @@ func TestInitCreatesLinksDir(t *testing.T) {
 	repo := testutil.GitRepo(t)
 	config.WriteGlobalConfig(testConfig)
 	initialize.Run(testConfig)
-	linksDir := filepath.Join(repo, ".swarf", "links")
+	linksDir := paths.LinksDir(repo)
 	fi, err := os.Stat(linksDir)
 	if err != nil || !fi.IsDir() {
-		t.Fatal("expected .swarf/links/ to be a directory")
+		t.Fatal("expected swarf/links/ to be a directory")
 	}
 }
 
@@ -100,8 +100,8 @@ func TestInitUpdatesGitInfoExclude(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(data)
-	if !strings.Contains(content, "/.swarf/") {
-		t.Fatal("expected /.swarf/ in exclude")
+	if !strings.Contains(content, "/"+paths.SwarfDirName+"/") {
+		t.Fatal("expected swarf dir in exclude")
 	}
 	if !strings.Contains(content, "/.mise.local.toml") {
 		t.Fatal("expected /.mise.local.toml in exclude")

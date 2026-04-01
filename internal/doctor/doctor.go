@@ -106,15 +106,16 @@ func CheckDaemonRunning() Check {
 }
 
 func CheckSwarfDirExists(cwd string) Check {
-	sd := filepath.Join(cwd, ".swarf")
+	name := paths.SwarfDirName + "/"
+	sd := paths.SwarfDir(cwd)
 	fi, err := os.Lstat(sd)
 	if err != nil {
-		return Check{".swarf/", false, ".swarf/ directory not found — run 'swarf init'"}
+		return Check{name, false, fmt.Sprintf("%s directory not found — run 'swarf init'", name)}
 	}
 	if fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-		return Check{".swarf/", true, ".swarf/ directory exists"}
+		return Check{name, true, fmt.Sprintf("%s directory exists", name)}
 	}
-	return Check{".swarf/", false, ".swarf/ directory not found — run 'swarf init'"}
+	return Check{name, false, fmt.Sprintf("%s directory not found — run 'swarf init'", name)}
 }
 
 func CheckGitignore(cwd string) []Check {
@@ -131,8 +132,8 @@ func CheckGitignore(cwd string) []Check {
 	var checks []Check
 
 	required := map[string]string{
-		".swarf/":          "/.swarf/",
-		".mise.local.toml": "/.mise.local.toml",
+		paths.SwarfDirName + "/": "/" + paths.SwarfDirName + "/",
+		".mise.local.toml":      "/.mise.local.toml",
 	}
 	for path, excludeEntry := range required {
 		if managedSet[excludeEntry] || gitexec.CheckIgnore(path, cwd) {
@@ -143,7 +144,7 @@ func CheckGitignore(cwd string) []Check {
 	}
 
 	// Check linked files
-	linksDir := filepath.Join(cwd, ".swarf", "links")
+	linksDir := paths.LinksDir(cwd)
 	if fi, err := os.Stat(linksDir); err == nil && fi.IsDir() {
 		filepath.Walk(linksDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
@@ -177,7 +178,7 @@ func CheckMiseLocal(cwd string) Check {
 }
 
 func CheckLinksHealthy(cwd string) Check {
-	linksDir := filepath.Join(cwd, ".swarf", "links")
+	linksDir := paths.LinksDir(cwd)
 	if fi, err := os.Stat(linksDir); err != nil || !fi.IsDir() {
 		return Check{"links", true, "No links directory"}
 	}

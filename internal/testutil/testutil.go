@@ -57,10 +57,8 @@ func InitializedSwarf(t *testing.T) string {
 	projDir := filepath.Join(paths.StoreDir, slug)
 	os.MkdirAll(filepath.Join(projDir, "links"), 0o755)
 
-	// Create .swarf/ as a real directory in the project
-	swarfDir := filepath.Join(repo, ".swarf")
-	linksDir := filepath.Join(swarfDir, "links")
-	os.MkdirAll(linksDir, 0o755)
+	// Create swarf dir as a real directory in the project
+	os.MkdirAll(paths.LinksDir(repo), 0o755)
 
 	return repo
 }

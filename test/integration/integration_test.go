@@ -116,7 +116,7 @@ func TestE2EInitAndDoctor(t *testing.T) {
 	}
 
 	// .swarf should be a real directory
-	fi, err := os.Stat(filepath.Join(e.repo, ".swarf"))
+	fi, err := os.Stat(filepath.Join(e.repo, "swarf"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestE2ESweepAndRelink(t *testing.T) {
 	}
 
 	// Should exist in .swarf/links/
-	if _, err := os.Stat(filepath.Join(e.repo, ".swarf", "links", "AGENTS.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(e.repo, "swarf", "links", "AGENTS.md")); err != nil {
 		t.Fatal("expected file in .swarf/links/")
 	}
 
@@ -226,7 +226,7 @@ func TestE2EEnter(t *testing.T) {
 	e.swarf("init")
 
 	// Create a link source
-	source := filepath.Join(e.repo, ".swarf", "links", "AGENTS.md")
+	source := filepath.Join(e.repo, "swarf", "links", "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 
 	out, err := e.swarf("enter")
@@ -336,7 +336,7 @@ func TestE2ESecondProjectReusesStore(t *testing.T) {
 		t.Fatalf("init proj2: %s", out)
 	}
 
-	fi, err := os.Stat(filepath.Join(proj2, ".swarf"))
+	fi, err := os.Stat(filepath.Join(proj2, "swarf"))
 	if err != nil {
 		t.Fatal(err)
 	}
