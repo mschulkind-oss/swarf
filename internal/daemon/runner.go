@@ -129,6 +129,9 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 		slog.Info("No projects found. Waiting for first 'swarf init'...")
 	}
 
+	// Catch up on any changes that happened while the daemon was stopped.
+	debouncer.Trigger()
+
 	// Periodically check for new projects
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
