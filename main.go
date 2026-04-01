@@ -101,9 +101,9 @@ func initCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		Long: `Initialize swarf in the current git repository.
 
-This is an alias for 'swarf doctor' — it checks everything and fixes
-what's missing: global config (prompts on first run), central store,
-project registration, symlinks, gitignore entries, and system service.
+Like 'swarf doctor', this checks and fixes system-level setup (global
+config, central store, system service). The difference: init also
+creates swarf/ in the current directory if it doesn't exist yet.
 
 After init, drop files directly into swarf/ — they sync automatically.
 Both swarf/ and any swept symlinks are automatically gitignored, so
@@ -112,7 +112,7 @@ must appear at a specific path in the project tree (like AGENTS.md).`,
 		Example: `  swarf init              # interactive setup (first time)
   cd ~/other-project && swarf init   # instant (reuses config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(true)
+			return runDoctor(true, true)
 		},
 	}
 }
@@ -178,7 +178,7 @@ After cloning, run 'swarf init' in each project directory to re-link.`,
 			if err := clone.Run(); err != nil {
 				return err
 			}
-			return runDoctor(true)
+			return runDoctor(true, false)
 		},
 	}
 }
@@ -316,21 +316,20 @@ func doctorCmd() *cobra.Command {
 		Short:   "Validate that swarf is set up correctly",
 		GroupID: groupInfo,
 		Args:    cobra.NoArgs,
-		Long: `Checks everything and fixes what's missing. This is swarf's
-universal setup and repair command.
+		Long: `Checks system and project health, fixing what it can.
 
 Doctor notices and fixes problems automatically:
   - Missing global config → prompts to create
   - Missing store → creates it
-  - Missing project → initializes it
   - Missing symlinks → re-created
   - Absolute symlinks → converted to relative
   - Missing system service → offers to install
 
-'swarf init' is an alias for this command.`,
+Unlike 'swarf init', doctor will NOT create swarf/ in a new directory.
+Use 'swarf init' to set up swarf in a project for the first time.`,
 		Example: `  swarf doctor`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(true)
+			return runDoctor(true, false)
 		},
 	}
 }
@@ -371,8 +370,8 @@ all available topics, or specify a topic name for details.`,
 
 // --- Helpers ---
 
-func runDoctor(interactive bool) error {
-	result := doctor.RunAllChecks("", interactive)
+func runDoctor(interactive bool, initProject bool) error {
+	result := doctor.RunAllChecks("", interactive, initProject)
 
 	console.Info("")
 	if result.InJail {

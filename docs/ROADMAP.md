@@ -92,16 +92,15 @@ Future doctor checks to add:
 - Version mismatch (service binary vs current binary) → offer to reinstall
 - Missing gitignore entries → add them (already partially done)
 
-The end goal: **`swarf doctor` subsumes `swarf init`.** Init is just doctor
-with the assumption that you want things fixed. If you have a halfway-done
-install and come back later, `swarf doctor` picks up where you left off —
-it doesn't care about prior state, it just looks at what's missing and
-fixes it. `swarf init` stays as an alias (people expect it), but the
-implementation converges to `doctor.RunAllChecks(cwd, true)`.
+**`swarf init` and `swarf doctor` share the same engine** but have one
+key difference: init creates `swarf/` in the current directory if it
+doesn't exist yet, doctor does not. Both fix system-level issues
+(global config, store, service) interactively.
 
-This also simplifies the mental model: there's one command that makes
-everything right. You never need to remember whether to run init, doctor,
-or daemon install — just run doctor.
+If you have a halfway-done install and come back later, `swarf doctor`
+picks up where you left off for system setup. To actually set up a
+new project, use `swarf init` — that's the only command that creates
+the local `swarf/` directory.
 
 ---
 
