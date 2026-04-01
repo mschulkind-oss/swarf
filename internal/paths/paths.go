@@ -14,6 +14,8 @@ var (
 	DrawersTOML      = ConfigDir + "/drawers.toml"
 	PIDFile          = ConfigDir + "/daemon.pid"
 	LogFile          = ConfigDir + "/daemon.log"
+	LastCommitFile   = ConfigDir + "/last-commit"
+	LastPushFile     = ConfigDir + "/last-push"
 )
 
 func xdg(env, fallback string) string {
