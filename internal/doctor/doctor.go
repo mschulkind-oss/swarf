@@ -144,16 +144,18 @@ func promptRcloneRemote(reader *bufio.Reader) string {
 	}
 
 	chosen := remotes[idx-1] // e.g. "gdrive:"
+	defaultPath := "swarf-store"
 	console.Info("")
-	fmt.Printf("  Directory path on %s (e.g. swarf-store): ", chosen)
+	fmt.Printf("  Directory path on %s [%s]: ", chosen, defaultPath)
 	dirPath, _ := reader.ReadString('\n')
 	dirPath = strings.TrimSpace(dirPath)
 
 	if dirPath == "" {
-		return chosen // bare remote, e.g. "gdrive:" — store at root
+		dirPath = defaultPath
 	}
-	// Combine: "gdrive:" + "swarf-store" → "gdrive:swarf-store"
-	return chosen + dirPath
+	result := chosen + dirPath
+	console.Ok(fmt.Sprintf("Remote: %s", result))
+	return result
 }
 
 // CheckAndFixStore checks for the central store and creates it if missing.
