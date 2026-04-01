@@ -17,6 +17,7 @@ type GlobalConfig struct {
 	Backend   string   `toml:"backend"`
 	Remote    string   `toml:"remote"`
 	Debounce  string   `toml:"debounce"`
+	DirName   string   `toml:"dir_name"`
 	AutoSweep []string `toml:"-"`
 }
 
@@ -29,6 +30,7 @@ type syncSection struct {
 	Backend  string `toml:"backend"`
 	Remote   string `toml:"remote"`
 	Debounce string `toml:"debounce"`
+	DirName  string `toml:"dir_name,omitempty"`
 }
 
 type autoSweepSection struct {
@@ -48,12 +50,16 @@ func ReadGlobalConfig() *GlobalConfig {
 		Backend:  f.Sync.Backend,
 		Remote:   f.Sync.Remote,
 		Debounce: f.Sync.Debounce,
+		DirName:  f.Sync.DirName,
 	}
 	if c.Backend == "" {
 		c.Backend = "git"
 	}
 	if c.Debounce == "" {
 		c.Debounce = "5s"
+	}
+	if c.DirName != "" {
+		paths.SwarfDirName = c.DirName
 	}
 	c.AutoSweep = f.AutoSweep.Paths
 	return c
@@ -68,6 +74,7 @@ func WriteGlobalConfig(c *GlobalConfig) error {
 			Backend:  c.Backend,
 			Remote:   c.Remote,
 			Debounce: c.Debounce,
+			DirName:  c.DirName,
 		},
 	}
 	if len(c.AutoSweep) > 0 {

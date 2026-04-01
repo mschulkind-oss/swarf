@@ -92,7 +92,7 @@ func printProjects() {
 	var rows [][]string
 	for _, d := range drawers {
 		displayHost := strings.Replace(d.Host, home, "~", 1)
-		hasSwarfDir := paths.IsDir(d.Host + "/.swarf")
+		hasSwarfDir := paths.IsDir(paths.SwarfDir(d.Host))
 		statusStr := redStyle.Render("✗ missing")
 		if hasSwarfDir {
 			statusStr = greenStyle.Render("✓ ok")

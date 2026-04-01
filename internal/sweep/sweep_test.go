@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
@@ -27,9 +28,9 @@ func TestSweepMoveAndSymlink(t *testing.T) {
 		t.Fatal("expected original to be replaced with symlink")
 	}
 
-	dest := filepath.Join(repo, ".swarf", "links", "AGENTS.md")
+	dest := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
-		t.Fatal("expected file in .swarf/links/")
+		t.Fatal("expected file in swarf/links/")
 	}
 }
 
@@ -52,7 +53,7 @@ func TestSweepNestedPath(t *testing.T) {
 
 func TestSweepAlreadySymlink(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(repo, ".swarf", "links", "AGENTS.md")
+	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	target := filepath.Join(repo, "AGENTS.md")
 	os.Symlink(source, target)
@@ -73,11 +74,11 @@ func TestSweepFileNotFound(t *testing.T) {
 
 func TestSweepInsideSwarf(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	notes := filepath.Join(repo, ".swarf", "notes", "test.md")
+	notes := filepath.Join(paths.SwarfDir(repo), "notes", "test.md")
 	os.MkdirAll(filepath.Dir(notes), 0o755)
 	os.WriteFile(notes, []byte("test"), 0o644)
 
-	err := sweep.Run([]string{".swarf/notes/test.md"}, repo)
+	err := sweep.Run([]string{paths.SwarfDirName + "/notes/test.md"}, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +88,7 @@ func TestSweepAlreadyInLinks(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	// Put file in links and in project root, then sweep
 	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# Agents\n"), 0o644)
-	os.WriteFile(filepath.Join(repo, ".swarf", "links", "AGENTS.md"), []byte("# Old\n"), 0o644)
+	os.WriteFile(filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md"), []byte("# Old\n"), 0o644)
 
 	sweep.Run([]string{"AGENTS.md"}, repo)
 	// Should skip — file already in links
@@ -105,7 +106,7 @@ func TestSweepNoProject(t *testing.T) {
 func TestSweepNoLinksDir(t *testing.T) {
 	repo := testutil.GitRepo(t)
 	// Create .swarf but no links/
-	os.MkdirAll(filepath.Join(repo, ".swarf"), 0o755)
+	os.MkdirAll(filepath.Join(paths.SwarfDir(repo)), 0o755)
 	err := sweep.Run([]string{"file.md"}, repo)
 	if err == nil {
 		t.Fatal("expected error for no links dir")

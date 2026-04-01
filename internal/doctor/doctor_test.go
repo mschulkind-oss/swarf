@@ -88,7 +88,7 @@ func TestCheckSwarfDirExists(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	c := doctor.CheckSwarfDirExists(repo)
 	if !c.OK {
-		t.Fatalf("expected .swarf to exist: %s", c.Msg)
+		t.Fatalf("expected swarf dir to exist: %s", c.Msg)
 	}
 	if !strings.Contains(c.Msg, "directory exists") {
 		t.Fatalf("expected 'directory exists' in message: %s", c.Msg)
@@ -99,16 +99,16 @@ func TestCheckSwarfDirMissing(t *testing.T) {
 	repo := testutil.GitRepo(t)
 	c := doctor.CheckSwarfDirExists(repo)
 	if c.OK {
-		t.Fatal("expected .swarf missing")
+		t.Fatal("expected swarf dir missing")
 	}
 }
 
 func TestCheckSwarfDirPlainDir(t *testing.T) {
 	repo := testutil.GitRepo(t)
-	os.MkdirAll(filepath.Join(repo, ".swarf"), 0o755)
+	os.MkdirAll(paths.SwarfDir(repo), 0o755)
 	c := doctor.CheckSwarfDirExists(repo)
 	if !c.OK {
-		t.Fatalf("expected .swarf dir ok: %s", c.Msg)
+		t.Fatalf("expected swarf dir dir ok: %s", c.Msg)
 	}
 	if !strings.Contains(c.Msg, "directory exists") {
 		t.Fatalf("expected 'directory exists': %s", c.Msg)
@@ -143,7 +143,7 @@ func TestCheckMiseLocalMissingHook(t *testing.T) {
 
 func TestCheckLinksHealthy(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(repo, ".swarf", "links", "AGENTS.md")
+	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	target := filepath.Join(repo, "AGENTS.md")
 	os.Symlink(source, target)
@@ -155,7 +155,7 @@ func TestCheckLinksHealthy(t *testing.T) {
 
 func TestCheckBrokenSymlink(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	source := filepath.Join(repo, ".swarf", "links", "AGENTS.md")
+	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	target := filepath.Join(repo, "AGENTS.md")
 	os.Symlink(filepath.Join(repo, "nonexistent"), target)
@@ -178,8 +178,8 @@ func TestCheckGitignore(t *testing.T) {
 	exclude.UpdateExcludes(repo, nil)
 	checks := doctor.CheckGitignore(repo)
 	for _, c := range checks {
-		if c.Name == ".swarf/" && !c.OK {
-			t.Fatalf(".swarf/ should be gitignored: %s", c.Msg)
+		if c.Name == paths.SwarfDirName+"/" && !c.OK {
+			t.Fatalf("swarf dir should be gitignored: %s", c.Msg)
 		}
 		if c.Name == ".mise.local.toml" && !c.OK {
 			t.Fatalf(".mise.local.toml should be gitignored: %s", c.Msg)
@@ -271,7 +271,7 @@ func TestCheckDaemonBadPidContent(t *testing.T) {
 func TestCheckGitignoreLinkedFiles(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	// Create a linked file and set up excludes
-	linksDir := filepath.Join(repo, ".swarf", "links")
+	linksDir := paths.LinksDir(repo)
 	os.WriteFile(filepath.Join(linksDir, "AGENTS.md"), []byte("# Agents\n"), 0o644)
 	exclude.UpdateExcludes(repo, []string{"AGENTS.md"})
 	checks := doctor.CheckGitignore(repo)

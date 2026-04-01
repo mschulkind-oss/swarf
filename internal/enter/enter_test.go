@@ -7,6 +7,7 @@ import (
 
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/enter"
+	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
 
@@ -14,7 +15,7 @@ func TestEnterLinksFiles(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
 
-	source := filepath.Join(repo, ".swarf", "links", "AGENTS.md")
+	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 
 	enter.Run()
@@ -67,7 +68,7 @@ func TestEnterSkipAlreadySwept(t *testing.T) {
 	})
 
 	// Already swept — create as symlink
-	source := filepath.Join(repo, ".swarf", "links", "AGENTS.md")
+	source := filepath.Join(paths.SwarfDir(repo), "links", "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	os.Symlink(source, filepath.Join(repo, "AGENTS.md"))
 

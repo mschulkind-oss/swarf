@@ -14,7 +14,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
-const MiseHook = `command -v swarf >/dev/null && [ -d .swarf/links ] && swarf enter`
+const MiseHook = `command -v swarf >/dev/null && swarf enter`
 const MiseLocalTOML = "[hooks]\nenter = \"" + MiseHook + "\"\n"
 
 var (

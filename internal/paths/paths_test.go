@@ -8,7 +8,7 @@ import (
 
 func TestSwarfDir(t *testing.T) {
 	got := SwarfDir("/home/user/project")
-	want := filepath.Join("/home/user/project", ".swarf")
+	want := filepath.Join("/home/user/project", "swarf")
 	if got != want {
 		t.Fatalf("SwarfDir = %s, want %s", got, want)
 	}
@@ -16,7 +16,7 @@ func TestSwarfDir(t *testing.T) {
 
 func TestLinksDir(t *testing.T) {
 	got := LinksDir("/home/user/project")
-	want := filepath.Join("/home/user/project", ".swarf", "links")
+	want := filepath.Join("/home/user/project", "swarf", "links")
 	if got != want {
 		t.Fatalf("LinksDir = %s, want %s", got, want)
 	}
@@ -49,7 +49,7 @@ func TestStoreProjectDir(t *testing.T) {
 func TestFindHostRoot(t *testing.T) {
 	tmp := t.TempDir()
 	project := filepath.Join(tmp, "project")
-	os.MkdirAll(filepath.Join(project, ".swarf"), 0o755)
+	os.MkdirAll(filepath.Join(project, "swarf"), 0o755)
 
 	got := FindHostRoot(project)
 	if got == "" {
@@ -72,7 +72,7 @@ func TestFindHostRootSymlink(t *testing.T) {
 	// Create .swarf as a symlink
 	target := filepath.Join(tmp, "store")
 	os.MkdirAll(target, 0o755)
-	os.Symlink(target, filepath.Join(project, ".swarf"))
+	os.Symlink(target, filepath.Join(project, "swarf"))
 
 	got := FindHostRoot(project)
 	if got == "" {
