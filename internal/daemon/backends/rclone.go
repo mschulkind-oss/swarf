@@ -37,7 +37,9 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 		return SyncResult{Success: false, Message: "rclone not installed", FilesChanged: nFiles}
 	}
 
-	cmd := exec.Command("rclone", "sync", storePath, r.Remote, "--exclude", ".git/**")
+	// Sync the entire store including .git/ so history is preserved on the remote.
+	// The remote is not human-browseable — it's a git repo backup.
+	cmd := exec.Command("rclone", "sync", storePath, r.Remote)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := fmt.Sprintf("rclone sync failed: %s", strings.TrimSpace(string(out)))

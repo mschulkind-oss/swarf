@@ -67,6 +67,13 @@ func cloneRclone(remote string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("rclone copy: %s", string(out))
 	}
+
+	// The remote contains a full git repo (.git/ directory). After copying it
+	// down, reconstruct the working tree from the latest commit.
+	if gitexec.IsRepo(paths.StoreDir) {
+		gitexec.ResetHard(paths.StoreDir)
+	}
+
 	console.Ok(fmt.Sprintf("Copied from %s", remote))
 	return nil
 }
