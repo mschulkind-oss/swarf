@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
+	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
 type RcloneBackend struct {
@@ -14,6 +15,8 @@ type RcloneBackend struct {
 }
 
 func (r *RcloneBackend) Sync(storePath string) SyncResult {
+	slog.Info("sync: staging all changes", "store", storePath, "backend", "rclone", "remote", r.Remote)
+
 	// Local git commit for version history
 	gitexec.AddAll(storePath)
 	status := gitexec.StatusPorcelain(storePath)
@@ -21,6 +24,7 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 	if strings.TrimSpace(status) != "" {
 		for _, line := range strings.Split(strings.TrimSpace(status), "\n") {
 			if strings.TrimSpace(line) != "" {
+				slog.Info("sync: staged", "file", strings.TrimSpace(line))
 				nFiles++
 			}
 		}
@@ -28,24 +32,34 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 		if nFiles == 1 {
 			s = ""
 		}
-		if err := gitexec.Commit(storePath, fmt.Sprintf("auto: sync %d file%s", nFiles, s)); err != nil {
-			slog.Error("Failed to commit", "path", storePath, "err", err)
+		msg := fmt.Sprintf("auto: sync %d file%s", nFiles, s)
+		slog.Info("sync: committing locally", "message", msg)
+		if err := gitexec.Commit(storePath, msg); err != nil {
+			slog.Error("sync: commit failed", "path", storePath, "err", err)
+		} else {
+			stampNow(paths.LastCommitFile)
+			slog.Info("sync: committed locally", "files", nFiles)
 		}
+	} else {
+		slog.Info("sync: no new changes to commit")
 	}
 
 	if _, err := exec.LookPath("rclone"); err != nil {
+		slog.Error("sync: rclone not installed")
 		return SyncResult{Success: false, Message: "rclone not installed", FilesChanged: nFiles}
 	}
 
 	// Sync the entire store including .git/ so history is preserved on the remote.
-	// The remote is not human-browseable — it's a git repo backup.
-	cmd := exec.Command("rclone", "sync", storePath, r.Remote)
+	slog.Info("sync: rclone sync starting", "from", storePath, "to", r.Remote)
+	cmd := exec.Command("rclone", "sync", storePath, r.Remote, "-v")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := fmt.Sprintf("rclone sync failed: %s", strings.TrimSpace(string(out)))
-		slog.Warn(msg)
+		slog.Warn("sync: "+msg, "remote", r.Remote)
 		return SyncResult{Success: false, Message: msg, FilesChanged: nFiles}
 	}
+	stampNow(paths.LastPushFile)
+	slog.Info("sync: rclone sync completed successfully", "remote", r.Remote, "files", nFiles, "output", strings.TrimSpace(string(out)))
 
 	return SyncResult{Success: true, Message: fmt.Sprintf("Synced %d files via rclone", nFiles), FilesChanged: nFiles}
 }

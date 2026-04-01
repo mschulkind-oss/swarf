@@ -114,6 +114,32 @@ func CheckIgnore(path string, dir string) bool {
 	return cmd.Run() == nil
 }
 
+// RevParseHEAD returns the full SHA of HEAD in the given repo, or "".
+func RevParseHEAD(dir string) string {
+	out, err := runStdout(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// LsRemoteHEAD returns the full SHA of HEAD on the given remote, or "".
+func LsRemoteHEAD(dir, remote string) string {
+	if remote == "" {
+		remote = "origin"
+	}
+	out, err := runStdout(dir, "ls-remote", remote, "HEAD")
+	if err != nil {
+		return ""
+	}
+	// Format: "<sha>\tHEAD"
+	parts := strings.Fields(strings.TrimSpace(out))
+	if len(parts) >= 1 {
+		return parts[0]
+	}
+	return ""
+}
+
 func GetRepoRoot(dir string) string {
 	out, err := runStdout(dir, "rev-parse", "--show-toplevel")
 	if err != nil {

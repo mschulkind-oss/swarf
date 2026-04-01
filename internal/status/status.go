@@ -1,16 +1,20 @@
 package status
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/console"
+	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
@@ -59,11 +63,23 @@ func printStoreInfo(gc *config.GlobalConfig) {
 			rows = append(rows, []string{"Pending", greenStyle.Render("0 file(s)")})
 		}
 		if out := gitLog(paths.StoreDir); out != "" {
-			rows = append(rows, []string{"Last sync", dimStyle.Render(out)})
+			rows = append(rows, []string{"Last commit", dimStyle.Render(out)})
 		}
-		if url := gitexec.RemoteURL(paths.StoreDir, ""); url != "" {
-			rows = append(rows, []string{"Git remote", url})
+
+		// Separate timestamps for local commit vs remote push.
+		if t, ok := backends.ReadStamp(paths.LastCommitFile); ok {
+			rows = append(rows, []string{"Local save", greenStyle.Render(timeAgo(t))})
+		} else {
+			rows = append(rows, []string{"Local save", dimStyle.Render("never")})
 		}
+		if t, ok := backends.ReadStamp(paths.LastPushFile); ok {
+			rows = append(rows, []string{"Remote push", greenStyle.Render(timeAgo(t))})
+		} else {
+			rows = append(rows, []string{"Remote push", yellowStyle.Render("never — data has not reached the remote yet")})
+		}
+
+		// Remote verification — did data actually land?
+		rows = append(rows, remoteVerifyRows(gc)...)
 	} else {
 		rows = append(rows, []string{"Status", redStyle.Render("Store not initialized. Run 'swarf init'.")})
 	}
@@ -73,11 +89,139 @@ func printStoreInfo(gc *config.GlobalConfig) {
 		Rows(rows...).
 		StyleFunc(func(row, col int) lipgloss.Style {
 			if col == 0 {
-				return lipgloss.NewStyle().Bold(true).Width(12)
+				return lipgloss.NewStyle().Bold(true).Width(14)
 			}
 			return lipgloss.NewStyle()
 		})
 	fmt.Println(t)
+}
+
+func remoteVerifyRows(gc *config.GlobalConfig) [][]string {
+	if gc.Remote == "" {
+		return [][]string{{"Remote sync", dimStyle.Render("no remote configured")}}
+	}
+
+	if gc.Backend == "git" {
+		return verifyGitRemote()
+	}
+	if gc.Backend == "rclone" {
+		return verifyRcloneRemote(gc.Remote)
+	}
+	return [][]string{{"Remote sync", redStyle.Render("unknown backend: " + gc.Backend)}}
+}
+
+func verifyGitRemote() [][]string {
+	localHEAD := gitexec.RevParseHEAD(paths.StoreDir)
+	if localHEAD == "" {
+		return [][]string{{"Remote sync", dimStyle.Render("no local commits yet")}}
+	}
+
+	remoteHEAD := gitexec.LsRemoteHEAD(paths.StoreDir, "origin")
+	if remoteHEAD == "" {
+		return [][]string{{"Remote sync", redStyle.Render("cannot reach remote — data may not be pushed")}}
+	}
+
+	short := localHEAD[:8]
+	if localHEAD == remoteHEAD {
+		return [][]string{{"Remote sync", greenStyle.Render(fmt.Sprintf("verified — local and remote match (%s)", short))}}
+	}
+	return [][]string{
+		{"Remote sync", yellowStyle.Render(fmt.Sprintf("out of sync — local %s, remote %s", short, remoteHEAD[:8]))},
+		{"", dimStyle.Render("Local commits haven't been pushed yet. The daemon will retry.")},
+	}
+}
+
+func verifyRcloneRemote(remote string) [][]string {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		return [][]string{{"Remote sync", redStyle.Render("rclone not installed — cannot verify")}}
+	}
+
+	// Count local files (excluding .git internals).
+	localCount, localSize := countLocalStore()
+
+	// Count remote files.
+	cmd := exec.Command("rclone", "size", remote, "--json")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		errMsg := strings.TrimSpace(string(out))
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return [][]string{
+			{"Remote sync", redStyle.Render("cannot reach remote")},
+			{"", dimStyle.Render(errMsg)},
+		}
+	}
+
+	type sizeResult struct {
+		Count int64 `json:"count"`
+		Bytes int64 `json:"bytes"`
+	}
+	var rs sizeResult
+	if err := json.Unmarshal(out, &rs); err != nil {
+		return [][]string{{"Remote sync", yellowStyle.Render("remote reachable but cannot parse size")}}
+	}
+
+	if rs.Count == 0 {
+		return [][]string{
+			{"Remote sync", redStyle.Render("remote is empty — no data has been uploaded yet")},
+			{"", dimStyle.Render("Check daemon logs. The daemon may not have synced yet.")},
+		}
+	}
+
+	remoteStr := fmt.Sprintf("%d files, %s", rs.Count, humanSize(rs.Bytes))
+	localStr := fmt.Sprintf("%d files, %s", localCount, humanSize(localSize))
+
+	if localCount == rs.Count {
+		return [][]string{
+			{"Remote sync", greenStyle.Render(fmt.Sprintf("verified — %s on remote", remoteStr))},
+			{"", dimStyle.Render(fmt.Sprintf("local: %s", localStr))},
+		}
+	}
+	return [][]string{
+		{"Remote sync", yellowStyle.Render(fmt.Sprintf("mismatch — remote has %s, local has %s", remoteStr, localStr))},
+		{"", dimStyle.Render("The daemon may still be syncing. Check again shortly.")},
+	}
+}
+
+func countLocalStore() (int64, int64) {
+	var count, size int64
+	filepath.Walk(paths.StoreDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		count++
+		size += info.Size()
+		return nil
+	})
+	return count, size
+}
+
+func timeAgo(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh %dm ago", int(d.Hours()), int(d.Minutes())%60)
+	default:
+		return t.Format("2006-01-02 15:04")
+	}
+}
+
+func humanSize(bytes int64) string {
+	switch {
+	case bytes >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(bytes)/float64(1<<30))
+	case bytes >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(bytes)/float64(1<<20))
+	case bytes >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(bytes)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", bytes)
+	}
 }
 
 func printProjects() {
