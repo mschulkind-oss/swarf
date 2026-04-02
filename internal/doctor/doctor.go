@@ -377,6 +377,10 @@ func CheckAndFixProject(cwd string, gc *config.GlobalConfig, interactive bool, i
 		checks = append(checks, Check{paths.SwarfDirName + "/", true, fmt.Sprintf("Initialized %s/ for %s", paths.SwarfDirName, paths.ProjectSlug(hostRoot))})
 	} else {
 		checks = append(checks, Check{paths.SwarfDirName + "/", true, fmt.Sprintf("%s/ directory exists", paths.SwarfDirName)})
+		// Ensure this project is registered (handles renames/moves).
+		slug := paths.ProjectSlug(hostRoot)
+		config.RegisterDrawer(slug, hostRoot)
+		exclude.UpdateExcludes(hostRoot, nil)
 	}
 
 	// Gitignore checks.

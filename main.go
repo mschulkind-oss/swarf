@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/mschulkind-oss/swarf/internal/clone"
+	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon"
 	"github.com/mschulkind-oss/swarf/internal/doctor"
@@ -77,6 +78,7 @@ Learn more:
 		initCmd(),
 		sweepCmd(),
 		unlinkCmd(),
+		forgetCmd(),
 		cloneCmd(),
 		pullCmd(),
 		daemonCmd(),
@@ -156,6 +158,31 @@ This works inside jails and containers where the daemon isn't running.`,
 		Example: `  swarf unlink AGENTS.md
   swarf unlink CLAUDE.md .copilot/skills/SKILL.md`,
 		RunE: func(cmd *cobra.Command, args []string) error { return unlink.Run(args, "") },
+	}
+}
+
+func forgetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "forget <project>",
+		Short:   "Remove a project from swarf's registry",
+		GroupID: groupCore,
+		Args:    cobra.ExactArgs(1),
+		Long: `Removes a project from the drawer registry (~/.config/swarf/drawers.toml).
+The daemon stops watching this project. Local swarf/ files and the store
+mirror are NOT deleted — use this after renaming or removing a project.
+
+Run 'swarf status' to see registered project slugs.`,
+		Example: `  swarf forget old-project-name`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			slug := args[0]
+			if err := config.UnregisterDrawer(slug); err != nil {
+				return err
+			}
+			console.Ok(fmt.Sprintf("Removed %q from drawer registry.", slug))
+			console.Hint("The store mirror at ~/.local/share/swarf/" + slug + "/ was not deleted.")
+			console.Hint("Run 'swarf init' in the project's new location to re-register it.")
+			return nil
+		},
 	}
 }
 
