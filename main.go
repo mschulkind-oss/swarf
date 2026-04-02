@@ -162,28 +162,42 @@ This works inside jails and containers where the daemon isn't running.`,
 }
 
 func forgetCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "forget <project>",
 		Short:   "Remove a project from swarf's registry",
 		GroupID: groupCore,
 		Args:    cobra.ExactArgs(1),
 		Long: `Removes a project from the drawer registry (~/.config/swarf/drawers.toml).
-The daemon stops watching this project. Local swarf/ files and the store
-mirror are NOT deleted — use this after renaming or removing a project.
+The daemon stops watching this project.
+
+By default the store mirror is kept. Use --delete-store to also remove
+the project's data from the central store.
 
 Run 'swarf status' to see registered project slugs.`,
-		Example: `  swarf forget old-project-name`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			slug := args[0]
-			if err := config.UnregisterDrawer(slug); err != nil {
-				return err
-			}
-			console.Ok(fmt.Sprintf("Removed %q from drawer registry.", slug))
-			console.Hint("The store mirror at ~/.local/share/swarf/" + slug + "/ was not deleted.")
-			console.Hint("Run 'swarf init' in the project's new location to re-register it.")
-			return nil
-		},
+		Example: `  swarf forget old-project-name
+  swarf forget old-project-name --delete-store`,
 	}
+	deleteStore := cmd.Flags().Bool("delete-store", false, "Also delete the project's data from the central store")
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		slug := args[0]
+		if err := config.UnregisterDrawer(slug); err != nil {
+			return err
+		}
+		console.Ok(fmt.Sprintf("Removed %q from drawer registry.", slug))
+
+		storeDir := paths.StoreDir + "/" + slug
+		if *deleteStore {
+			if err := os.RemoveAll(storeDir); err != nil {
+				return fmt.Errorf("failed to delete store mirror: %w", err)
+			}
+			console.Ok(fmt.Sprintf("Deleted store mirror at %s", storeDir))
+		} else {
+			console.Hint("Store mirror kept at " + storeDir)
+			console.Hint("Use --delete-store to remove it, or 'swarf init' in the new location to re-register.")
+		}
+		return nil
+	}
+	return cmd
 }
 
 // --- Sync & Remote ---
