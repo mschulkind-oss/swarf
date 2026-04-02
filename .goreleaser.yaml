@@ -22,7 +22,7 @@ builds:
       - arm64
 
 archives:
-  - format: tar.gz
+  - formats: ["tar.gz"]
     name_template: "swarf_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
@@ -36,16 +36,3 @@ changelog:
       - "^chore:"
       - "^test:"
 
-brews:
-  - repository:
-      owner: mschulkind-oss
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Formula
-    homepage: "https://github.com/mschulkind-oss/swarf"
-    description: "Invisible, auto-syncing personal storage for any git repo"
-    license: "Apache-2.0"
-    install: |
-      bin.install "swarf"
-    test: |
-      system "#{bin}/swarf", "--version"

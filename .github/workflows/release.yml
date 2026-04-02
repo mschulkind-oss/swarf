@@ -26,4 +26,55 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    runs-on: ubuntu-latest
+    needs: goreleaser
+    steps:
+      - name: Update Homebrew formula
+        env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          TARBALL="https://github.com/mschulkind-oss/swarf/archive/refs/tags/${TAG}.tar.gz"
+          SHA256=$(curl -sL "$TARBALL" | sha256sum | cut -d' ' -f1)
+
+          cat > swarf.rb <<FORMULA
+          class Swarf < Formula
+            desc "Invisible, auto-syncing personal storage for any git repo"
+            homepage "https://github.com/mschulkind-oss/swarf"
+            url "${TARBALL}"
+            sha256 "${SHA256}"
+            license "Apache-2.0"
+
+            depends_on "go" => :build
+
+            def install
+              ldflags = %W[
+                -s -w
+                -X github.com/mschulkind-oss/swarf/internal/version.Version=#{version}
+                -X github.com/mschulkind-oss/swarf/internal/version.GitCommit=#{Utils.git_short_head}
+              ]
+              system "go", "build", *std_go_args(ldflags:)
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/swarf --version")
+            end
+          end
+          FORMULA
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' swarf.rb
+
+          # Push to tap repo
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/mschulkind-oss/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp swarf.rb tap/Formula/swarf.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/swarf.rb
+          git commit -m "swarf ${VERSION}"
+          git push

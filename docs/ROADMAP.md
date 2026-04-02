@@ -21,8 +21,7 @@ channels, prioritized by reach and daemon-safety.
 
 3. **Homebrew tap** — `brew tap mschulkind-oss/tap && brew install swarf`.
    Covers macOS and Linux homebrew users. Updates via `brew upgrade`.
-   Requires maintaining a tap repo with a formula that points to GitHub
-   release binaries.
+   Source-build formula in the tap repo, auto-updated by the release workflow.
 
 ### Later
 
@@ -176,13 +175,16 @@ This also enables tooling integrations (editor plugins, CI checks).
 
 ---
 
-### Rclone Init UX
+### Rclone Init UX (Mostly Done)
 
-The init flow is git-centric. Rclone users need:
+The init flow now handles rclone well:
 
-- Detection of available rclone remotes (from `rclone listremotes`)
-- Interactive remote picker instead of freeform "Remote URL" prompt
-- Guidance when no remotes exist ("run `rclone config` first")
+- ✓ Detection of available rclone remotes (from `rclone listremotes`)
+- ✓ Numbered remote picker instead of freeform prompt
+- ✓ Default directory path (`swarf-store`) shown in brackets, accepted on Enter
+- ✓ Guidance when no remotes exist ("run `rclone config` first, then re-run")
+
+Still needed:
 - `drive.file` scope recommendation for Google Drive surfaced during init
 - Headless environment detection with link to rclone docs
 
@@ -267,3 +269,60 @@ something users think about.
    accidental deletion). With `--at`, checks out a specific revision.
 3. Per-project commits in the store for cleaner history.
 4. Better auto-commit messages: include project name and changed file list.
+
+---
+
+### Agent Awareness
+
+Agents that arrive after swarf is set up don't know about it. They see files
+in `swarf/` and try to `git add` them, getting gitignore errors they don't
+understand. They don't know that symlinks in the project root point into
+`swarf/.links/`, or that swarf files are synced separately from git.
+
+**The core problem:** swarf is invisible by design — that's the feature. But
+invisibility means agents have no way to discover the convention unless
+something explicitly tells them.
+
+**Why it's hard:**
+
+- Agents arrive long after `swarf init` ran. They have no memory of setup.
+- AGENTS.md or CLAUDE.md could contain swarf documentation, but:
+  - Who puts it there? The user has to remember.
+  - If AGENTS.md is itself swept into swarf, the symlink exists but the
+    agent may not read it before trying to operate on it.
+  - Different agent frameworks read different files (.copilot/, .cursor/, etc.)
+- The `.git/info/exclude` mechanism is silent — `git add` just fails with
+  a confusing error, no hint about why or what to do instead.
+
+**Possible approaches:**
+
+1. **Auto-inject agent hints.** When swarf sweeps AGENTS.md (or similar),
+   append a short block explaining swarf conventions. Problem: modifying
+   user content is presumptuous.
+
+2. **Convention file.** `swarf init` creates a small `.swarf-info` or
+   `swarf/README.md` that agents can discover. Agents that see `swarf/`
+   in the tree can read this file to understand the setup. Doesn't help
+   if the agent never looks.
+
+3. **Git wrapper or hook.** A `pre-commit` or custom git alias that
+   intercepts `git add swarf/...` and prints a helpful message explaining
+   that these files are managed by swarf. Invasive, but directly addresses
+   the failure mode.
+
+4. **Gitignore comment hints.** Add a comment in `.git/info/exclude`
+   above the swarf entries explaining the setup. Agents that read
+   gitignore files would see this. Fragile — most don't.
+
+5. **Agent framework integrations.** Provide swarf-aware plugins or
+   MCP tools that agents can use to interact with swarf properly.
+   Requires per-framework work.
+
+6. **`swarf agent-setup`** command that generates the right config file
+   for a given agent framework (Copilot, Cursor, Claude Code, etc.)
+   with swarf-aware instructions baked in. User runs it once per project.
+
+No clear winner yet. The fundamental tension is between swarf's invisibility
+(don't pollute the repo) and agents' need for discoverability (need to know
+what's there). Solution probably involves multiple approaches — a convention
+file for discovery, plus framework-specific integrations for the major agents.
