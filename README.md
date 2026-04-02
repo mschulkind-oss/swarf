@@ -52,7 +52,7 @@ Drive (or whatever backend), and you get full commit history too.
 
 ```bash
 # macOS / Linux (recommended)
-brew install swarf
+brew tap mschulkind-oss/tap && brew install swarf
 
 # Via PyPI (persistent install to ~/.local/bin/)
 pipx install swarf        # or: uv tool install swarf
