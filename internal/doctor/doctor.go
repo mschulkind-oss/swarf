@@ -427,6 +427,11 @@ func CheckGitignore(cwd string) []Check {
 			} else {
 				checks = append(checks, Check{rel, false, fmt.Sprintf("%s is NOT gitignored — run 'swarf sweep' to fix", rel)})
 			}
+			// Warn if the symlink target is still tracked by git.
+			if gitexec.IsTracked(cwd, rel) {
+				checks = append(checks, Check{rel + " (tracked)", false,
+					fmt.Sprintf("%s is swept but still tracked by git — run 'git rm --cached %s' to untrack it", rel, rel)})
+			}
 			return nil
 		})
 	}

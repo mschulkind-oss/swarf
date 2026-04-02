@@ -9,6 +9,7 @@ import (
 
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
+	"github.com/mschulkind-oss/swarf/internal/gitexec"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
@@ -79,6 +80,13 @@ func sweepOne(pathStr, hostRoot, linksDir string) (string, bool) {
 
 	if _, err := os.Stat(source); os.IsNotExist(err) {
 		console.Error(fmt.Sprintf("%s does not exist.", pathStr))
+		return "", false
+	}
+
+	// Refuse to sweep a file that git is tracking — the symlink replacement
+	// would be gitignored, silently removing the file from the repo.
+	if gitexec.IsTracked(hostRoot, rel) {
+		console.Error(fmt.Sprintf("%s is tracked by git. Run 'git rm --cached %s' first, then re-run sweep.", rel, rel))
 		return "", false
 	}
 

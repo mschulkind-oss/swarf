@@ -140,6 +140,12 @@ func LsRemoteHEAD(dir, remote string) string {
 	return ""
 }
 
+// IsTracked returns true if the file at the given path is tracked by git.
+func IsTracked(dir, path string) bool {
+	out, err := runStdout(dir, "ls-files", path)
+	return err == nil && out != ""
+}
+
 func GetRepoRoot(dir string) string {
 	out, err := runStdout(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
