@@ -25,9 +25,13 @@ install: build
     rm -f ~/.local/bin/swarf
     cp dist/swarf ~/.local/bin/swarf
 
-# Build, install, and restart the daemon
+# Build, install, and restart the daemon. Re-runs 'swarf daemon install' so
+# the systemd unit's ExecStart always matches the binary we just placed —
+# otherwise a reinstall from a different source (brew, go install, etc.)
+# leaves the unit pointing at a path that no longer exists and systemd
+# fails with status=203/EXEC on every restart.
 deploy: build install
-    -systemctl --user restart swarf
+    ~/.local/bin/swarf daemon install
     @echo "swarf deployed. Verify: swarf --version"
 
 # Clean build artifacts
