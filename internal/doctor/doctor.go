@@ -358,16 +358,88 @@ func CheckBinaryLocation() Check {
 func CheckDaemonRunning() Check {
 	data, err := os.ReadFile(paths.PIDFile)
 	if err != nil {
-		return Check{"daemon", false, "Daemon is not running (no PID file)"}
+		return Check{"daemon", false, diagnoseDaemonNotRunning("Daemon is not running (no PID file)")}
 	}
 	var pid int
 	if _, err := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid); err != nil {
-		return Check{"daemon", false, "Daemon is not running (stale PID file)"}
+		return Check{"daemon", false, diagnoseDaemonNotRunning("Daemon is not running (stale PID file)")}
 	}
 	if err := syscall.Kill(pid, 0); err != nil {
-		return Check{"daemon", false, "Daemon is not running (stale PID file)"}
+		return Check{"daemon", false, diagnoseDaemonNotRunning("Daemon is not running (stale PID file)")}
 	}
 	return Check{"daemon", true, fmt.Sprintf("Daemon is running (PID %d)", pid)}
+}
+
+// diagnoseDaemonNotRunning augments a "not running" message with whatever
+// systemd tells us about why. The common case after a reinstall from a
+// different source (brew → go install, etc.) is status=203/EXEC because the
+// unit's ExecStart still points at a binary that no longer exists.
+func diagnoseDaemonNotRunning(base string) string {
+	if daemon.ServiceKind() != "systemd" {
+		return base
+	}
+	// 'systemctl --user show --property=ExecMainStatus,ExecStart' gives us
+	// the last exit code and the configured command in one call.
+	cmd := exec.Command("systemctl", "--user", "show", "swarf.service",
+		"--property=ExecMainStatus", "--property=ExecStart")
+	out, err := cmd.Output()
+	if err != nil {
+		return base
+	}
+	var execMainStatus, execStart string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		switch {
+		case strings.HasPrefix(line, "ExecMainStatus="):
+			execMainStatus = strings.TrimPrefix(line, "ExecMainStatus=")
+		case strings.HasPrefix(line, "ExecStart="):
+			execStart = strings.TrimPrefix(line, "ExecStart=")
+		}
+	}
+	if execMainStatus != "203" {
+		return base
+	}
+	// 203/EXEC — binary path in the unit is broken. Try to surface which one.
+	path := extractExecStartPath(execStart)
+	msg := base + "\n    systemd reports status=203/EXEC — the service unit's ExecStart points at a binary that cannot be executed."
+	if path != "" {
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			msg += fmt.Sprintf("\n    Unit ExecStart: %s (missing)", path)
+		} else {
+			msg += fmt.Sprintf("\n    Unit ExecStart: %s", path)
+		}
+	}
+	if currentExe, err := os.Executable(); err == nil {
+		if resolved, rErr := filepath.EvalSymlinks(currentExe); rErr == nil {
+			currentExe = resolved
+		}
+		msg += fmt.Sprintf("\n    Current swarf binary: %s", currentExe)
+	}
+	msg += "\n    Fix: re-run 'swarf daemon install' to rewrite the unit, then 'systemctl --user restart swarf'."
+	return msg
+}
+
+// extractExecStartPath pulls the binary path out of a systemd ExecStart
+// property value. `systemctl show` emits these in a verbose form like
+//
+//	{ path=/home/me/.local/bin/swarf ; argv[]=/home/me/.local/bin/swarf daemon start --foreground ; ignore_errors=no ; ... }
+//
+// with a simpler fallback shape for older versions. Pull out whatever looks
+// like an absolute path first.
+func extractExecStartPath(s string) string {
+	if i := strings.Index(s, "path="); i >= 0 {
+		rest := s[i+len("path="):]
+		if j := strings.IndexAny(rest, " ;"); j >= 0 {
+			return rest[:j]
+		}
+		return rest
+	}
+	// Fallback: first absolute-path token.
+	for _, tok := range strings.Fields(s) {
+		if strings.HasPrefix(tok, "/") {
+			return tok
+		}
+	}
+	return ""
 }
 
 // IsServiceInstalled checks whether a swarf service is installed.
