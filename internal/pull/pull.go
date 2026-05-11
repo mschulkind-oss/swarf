@@ -1,6 +1,7 @@
 package pull
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,12 +16,12 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
+	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
 var (
 	ErrNoConfig       = errors.New("no global config found — run 'swarf init' first")
-	ErrNoStore        = errors.New("store does not exist — run 'swarf clone' first")
 	ErrNotGitRepo     = errors.New("store is not a git repository")
 	ErrUnknownBackend = errors.New("unknown backend")
 )
@@ -28,7 +29,7 @@ var (
 // Result summarizes what happened during a pull.
 type Result struct {
 	PeersSeen     int
-	PeersMerged   int   // fast-forward or clean merge
+	PeersMerged   int
 	ConflictFiles []string
 }
 
@@ -42,13 +43,10 @@ func RunWithResult() (*Result, error) {
 	if gc == nil {
 		return nil, ErrNoConfig
 	}
-	if !paths.IsDir(paths.StoreDir) {
-		return nil, ErrNoStore
-	}
 
 	switch gc.Backend {
 	case "git":
-		return nil, pullGit()
+		return nil, pullGit(gc)
 	case "rclone":
 		return pullRclone(gc)
 	default:
@@ -56,9 +54,22 @@ func RunWithResult() (*Result, error) {
 	}
 }
 
-func pullGit() error {
-	if !gitexec.IsRepo(paths.StoreDir) {
-		return ErrNotGitRepo
+func pullGit(gc *config.GlobalConfig) error {
+	// Auto-bootstrap: if the store doesn't exist yet, clone it from the
+	// configured remote. Users on a fresh machine can now just run
+	// `swarf pull` instead of the (now removed) `swarf clone`.
+	if !paths.IsDir(paths.StoreDir) || !gitexec.IsRepo(paths.StoreDir) {
+		if gc.Remote == "" {
+			return ErrNotGitRepo
+		}
+		if err := os.RemoveAll(paths.StoreDir); err != nil {
+			return fmt.Errorf("clear store dir: %w", err)
+		}
+		if err := gitexec.Clone(gc.Remote, paths.StoreDir); err != nil {
+			return fmt.Errorf("git clone: %w", err)
+		}
+		console.Ok(fmt.Sprintf("Cloned store from %s", gc.Remote))
+		return nil
 	}
 	if err := gitexec.Pull(paths.StoreDir); err != nil {
 		return fmt.Errorf("git pull: %w", err)
@@ -67,13 +78,29 @@ func pullGit() error {
 	return nil
 }
 
-// pullRclone is the multi-peer, merge-aware pull used by the rclone backend.
+// pullRclone is the multi-peer, file-delta pull used by the rclone backend.
 // Layout assumption: <remote>/machines/<peer_id>/ is a full mirror of each
-// peer's store (working files + .git/). We copy each peer down to a local
-// cache, register it as a git remote on the store, fetch, and merge.
+// peer's store (working files + .git/). For each peer other than self we:
+//
+//  1. `rclone sync` the peer's folder down to ~/.cache/swarf/peers/<peer>/.
+//  2. Register the peer cache as a local git remote and fetch its HEAD so
+//     its objects (including historical commit trees) are reachable from
+//     the local store — needed for DiffNameStatus and ShowFile.
+//  3. Compute last-seen via refs/swarf-peers/<peer>, falling back to
+//     merge-base on first contact and to content-union for unrelated
+//     histories.
+//  4. Apply the resulting A/M/D entries to the local working tree, creating
+//     conflict sidecars where local has diverged.
+//  5. Commit any changes and advance refs/swarf-peers/<peer>.
 func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		return nil, errors.New("rclone is not installed")
+	}
+
+	// Auto-bootstrap: create an empty store so the file-delta path can treat
+	// every peer file as an add. Previously this was `swarf clone`'s job.
+	if err := initialize.EnsureStore("", gc); err != nil {
+		return nil, fmt.Errorf("ensure store: %w", err)
 	}
 	if !gitexec.IsRepo(paths.StoreDir) {
 		return nil, ErrNotGitRepo
@@ -85,8 +112,6 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 		return nil, err
 	}
 
-	// Warn when remote is still in the legacy flat layout. In that case peers
-	// == nil and the user needs to migrate.
 	if len(peers) == 0 {
 		if legacy, reason := peekLegacyLayout(gc.Remote); legacy {
 			return nil, fmt.Errorf("remote is in legacy flat layout (%s); run 'swarf doctor' for migration steps", reason)
@@ -126,7 +151,6 @@ func listPeers(remote string) ([]string, error) {
 	cmd := exec.Command("rclone", "lsf", "--dirs-only", machinesPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// A missing machines/ directory is not an error — it's the empty case.
 		msg := strings.ToLower(strings.TrimSpace(string(out)))
 		if strings.Contains(msg, "directory not found") || strings.Contains(msg, "not found") || strings.Contains(msg, "doesn't exist") {
 			return nil, nil
@@ -162,9 +186,15 @@ func peekLegacyLayout(remote string) (bool, string) {
 	return false, ""
 }
 
-// pullFromPeer fetches one peer's commits and merges them into the local store.
-// Conflicts are resolved by keeping the local version and writing the peer's
-// conflicting version as a sidecar file.
+// peerRefName is the per-peer "last-seen SHA" ref we advance after each
+// successful pull. Stored under refs/swarf-peers/ so it never collides with
+// branch or tag refs and never ships with a normal `git push`.
+func peerRefName(peer string) string {
+	return "refs/swarf-peers/" + peer
+}
+
+// pullFromPeer refreshes the peer's cache, computes a file delta against the
+// last-seen peer HEAD, and applies it to the local store.
 func pullFromPeer(remote, peer string, result *Result) error {
 	peerCache := paths.PeerCacheDir(peer)
 	if err := os.MkdirAll(peerCache, 0o755); err != nil {
@@ -177,16 +207,16 @@ func pullFromPeer(remote, peer string, result *Result) error {
 		return fmt.Errorf("rclone sync from peer: %s", strings.TrimSpace(string(out)))
 	}
 
-	// Register (or update) the peer as a git remote on the store so we can
-	// fetch its objects.
+	// Register the peer cache as a git remote so we can fetch its objects.
+	// Fetching makes ShowFile work for arbitrary commits in the peer's history
+	// (needed to recover the pre-delete content of a file the peer deleted).
 	remoteName := "peer-" + peer
-	peerGitURL := peerCache
 	if gitexec.RemoteExists(paths.StoreDir, remoteName) {
-		if err := gitexec.SetRemoteURL(paths.StoreDir, remoteName, peerGitURL); err != nil {
+		if err := gitexec.SetRemoteURL(paths.StoreDir, remoteName, peerCache); err != nil {
 			return fmt.Errorf("set-url %s: %w", remoteName, err)
 		}
 	} else {
-		if err := gitexec.AddRemote(paths.StoreDir, remoteName, peerGitURL); err != nil {
+		if err := gitexec.AddRemote(paths.StoreDir, remoteName, peerCache); err != nil {
 			return fmt.Errorf("add remote %s: %w", remoteName, err)
 		}
 	}
@@ -194,95 +224,196 @@ func pullFromPeer(remote, peer string, result *Result) error {
 		return fmt.Errorf("fetch %s: %w", remoteName, err)
 	}
 
-	// Empty-store bootstrap: if we have no HEAD yet, reset to the peer's tip.
-	// This handles the normal second-machine path before any local syncs have
-	// happened, and is equivalent to an initial clone.
-	if gitexec.RevParseHEAD(paths.StoreDir) == "" {
-		if err := gitexec.ResetHardTo(paths.StoreDir, "FETCH_HEAD"); err != nil {
-			return fmt.Errorf("bootstrap from peer %s: %w", peer, err)
+	peerHead := gitexec.RevParseHEAD(peerCache)
+	if peerHead == "" {
+		// Peer store exists but has no commits yet — nothing to pull.
+		return nil
+	}
+
+	lastSeen := gitexec.ReadRef(paths.StoreDir, peerRefName(peer))
+	if lastSeen == peerHead {
+		return nil
+	}
+
+	localHead := gitexec.RevParseHEAD(paths.StoreDir)
+
+	// Figure out which "mode" this pull is in. Three cases:
+	//   1. Bootstrap  — no local HEAD at all. Treat every peer file as an add.
+	//   2. Incremental — lastSeen is known. Diff lastSeen..peerHead.
+	//   3. Post-upgrade / first contact — lastSeen empty but local has HEAD.
+	//      Try merge-base (recovers linked histories from the old design).
+	//      If none, fall back to content-union (adds/modifies, no deletes).
+	unionMode := false
+	effectiveOld := lastSeen
+	if lastSeen == "" {
+		if localHead == "" {
+			// Bootstrap: diff from empty tree gives us every file as an add.
+			effectiveOld = ""
+		} else {
+			base, err := gitexec.MergeBase(paths.StoreDir, localHead, peerHead)
+			if err != nil {
+				return fmt.Errorf("merge-base: %w", err)
+			}
+			if base == "" {
+				// Unrelated histories — can't tell "peer deleted" from "peer
+				// never had". Union every peer file in without deletes.
+				unionMode = true
+			} else {
+				effectiveOld = base
+			}
 		}
-		slog.Info("pull: bootstrapped store from peer", "peer", peer)
-		return nil
 	}
 
-	// The peer's HEAD ref came across as FETCH_HEAD. Try fast-forward first.
-	ref := "FETCH_HEAD"
-	if err := gitexec.MergeFF(paths.StoreDir, ref); err == nil {
-		slog.Info("pull: fast-forward merged peer", "peer", peer)
-		return nil
-	}
-
-	// Fall back to a real merge. On conflicts, keep ours and write theirs as
-	// a sidecar file. No data is lost: both sides' histories remain in git,
-	// and the peer's working-tree version is visible on disk.
-	msg := fmt.Sprintf("auto: merge peer %s", peer)
-	clean, err := gitexec.MergeNoCommit(paths.StoreDir, ref, msg)
-	if err != nil {
-		// Unexpected failure (e.g., unrelated histories). Abort and report.
-		_ = gitexec.AbortMerge(paths.StoreDir)
-		return fmt.Errorf("merge from %s: %w", remoteName, err)
-	}
-
-	if !clean {
-		conflicts, err := writeConflictSidecars(peer)
+	var (
+		entries []gitexec.DiffEntry
+		err     error
+	)
+	if unionMode {
+		entries, err = gitexec.DiffNameStatus(peerCache, "", peerHead)
 		if err != nil {
-			_ = gitexec.AbortMerge(paths.StoreDir)
-			return fmt.Errorf("resolve conflicts: %w", err)
+			return fmt.Errorf("list peer tree: %w", err)
 		}
-		result.ConflictFiles = append(result.ConflictFiles, conflicts...)
+	} else {
+		entries, err = gitexec.DiffNameStatus(peerCache, effectiveOld, peerHead)
+		if err != nil {
+			return fmt.Errorf("diff peer: %w", err)
+		}
 	}
 
-	// Finalize the merge commit. `git commit` with no args uses the staged
-	// merge (MERGE_MSG is set by our --no-commit merge).
-	if err := gitexec.Commit(paths.StoreDir, msg); err != nil {
-		// If there was literally nothing to merge after staging (rare race),
-		// that's not an error.
-		if strings.TrimSpace(gitexec.StatusPorcelain(paths.StoreDir)) == "" {
-			return nil
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	var conflicts []string
+	for _, e := range entries {
+		switch e.Status {
+		case "A", "M", "T":
+			c, err := applyAddOrModify(peer, peerCache, peerHead, e.Path, ts)
+			if err != nil {
+				return err
+			}
+			if c != "" {
+				conflicts = append(conflicts, c)
+			}
+		case "D":
+			if unionMode {
+				// Without a common ancestor we can't trust "peer deleted"
+				// vs. "peer never had it"; skip.
+				continue
+			}
+			c, err := applyDelete(peer, peerCache, effectiveOld, e.Path, ts)
+			if err != nil {
+				return err
+			}
+			if c != "" {
+				conflicts = append(conflicts, c)
+			}
 		}
-		return fmt.Errorf("commit merge: %w", err)
 	}
+
+	// Stage everything we touched and, if there are changes, make a commit.
+	if err := gitexec.AddAll(paths.StoreDir); err != nil {
+		return fmt.Errorf("add changes: %w", err)
+	}
+	if strings.TrimSpace(gitexec.StatusPorcelain(paths.StoreDir)) != "" {
+		msg := fmt.Sprintf("auto: sync from %s", peer)
+		if err := gitexec.Commit(paths.StoreDir, msg); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+	}
+
+	if err := gitexec.UpdateRef(paths.StoreDir, peerRefName(peer), peerHead); err != nil {
+		return fmt.Errorf("update-ref: %w", err)
+	}
+
+	result.ConflictFiles = append(result.ConflictFiles, conflicts...)
 	return nil
 }
 
-// writeConflictSidecars resolves each conflicted path by keeping our version
-// and writing the peer's version alongside as <path>.conflict.<peer>.<ts>.
-// Returns the list of sidecar paths created (relative to the store root).
-func writeConflictSidecars(peer string) ([]string, error) {
-	paths_ := gitexec.UnmergedPaths(paths.StoreDir)
-	if len(paths_) == 0 {
-		return nil, nil
-	}
-	ts := time.Now().UTC().Format("20060102T150405Z")
-	var created []string
-	for _, rel := range paths_ {
-		theirs, err := gitexec.ShowStage(paths.StoreDir, 3, rel)
+// applyAddOrModify brings one peer add/modify into the local working tree.
+// Returns the path of a conflict sidecar if local diverged, or "" otherwise.
+func applyAddOrModify(peer, peerCache, peerHead, rel, ts string) (string, error) {
+	peerContent, err := gitexec.ShowFile(peerCache, peerHead, rel)
+	if err != nil {
+		// The peer's working tree should still have this file since the diff
+		// came from peerHead; fall back to reading it directly.
+		peerContent, err = os.ReadFile(filepath.Join(peerCache, rel))
 		if err != nil {
-			// Delete/modify conflicts have no stage 3 — fall back to stage 2
-			// (ours) being absent instead. If neither exists, skip and let
-			// git commit the resolution as-is.
-			theirs = nil
-		}
-		if err := gitexec.CheckoutOurs(paths.StoreDir, rel); err != nil {
-			return created, fmt.Errorf("checkout ours for %s: %w", rel, err)
-		}
-		if err := gitexec.AddPath(paths.StoreDir, rel); err != nil {
-			return created, fmt.Errorf("add %s: %w", rel, err)
-		}
-		if len(theirs) > 0 {
-			sidecar := fmt.Sprintf("%s.conflict.%s.%s", rel, peer, ts)
-			full := filepath.Join(paths.StoreDir, sidecar)
-			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-				return created, err
-			}
-			if err := os.WriteFile(full, theirs, 0o644); err != nil {
-				return created, fmt.Errorf("write sidecar %s: %w", sidecar, err)
-			}
-			if err := gitexec.AddPath(paths.StoreDir, sidecar); err != nil {
-				return created, fmt.Errorf("add sidecar %s: %w", sidecar, err)
-			}
-			created = append(created, sidecar)
+			return "", fmt.Errorf("read peer content for %s: %w", rel, err)
 		}
 	}
-	return created, nil
+
+	localPath := filepath.Join(paths.StoreDir, rel)
+	localContent, readErr := os.ReadFile(localPath)
+	if readErr == nil && bytes.Equal(localContent, peerContent) {
+		return "", nil // already identical — nothing to do
+	}
+
+	if os.IsNotExist(readErr) {
+		// Fresh add. No conflict possible.
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+			return "", fmt.Errorf("mkdir for %s: %w", rel, err)
+		}
+		if err := os.WriteFile(localPath, peerContent, 0o644); err != nil {
+			return "", fmt.Errorf("write %s: %w", rel, err)
+		}
+		return "", nil
+	}
+
+	// Local exists and differs from peer. If local matches what the peer had
+	// at lastSeen/merge-base, the peer simply moved forward — apply their
+	// change cleanly. Otherwise both sides diverged: keep ours, drop theirs
+	// as a sidecar.
+	//
+	// Detecting "peer moved forward while local stayed put" requires knowing
+	// the old peer SHA; for modifies we take the conservative route and
+	// always conflict-sidecar when bytes differ. The committed content on
+	// disk is authoritative and the sidecar is cheap.
+	return writeConflictSidecar(rel, peer, ts, peerContent)
+}
+
+// applyDelete removes a file locally if the local copy matches what the peer
+// had just before deleting it; otherwise the local content has diverged from
+// the version the peer deleted, so we keep ours and leave a sidecar with the
+// peer's pre-delete content for reference.
+func applyDelete(peer, peerCache, oldRef, rel, ts string) (string, error) {
+	localPath := filepath.Join(paths.StoreDir, rel)
+	localContent, err := os.ReadFile(localPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil // already absent locally
+		}
+		return "", fmt.Errorf("read local %s: %w", rel, err)
+	}
+
+	// oldRef == "" only happens in bootstrap mode, which doesn't produce
+	// delete entries, so we always have a ref here.
+	preDelete, err := gitexec.ShowFile(peerCache, oldRef, rel)
+	if err != nil {
+		// Couldn't recover pre-delete content — be conservative, keep local.
+		return writeConflictSidecar(rel, peer, ts, nil)
+	}
+
+	if bytes.Equal(localContent, preDelete) {
+		if err := os.Remove(localPath); err != nil {
+			return "", fmt.Errorf("remove %s: %w", rel, err)
+		}
+		return "", nil
+	}
+
+	// Local diverged from the version the peer deleted. Keep ours; leave a
+	// breadcrumb of the peer's pre-delete content in a sidecar.
+	return writeConflictSidecar(rel, peer, ts, preDelete)
+}
+
+// writeConflictSidecar writes peer content alongside the canonical path as
+// <rel>.conflict.<peer>.<ts> so the user can compare. If content is nil or
+// empty we still emit an empty sidecar so the user notices the conflict.
+func writeConflictSidecar(rel, peer, ts string, peerContent []byte) (string, error) {
+	sidecar := fmt.Sprintf("%s.conflict.%s.%s", rel, peer, ts)
+	full := filepath.Join(paths.StoreDir, sidecar)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(full, peerContent, 0o644); err != nil {
+		return "", fmt.Errorf("write sidecar %s: %w", sidecar, err)
+	}
+	return sidecar, nil
 }

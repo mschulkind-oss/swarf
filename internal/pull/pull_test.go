@@ -20,23 +20,38 @@ func TestPullNoConfig(t *testing.T) {
 	}
 }
 
-func TestPullNoStore(t *testing.T) {
+func TestPullGitNoStoreNoRemote(t *testing.T) {
 	testutil.GitRepo(t)
+	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
-	err := Run()
-	if err != ErrNoStore {
-		t.Fatalf("expected ErrNoStore, got %v", err)
+	if err := Run(); err != ErrNotGitRepo {
+		t.Fatalf("expected ErrNotGitRepo when store missing and no remote, got %v", err)
 	}
 }
 
-func TestPullNotGitRepo(t *testing.T) {
+func TestPullGitBootstrapsFromRemote(t *testing.T) {
+	// A fresh machine with no store but a valid git remote should clone.
 	testutil.GitRepo(t)
-	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
-	// Create store dir that is NOT a git repo
-	paths.StoreDir = t.TempDir()
-	err := Run()
-	if err != ErrNotGitRepo {
-		t.Fatalf("expected ErrNotGitRepo, got %v", err)
+	bare := testutil.BareRemote(t)
+
+	// Seed bare remote with a commit.
+	staging := filepath.Join(t.TempDir(), "staging")
+	runGit(t, "", "clone", bare, staging)
+	runGit(t, staging, "config", "user.email", "t@t")
+	runGit(t, staging, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(staging, "seed.txt"), []byte("seed"), 0o644)
+	runGit(t, staging, "add", "-A")
+	runGit(t, staging, "commit", "-m", "seed")
+	runGit(t, staging, "push", "origin", "HEAD")
+
+	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s"})
+
+	if err := Run(); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "seed.txt")); err != nil {
+		t.Fatalf("expected seed.txt in store, got: %v", err)
 	}
 }
 
