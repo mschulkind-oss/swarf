@@ -78,7 +78,7 @@ func (r *Result) processLink(source, target, rel string, quiet bool) {
 		}
 		os.Remove(target) // stale symlink
 	} else if err == nil {
-		msg := fmt.Sprintf("%s: real file exists, skipping (won't overwrite)", rel)
+		msg := fmt.Sprintf("%s: real file exists, skipping (won't overwrite)", target)
 		r.Warnings = append(r.Warnings, msg)
 		if !quiet {
 			console.Warn(msg)
