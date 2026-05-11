@@ -253,6 +253,30 @@ func CheckRcloneLayout() Check {
 	return Check{"rclone layout", true, "Rclone remote uses per-machine layout"}
 }
 
+// CheckPeerRefs reports the refs/swarf-peers/<id> entries in the local store.
+// Purely informational — helps diagnose "why isn't this peer's change showing
+// up" by revealing the last-seen SHA per peer.
+func CheckPeerRefs() Check {
+	gc := config.ReadGlobalConfig()
+	if gc == nil || gc.Backend != "rclone" {
+		return Check{"peer refs", true, ""} // N/A
+	}
+	if !paths.IsDir(paths.StoreDir) {
+		return Check{"peer refs", true, ""}
+	}
+	cmd := exec.Command("git", "for-each-ref", "--format=%(refname:short) %(objectname:short)", "refs/swarf-peers/")
+	cmd.Dir = paths.StoreDir
+	out, err := cmd.Output()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return Check{"peer refs", true, "No peer refs yet (first pull will create them)"}
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		lines = append(lines, "    "+strings.TrimSpace(line))
+	}
+	return Check{"peer refs", true, "Last-seen peer tips:\n" + strings.Join(lines, "\n")}
+}
+
 func CheckRemoteReachable() Check {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
@@ -608,6 +632,9 @@ func RunAllChecks(cwd string, interactive bool, initProject bool) Result {
 	r.System = append(r.System, CheckRemoteReachable())
 	if layout := CheckRcloneLayout(); layout.Msg != "" {
 		r.System = append(r.System, layout)
+	}
+	if peers := CheckPeerRefs(); peers.Msg != "" {
+		r.System = append(r.System, peers)
 	}
 	r.System = append(r.System, CheckAndFixService(interactive))
 	r.System = append(r.System, CheckDaemonRunning())
