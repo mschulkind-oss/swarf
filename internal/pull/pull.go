@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -202,9 +203,8 @@ func pullFromPeer(remote, peer string, result *Result) error {
 	}
 	peerRemote := strings.TrimRight(remote, "/") + "/" + backends.MachineSuffix + "/" + peer
 	slog.Info("pull: copying peer", "peer", peer, "from", peerRemote, "to", peerCache)
-	cmd := exec.Command("rclone", "sync", peerRemote, peerCache, "-v")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("rclone sync from peer: %s", strings.TrimSpace(string(out)))
+	if err := runRcloneSyncStreaming(peerRemote, peerCache); err != nil {
+		return fmt.Errorf("rclone sync from peer: %w", err)
 	}
 
 	// Register the peer cache as a git remote so we can fetch its objects.
@@ -416,4 +416,26 @@ func writeConflictSidecar(rel, peer, ts string, peerContent []byte) (string, err
 		return "", fmt.Errorf("write sidecar %s: %w", sidecar, err)
 	}
 	return sidecar, nil
+}
+
+// runRcloneSyncStreaming runs `rclone sync src dst` with periodic one-line
+// progress stats streamed straight to our stdout/stderr, so a user watching
+// 'swarf pull' sees activity instead of a silent block. On failure we still
+// capture stderr (via a tee) so the error message surfaces in the returned
+// error even though it also appeared on screen.
+func runRcloneSyncStreaming(src, dst string) error {
+	cmd := exec.Command("rclone", "sync", src, dst,
+		"--stats=5s", "--stats-one-line", "-v")
+	cmd.Stdout = os.Stderr // rclone stats go to stderr anyway; keep both there
+	var errBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
+	if err := cmd.Run(); err != nil {
+		tail := strings.TrimSpace(errBuf.String())
+		// Keep the error message short — the live stream already showed the detail.
+		if len(tail) > 500 {
+			tail = tail[len(tail)-500:]
+		}
+		return fmt.Errorf("%s", tail)
+	}
+	return nil
 }
