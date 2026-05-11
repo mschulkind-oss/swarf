@@ -102,19 +102,17 @@ case "$cmd" in
     done
     src=$(resolve "$src")
     dst=$(resolve "$dst")
-    mkdir -p "$dst"
+    # Always do a full rm+cp for sync. We deliberately avoid rsync --delete
+    # here because on some platforms it diverges from rclone's behavior —
+    # specifically around updating a peer cache that already contains a .git/
+    # directory from a prior sync, where rsync's same-inode optimizations
+    # can leave stale ref packs or loose objects behind and make the next
+    # pull see an older HEAD than the peer just pushed.
     if [ "$cmd" = "sync" ]; then
-      # Delete files in dst that are not in src (simple rsync-delete behavior).
-      if command -v rsync >/dev/null 2>&1; then
-        rsync -a --delete "$src/" "$dst/"
-      else
-        rm -rf "$dst"
-        mkdir -p "$dst"
-        cp -a "$src/." "$dst/"
-      fi
-    else
-      cp -a "$src/." "$dst/"
+      rm -rf "$dst"
     fi
+    mkdir -p "$dst"
+    cp -a "$src/." "$dst/"
     exit 0
     ;;
   about|size)
@@ -157,18 +155,16 @@ func setupStore(t *testing.T, machineID string) string {
 }
 
 // mirrorStoreToRemote copies a store directory into the fake remote under
-// machines/<id>/, simulating what a daemon `Sync` would do.
+// machines/<id>/, simulating what a daemon `Sync` would do. Always does a
+// full wipe-and-copy to match the fake rclone shim's semantics — see the
+// sync|copy branch in installFakeRclone for why rsync is avoided.
 func mirrorStoreToRemote(t *testing.T, storeDir, fakeRoot, machineID string) {
 	t.Helper()
 	target := filepath.Join(fakeRoot, "store", "machines", machineID)
+	os.RemoveAll(target)
 	os.MkdirAll(target, 0o755)
-	if err := exec.Command("rsync", "-a", "--delete", storeDir+"/", target+"/").Run(); err != nil {
-		// Fallback for environments without rsync.
-		os.RemoveAll(target)
-		os.MkdirAll(target, 0o755)
-		if err := exec.Command("cp", "-a", storeDir+"/.", target+"/").Run(); err != nil {
-			t.Fatalf("mirror: %v", err)
-		}
+	if err := exec.Command("cp", "-a", storeDir+"/.", target+"/").Run(); err != nil {
+		t.Fatalf("mirror: %v", err)
 	}
 }
 
