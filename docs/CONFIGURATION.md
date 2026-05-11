@@ -259,18 +259,19 @@ On the new machine, after installing swarf:
 # 1. Write global config pointing at the same rclone remote.
 swarf init                     # interactive, or edit config.toml by hand
 
-# 2. Clone the store from an existing machine's folder on the remote.
-swarf clone                    # auto-picks the sole peer, or:
-swarf clone --from-peer laptop # name the peer explicitly
+# 2. Seed the store from every existing peer's folder on the remote.
+swarf pull
 
 # 3. Re-init each project directory.
 cd ~/projects/my-app && swarf init
 ```
 
-The clone command detects the per-machine layout automatically. If
-there's exactly one peer it's chosen; if there are more, pass
-`--from-peer <id>`. The new machine writes to its own folder starting
-with its first sync.
+`swarf pull` bootstraps: when there is no local store yet, it creates
+one and reconciles every peer's working files and git history into it
+via the file-delta pull path. Each peer's last-seen tip is tracked in
+`refs/swarf-peers/<id>` so subsequent pulls apply only incremental
+changes. The new machine starts writing under its own
+`machines/<id>/` folder on its first sync.
 
 ### Migrating from a flat (single-machine) rclone remote
 

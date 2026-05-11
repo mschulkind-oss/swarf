@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/mschulkind-oss/swarf/internal/clone"
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon"
@@ -79,7 +78,6 @@ Learn more:
 		sweepCmd(),
 		unlinkCmd(),
 		forgetCmd(),
-		cloneCmd(),
 		pullCmd(),
 		daemonCmd(),
 		statusCmd(),
@@ -202,35 +200,6 @@ Run 'swarf status' to see registered project slugs.`,
 
 // --- Sync & Remote ---
 
-func cloneCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "clone",
-		Short:   "Clone the central store from your configured remote",
-		GroupID: groupSync,
-		Args:    cobra.NoArgs,
-		Long: `Clones the central store from the remote configured in
-~/.config/swarf/config.toml. Use this when setting up swarf on a
-new machine where the store doesn't exist yet.
-
-For the rclone backend, the remote contains one folder per machine under
-machines/. If there's exactly one peer, clone auto-selects it. If there
-are multiple, pass --from-peer <id> to pick which one to seed from.
-
-After cloning, run 'swarf init' in each project directory to re-link.`,
-		Example: `  swarf clone                          # auto-pick sole peer (rclone) or clone git remote
-  swarf clone --from-peer laptop       # seed from a specific peer (rclone)
-  swarf init                           # then init each project`,
-	}
-	fromPeer := cmd.Flags().String("from-peer", "", "Peer machine ID to clone from (rclone backend, when multiple peers exist)")
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if err := clone.RunWithPeer(*fromPeer); err != nil {
-			return err
-		}
-		return runDoctor(true, false)
-	}
-	return cmd
-}
-
 func pullCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "pull",
@@ -239,7 +208,11 @@ func pullCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		Long: `Pulls the latest changes from the configured remote into the local
 store. Useful if another machine pushed changes and you want them
-immediately (the daemon also pulls periodically).`,
+immediately (the daemon also pulls periodically).
+
+On a fresh machine where the store doesn't exist yet, 'swarf pull' also
+bootstraps: it creates the store and seeds it from the remote (for the
+git backend) or from any existing peer (for the rclone backend).`,
 		Example: `  swarf pull`,
 		RunE:    func(cmd *cobra.Command, args []string) error { return pull.Run() },
 	}

@@ -224,8 +224,7 @@ creates `swarf/` in a new directory, while `doctor` only checks and repairs.
 | `swarf unlink <file>...` | Reverse a sweep — restore symlinks to regular files |
 | `swarf doctor` | Check health and fix problems (config, store, service, links) |
 | `swarf status` | Show projects, sync state, remote verification, daemon health |
-| `swarf clone` | Clone the store from your configured remote (new machine setup) |
-| `swarf pull` | Pull latest changes from the remote into the store |
+| `swarf pull` | Pull from the remote (also bootstraps the store on a fresh machine) |
 | `swarf daemon start` | Start the background sync daemon (`--foreground` for debugging) |
 | `swarf daemon stop` | Stop the daemon |
 | `swarf daemon status` | Check if the daemon is running |
@@ -236,14 +235,15 @@ creates `swarf/` in a new directory, while `doctor` only checks and repairs.
 
 ```bash
 brew install swarf
-swarf clone              # clones your store from the configured remote
+swarf init               # write global config (or edit ~/.config/swarf/config.toml)
+swarf pull               # creates the store and seeds it from the remote
 cd ~/projects/my-app
 swarf init               # re-links the project from the store
 ```
 
-`clone` requires global config to exist (with the remote URL). After cloning,
-run `swarf init` in each project directory to recreate the local `swarf/`
-directory and symlinks.
+`swarf pull` handles bootstrap automatically — there is no separate clone
+step. After the initial pull, run `swarf init` in each project directory
+to recreate the local `swarf/` directory and symlinks.
 
 ### Multi-machine with rclone (Google Drive, Dropbox, etc.)
 

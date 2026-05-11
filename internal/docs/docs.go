@@ -297,8 +297,8 @@ const backendsDoc = `
     2. Run 'swarf init' and enter the remote URL
     3. Or set it manually in ~/.config/swarf/config.toml
 
-  To clone on a new machine:
-    swarf clone    # clones the store from your remote
+  On a new machine:
+    swarf pull     # creates the store and seeds it from your remote
 
   To pull updates:
     swarf pull     # pulls latest from remote
@@ -336,12 +336,18 @@ const backendsDoc = `
   To add a second machine that shares the same rclone remote:
 
     1. Install swarf and run 'swarf init' (same rclone remote as the first).
-    2. 'swarf clone' — auto-picks the sole peer's folder and seeds the store.
-       If there are multiple peers: 'swarf clone --from-peer <id>'.
+    2. 'swarf pull' — bootstraps the store from every existing peer's
+       folder, seeding working files and git history in one step.
     3. cd into each project and run 'swarf init' to re-link.
 
   Pulling from peers:
-    swarf pull     # fetches every other machine's folder, merges into store
+    swarf pull     # fetches every other machine's folder, reconciles
+                   # into the local store file-by-file
+
+  Each machine tracks each peer's last-seen tip under refs/swarf-peers/<id>
+  in the local store. Subsequent pulls only apply the file changes since
+  that point, so two machines never need a shared commit history — they
+  just exchange file-level diffs over rclone.
 
   Conflicts (both machines edited the same file before syncing) are kept
   visible as sidecars: <file>.conflict.<peer>.<timestamp>. Edit the main

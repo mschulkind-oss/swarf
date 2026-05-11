@@ -73,7 +73,7 @@ func WriteStoreReadme() {
 	b.WriteString("1. You write files into `swarf/` in any registered project\n")
 	b.WriteString("2. The swarf daemon detects changes via filesystem watchers\n")
 	b.WriteString("3. After a debounce period, it mirrors to this store and commits\n")
-	b.WriteString("4. On a new machine: `swarf clone` + `swarf init` restores everything\n\n")
+	b.WriteString("4. On a new machine: `swarf pull` + `swarf init` restores everything\n\n")
 
 	if gc != nil {
 		b.WriteString("## Config\n\n")
