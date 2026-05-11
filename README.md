@@ -245,6 +245,23 @@ swarf init               # re-links the project from the store
 run `swarf init` in each project directory to recreate the local `swarf/`
 directory and symlinks.
 
+### Multi-machine with rclone (Google Drive, Dropbox, etc.)
+
+Using the rclone backend from two or more machines is fully supported.
+Each machine writes to its own subtree on the remote
+(`<remote>/machines/<machine_id>/`), which prevents concurrent writers
+from corrupting each other's `.git/`. `swarf pull` fetches from every
+other machine's subtree and merges into your local store.
+
+When both machines edited the same file before syncing, the merge keeps
+your local version as the main file and writes the peer's version as a
+sidecar named `<file>.conflict.<peer>.<timestamp>`. Open both, edit the
+main file to reconcile, `rm` the sidecar — next sync propagates your
+resolution to the other machine. Nothing is ever silently overwritten.
+
+See [Configuration → Multi-machine rclone](docs/CONFIGURATION.md#multi-machine-rclone)
+for the full flow and migration from a single-machine layout.
+
 ## Containers and jails
 
 The daemon runs on the **host**. Containers mount the project directory, so

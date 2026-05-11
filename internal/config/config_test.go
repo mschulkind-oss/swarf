@@ -108,6 +108,51 @@ func TestParseDuration(t *testing.T) {
 	}
 }
 
+func TestDefaultMachineID(t *testing.T) {
+	id := DefaultMachineID()
+	if id == "" {
+		t.Fatal("expected non-empty default machine id")
+	}
+	// Must only contain [a-z0-9_-].
+	for _, r := range id {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+		if !ok {
+			t.Fatalf("unexpected char %q in machine id %q", r, id)
+		}
+	}
+}
+
+func TestEnsureMachineID_WritesDefault(t *testing.T) {
+	setupTestConfig(t)
+	// Writing config without an explicit MachineID should leave the field empty.
+	WriteGlobalConfig(&GlobalConfig{Backend: "rclone", Remote: "r:p", Debounce: "5s"})
+	gc := ReadGlobalConfig()
+	if gc.MachineID != "" {
+		t.Fatalf("expected empty MachineID, got %q", gc.MachineID)
+	}
+	// EnsureMachineID writes the hostname default and returns it.
+	id := EnsureMachineID()
+	if id == "" {
+		t.Fatal("expected non-empty id from EnsureMachineID")
+	}
+	gc = ReadGlobalConfig()
+	if gc.MachineID != id {
+		t.Fatalf("expected persisted id %q, got %q", id, gc.MachineID)
+	}
+	// Calling again is stable.
+	if EnsureMachineID() != id {
+		t.Fatal("EnsureMachineID must be stable across calls")
+	}
+}
+
+func TestEnsureMachineID_RespectsExplicit(t *testing.T) {
+	setupTestConfig(t)
+	WriteGlobalConfig(&GlobalConfig{Backend: "rclone", Remote: "r:p", Debounce: "5s", MachineID: "deliberate"})
+	if id := EnsureMachineID(); id != "deliberate" {
+		t.Fatalf("expected 'deliberate', got %q", id)
+	}
+}
+
 func TestAutoSweepConfig(t *testing.T) {
 	setupTestConfig(t)
 	c := &GlobalConfig{

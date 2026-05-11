@@ -166,13 +166,28 @@ func TestCloneRcloneNotInstalled(t *testing.T) {
 func TestCloneRcloneSuccess(t *testing.T) {
 	testutil.GitRepo(t)
 
-	// Create a fake rclone that succeeds.
+	// Fake rclone that lists a single peer under machines/ and no-ops on copy.
 	fakeDir := t.TempDir()
 	fakeRclone := filepath.Join(fakeDir, "rclone")
-	os.WriteFile(fakeRclone, []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	script := `#!/bin/sh
+case "$1" in
+  lsf)
+    for a in "$@"; do
+      case "$a" in
+        */machines) echo "peer-one/"; exit 0 ;;
+      esac
+    done
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`
+	os.WriteFile(fakeRclone, []byte(script), 0o755)
 
 	origPath := os.Getenv("PATH")
-	os.Setenv("PATH", fakeDir)
+	os.Setenv("PATH", fakeDir+":"+origPath)
 	defer os.Setenv("PATH", origPath)
 
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s"})
@@ -187,13 +202,13 @@ func TestCloneRcloneSuccess(t *testing.T) {
 func TestCloneRcloneFailure(t *testing.T) {
 	testutil.GitRepo(t)
 
-	// Create a fake rclone that fails.
+	// Fake rclone that fails on every invocation (including peer listing).
 	fakeDir := t.TempDir()
 	fakeRclone := filepath.Join(fakeDir, "rclone")
-	os.WriteFile(fakeRclone, []byte("#!/bin/sh\necho 'rclone error'\nexit 1\n"), 0o755)
+	os.WriteFile(fakeRclone, []byte("#!/bin/sh\necho 'rclone error' >&2\nexit 1\n"), 0o755)
 
 	origPath := os.Getenv("PATH")
-	os.Setenv("PATH", fakeDir)
+	os.Setenv("PATH", fakeDir+":"+origPath)
 	defer os.Setenv("PATH", origPath)
 
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s"})
@@ -202,6 +217,110 @@ func TestCloneRcloneFailure(t *testing.T) {
 	err := Run()
 	if err == nil {
 		t.Fatal("expected error from failing rclone")
+	}
+}
+
+func TestCloneRcloneNoPeers(t *testing.T) {
+	testutil.GitRepo(t)
+
+	// Fake rclone: `lsf` on machines/ succeeds but prints nothing — no peers.
+	fakeDir := t.TempDir()
+	fakeRclone := filepath.Join(fakeDir, "rclone")
+	os.WriteFile(fakeRclone, []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", fakeDir+":"+origPath)
+	defer os.Setenv("PATH", origPath)
+
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s"})
+	paths.StoreDir = filepath.Join(t.TempDir(), "store")
+
+	if err := Run(); !errors.Is(err, ErrNoPeers) {
+		t.Fatalf("expected ErrNoPeers, got %v", err)
+	}
+}
+
+func TestCloneRcloneAmbiguousPeer(t *testing.T) {
+	testutil.GitRepo(t)
+
+	// Fake rclone: two peers listed under machines/.
+	fakeDir := t.TempDir()
+	fakeRclone := filepath.Join(fakeDir, "rclone")
+	script := `#!/bin/sh
+case "$1" in
+  lsf)
+    for a in "$@"; do
+      case "$a" in
+        */machines) printf "a/\nb/\n"; exit 0 ;;
+      esac
+    done
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`
+	os.WriteFile(fakeRclone, []byte(script), 0o755)
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", fakeDir+":"+origPath)
+	defer os.Setenv("PATH", origPath)
+
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s"})
+	paths.StoreDir = filepath.Join(t.TempDir(), "store")
+
+	if err := Run(); !errors.Is(err, ErrAmbiguousPeer) {
+		t.Fatalf("expected ErrAmbiguousPeer, got %v", err)
+	}
+
+	// With --from-peer, picking a specific one succeeds.
+	paths.StoreDir = filepath.Join(t.TempDir(), "store2")
+	if err := RunWithPeer("b"); err != nil {
+		t.Fatalf("expected --from-peer b to succeed, got %v", err)
+	}
+
+	// Picking a non-existent peer fails.
+	paths.StoreDir = filepath.Join(t.TempDir(), "store3")
+	if err := RunWithPeer("nope"); err == nil {
+		t.Fatal("expected error for unknown peer")
+	}
+}
+
+func TestCloneRcloneLegacyLayout(t *testing.T) {
+	testutil.GitRepo(t)
+
+	// Fake rclone: root listing includes ".git/", no machines/ subdir.
+	fakeDir := t.TempDir()
+	fakeRclone := filepath.Join(fakeDir, "rclone")
+	script := `#!/bin/sh
+case "$1" in
+  lsf)
+    # machines/ lookup: not found
+    for a in "$@"; do
+      case "$a" in
+        */machines)
+          echo 'directory not found' >&2
+          exit 3 ;;
+      esac
+    done
+    # Root lookup: has .git/
+    echo ".git/"
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`
+	os.WriteFile(fakeRclone, []byte(script), 0o755)
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", fakeDir+":"+origPath)
+	defer os.Setenv("PATH", origPath)
+
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s"})
+	paths.StoreDir = filepath.Join(t.TempDir(), "store")
+
+	if err := Run(); !errors.Is(err, ErrLegacyLayout) {
+		t.Fatalf("expected ErrLegacyLayout, got %v", err)
 	}
 }
 

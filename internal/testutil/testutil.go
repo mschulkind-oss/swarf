@@ -24,14 +24,19 @@ func GitRepo(t *testing.T) string {
 	// Isolate swarf paths
 	configDir := filepath.Join(tmp, "config", "swarf")
 	storeDir := filepath.Join(tmp, "data", "swarf")
+	cacheDir := filepath.Join(tmp, "cache", "swarf")
 	os.MkdirAll(configDir, 0o755)
 
 	paths.ConfigDir = configDir
 	paths.StoreDir = storeDir
+	paths.CacheDir = cacheDir
+	paths.PeersDir = filepath.Join(cacheDir, "peers")
 	paths.GlobalConfigTOML = filepath.Join(configDir, "config.toml")
 	paths.DrawersTOML = filepath.Join(configDir, "drawers.toml")
 	paths.PIDFile = filepath.Join(configDir, "daemon.pid")
 	paths.LogFile = filepath.Join(configDir, "daemon.log")
+	paths.LastCommitFile = filepath.Join(configDir, "last-commit")
+	paths.LastPushFile = filepath.Join(configDir, "last-push")
 
 	oldDir, _ := os.Getwd()
 	os.Chdir(repo)

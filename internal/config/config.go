@@ -18,11 +18,13 @@ type GlobalConfig struct {
 	Remote    string   `toml:"remote"`
 	Debounce  string   `toml:"debounce"`
 	DirName   string   `toml:"dir_name"`
+	MachineID string   `toml:"-"`
 	AutoSweep []string `toml:"-"`
 }
 
 type globalConfigFile struct {
 	Sync      syncSection      `toml:"sync"`
+	Machine   machineSection   `toml:"machine,omitempty"`
 	AutoSweep autoSweepSection `toml:"auto_sweep,omitempty"`
 }
 
@@ -31,6 +33,10 @@ type syncSection struct {
 	Remote   string `toml:"remote"`
 	Debounce string `toml:"debounce"`
 	DirName  string `toml:"dir_name,omitempty"`
+}
+
+type machineSection struct {
+	ID string `toml:"id,omitempty"`
 }
 
 type autoSweepSection struct {
@@ -47,10 +53,11 @@ func ReadGlobalConfig() *GlobalConfig {
 		return nil
 	}
 	c := &GlobalConfig{
-		Backend:  f.Sync.Backend,
-		Remote:   f.Sync.Remote,
-		Debounce: f.Sync.Debounce,
-		DirName:  f.Sync.DirName,
+		Backend:   f.Sync.Backend,
+		Remote:    f.Sync.Remote,
+		Debounce:  f.Sync.Debounce,
+		DirName:   f.Sync.DirName,
+		MachineID: f.Machine.ID,
 	}
 	if c.Backend == "" {
 		c.Backend = "git"
@@ -77,6 +84,9 @@ func WriteGlobalConfig(c *GlobalConfig) error {
 			DirName:  c.DirName,
 		},
 	}
+	if c.MachineID != "" {
+		f.Machine = machineSection{ID: c.MachineID}
+	}
 	if len(c.AutoSweep) > 0 {
 		f.AutoSweep = autoSweepSection{Paths: c.AutoSweep}
 	}
@@ -85,6 +95,54 @@ func WriteGlobalConfig(c *GlobalConfig) error {
 		return err
 	}
 	return os.WriteFile(paths.GlobalConfigTOML, data, 0o644)
+}
+
+// DefaultMachineID returns a stable, filesystem-safe machine identifier
+// derived from the hostname. Used as a fallback when no machine.id is set
+// in config. Returns "machine" if the hostname is unavailable.
+func DefaultMachineID() string {
+	h, err := os.Hostname()
+	if err != nil || h == "" {
+		return "machine"
+	}
+	// Strip trailing ".local" (common on macOS) for a cleaner default.
+	h = strings.TrimSuffix(h, ".local")
+	return slugifyMachineID(h)
+}
+
+// slugifyMachineID lower-cases and replaces any non-alphanumeric/dash/underscore
+// character with '-'. Rclone paths and git remote names both tolerate this form.
+func slugifyMachineID(s string) string {
+	s = strings.ToLower(s)
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "machine"
+	}
+	return out
+}
+
+// EnsureMachineID returns the configured machine ID, writing a default based
+// on the hostname to config if one is not already set. Safe to call repeatedly.
+func EnsureMachineID() string {
+	gc := ReadGlobalConfig()
+	if gc == nil {
+		return DefaultMachineID()
+	}
+	if gc.MachineID != "" {
+		return gc.MachineID
+	}
+	gc.MachineID = DefaultMachineID()
+	_ = WriteGlobalConfig(gc)
+	return gc.MachineID
 }
 
 type DrawerEntry struct {

@@ -201,39 +201,38 @@ and want to find prior research, decisions, or patterns from other repos.
 
 ---
 
-### Remote Pull-Down (Inbound Sync)
+### Remote Pull-Down (Manual, Multi-Peer — Done for Rclone)
 
-Today swarf pushes local changes to the remote, but there's no automatic
-path for pulling changes *from* the remote back into local projects.
+Swarf now supports multi-machine sync with a conflict-safe per-machine
+layout for the rclone backend:
 
-**Problem:** If you push from machine A and then sit down at machine B, the
-daemon on B doesn't know anything changed upstream. `swarf pull` exists as
-a manual command, but nothing triggers it automatically.
+- Each machine pushes to `<remote>/machines/<machine_id>/` exclusively.
+- `swarf pull` fetches every other machine's folder, runs `git fetch` +
+  `git merge --ff-only`, and falls back to a keep-both sidecar strategy
+  (`<path>.conflict.<peer>.<timestamp>`) when merges aren't fast-forward.
+- Histories never lose commits; working-tree conflicts are visible as
+  files in the store for manual reconciliation.
 
-**Open questions:**
+Still open:
 
-- **Poll vs. push notification?** Polling the remote on a timer (e.g. every
-  60s) is simple but wasteful for git remotes. A webhook or push-based
-  approach is more efficient but adds infrastructure.
-- **Conflict resolution.** If both machines edit the same file before syncing,
-  what wins? Options: last-write-wins, keep-both with `.conflict` suffix,
-  or interactive merge (too heavy for side-files?).
-- **Propagation to projects.** After pulling into the central store, the
-  daemon needs to reverse-mirror: copy updated files from
-  `~/.local/share/swarf/<project>/` back into `<project>/swarf/`. This is
-  the inverse of the current mirror direction.
-- **Re-linking after pull.** If a pulled file lands in `swarf/links/`, the
-  symlink in the project root might not exist yet (new machine, fresh clone).
-  The existing re-link logic handles this, but it needs to trigger after
-  every inbound sync, not just on startup.
+- **Automatic pull.** The daemon still only pushes — pulling is manual
+  via `swarf pull`. A configurable `pull_interval` that triggers pull
+  on a timer is the natural next step.
+- **Reverse-mirror to projects.** After a pull that updates files in the
+  store, those changes need to flow back out to each project's `swarf/`
+  directory (the inverse of the current mirror direction). Startup
+  re-link handles some cases, but a deliberate reverse-mirror pass
+  would close the loop.
+- **Smarter conflict UX.** Today's keep-both sidecar is safe but
+  coarse-grained. A `swarf resolve` helper that shows a unified diff
+  and lets you pick hunks would be nicer for long files.
+- **Peer pruning.** When you retire a machine, its folder lingers on the
+  remote forever. `swarf peers rm <id>` would delete that folder and
+  drop the local peer cache.
 
-**Possible approach:**
-
-1. Daemon polls remote on a configurable interval (`pull_interval` in config).
-2. On changes detected, pull into store, then reverse-mirror to each project.
-3. Re-link runs after reverse-mirror, same as startup.
-4. Conflicts: keep-both with `<file>.conflict.<timestamp>` for safety,
-   log a warning. User resolves manually.
+**Git backend:** the inbound story is simpler (one remote, standard
+git pull) but still fully manual. A common `pull_interval` mechanism
+would apply to both backends.
 
 ---
 

@@ -194,6 +194,65 @@ func CheckStoreRemote() Check {
 	return Check{"store remote", false, "Store has no git remote configured"}
 }
 
+// CheckMachineID ensures the machine has a stable identifier in global config.
+// Writes the hostname-derived default if unset.
+func CheckMachineID() Check {
+	gc := config.ReadGlobalConfig()
+	if gc == nil {
+		return Check{"machine id", false, "No global config — cannot set machine id"}
+	}
+	if gc.MachineID != "" {
+		return Check{"machine id", true, fmt.Sprintf("Machine id: %s", gc.MachineID)}
+	}
+	id := config.EnsureMachineID()
+	return Check{"machine id", true, fmt.Sprintf("Machine id: %s (default from hostname; set [machine].id in %s to override)", id, paths.GlobalConfigTOML)}
+}
+
+// CheckRcloneLayout warns when the rclone remote is in the legacy flat layout
+// (pre-multi-machine), and would require migration before the current code
+// can safely push/pull.
+func CheckRcloneLayout() Check {
+	gc := config.ReadGlobalConfig()
+	if gc == nil || gc.Backend != "rclone" {
+		return Check{"rclone layout", true, ""} // N/A; caller filters empty messages
+	}
+	if _, err := exec.LookPath("rclone"); err != nil {
+		return Check{"rclone layout", true, ""}
+	}
+	// Quick probe: list the remote root and see if it contains a .git/ dir.
+	cmd := exec.Command("rclone", "lsf", "--dirs-only", strings.TrimRight(gc.Remote, "/"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return Check{"rclone layout", true, ""} // unreachable; CheckRemoteReachable covers this
+	}
+	hasGit := false
+	hasMachines := false
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name := strings.TrimRight(strings.TrimSpace(line), "/")
+		if name == ".git" {
+			hasGit = true
+		}
+		if name == "machines" {
+			hasMachines = true
+		}
+	}
+	if hasGit && !hasMachines {
+		msg := fmt.Sprintf(
+			"Rclone remote %s is in the legacy flat layout (.git/ at root).\n"+
+				"    Swarf now writes per-machine under machines/<id>/ to avoid concurrent-write corruption.\n"+
+				"    Migration (one-time, manual):\n"+
+				"      1. Stop the daemon on all machines that use this remote:   swarf daemon stop\n"+
+				"      2. Pick a machine id for this host (default: hostname).\n"+
+				"      3. On the remote, create the directory: machines/<your-id>/\n"+
+				"      4. Move everything currently at the remote root (including .git/) into machines/<your-id>/\n"+
+				"         Example (one-shot):   rclone move %s %s/machines/<your-id> --exclude 'machines/**'\n"+
+				"      5. Start the daemon again:   swarf daemon start",
+			gc.Remote, gc.Remote, gc.Remote)
+		return Check{"rclone layout", false, msg}
+	}
+	return Check{"rclone layout", true, "Rclone remote uses per-machine layout"}
+}
+
 func CheckRemoteReachable() Check {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
@@ -543,9 +602,13 @@ func RunAllChecks(cwd string, interactive bool, initProject bool) Result {
 	// Step 2: System checks — config exists (or was just created).
 	r.System = append(r.System, configCheck)
 	r.System = append(r.System, CheckBinaryLocation())
+	r.System = append(r.System, CheckMachineID())
 	r.System = append(r.System, CheckAndFixStore(gc))
 	r.System = append(r.System, CheckStoreRemote())
 	r.System = append(r.System, CheckRemoteReachable())
+	if layout := CheckRcloneLayout(); layout.Msg != "" {
+		r.System = append(r.System, layout)
+	}
 	r.System = append(r.System, CheckAndFixService(interactive))
 	r.System = append(r.System, CheckDaemonRunning())
 

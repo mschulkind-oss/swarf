@@ -305,10 +305,12 @@ const backendsDoc = `
 
   Rclone (Google Drive, Dropbox, S3, etc.)
   -----------------------------------------
-  Uses rclone to sync the store to any cloud provider. The entire store
-  is synced — your files are browseable directly in Google Drive (or
-  wherever), organized by project. The .git/ directory is included too,
-  so you get full commit history.
+  Uses rclone to sync the store to any cloud provider. Each machine writes
+  to its own subtree under <remote>/machines/<machine_id>/, so two machines
+  never write to the same file at the same time. Files are browseable
+  directly in Google Drive (or wherever), organized by machine and then
+  by project. The .git/ directory is included too, so you get full commit
+  history.
 
     Backend: rclone
     Remote:  gdrive:swarf-store
@@ -328,4 +330,33 @@ const backendsDoc = `
 
   Then pick 'gdrive:' in the swarf init menu and accept the default
   path 'swarf-store'.
+
+  Multi-machine rclone
+  --------------------
+  To add a second machine that shares the same rclone remote:
+
+    1. Install swarf and run 'swarf init' (same rclone remote as the first).
+    2. 'swarf clone' — auto-picks the sole peer's folder and seeds the store.
+       If there are multiple peers: 'swarf clone --from-peer <id>'.
+    3. cd into each project and run 'swarf init' to re-link.
+
+  Pulling from peers:
+    swarf pull     # fetches every other machine's folder, merges into store
+
+  Conflicts (both machines edited the same file before syncing) are kept
+  visible as sidecars: <file>.conflict.<peer>.<timestamp>. Edit the main
+  file to reconcile, then remove the sidecar. Nothing is silently
+  overwritten; both histories remain in git.
+
+  Machine id
+  ----------
+  Each machine has a stable id used for its folder on the remote. Default
+  is derived from the hostname and written on first run. Override by
+  adding to ~/.config/swarf/config.toml:
+
+    [machine]
+    id = "laptop"
+
+  Do not change the id after the first sync — the remote has a folder
+  under that name.
 `

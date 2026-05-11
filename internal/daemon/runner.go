@@ -162,7 +162,7 @@ func mirrorDir(src, dst string) error {
 
 func makeBackend(backendType, remote string) backends.SyncBackend {
 	if backendType == "rclone" {
-		return &backends.RcloneBackend{Remote: remote}
+		return &backends.RcloneBackend{Remote: remote, MachineID: config.EnsureMachineID()}
 	}
 	return &backends.GitBackend{}
 }

@@ -33,6 +33,9 @@ backend = "git"                                      # "git" or "rclone"
 remote = "git@github.com:you/my-swarf-store.git"     # git URL or rclone remote:path
 debounce = "5s"                                      # wait after last change before syncing
 
+[machine]
+id = "laptop"                                        # stable name for this machine (rclone multi-machine)
+
 [auto_sweep]
 paths = ["AGENTS.md", "CLAUDE.md"]                   # files to auto-sweep when they appear
 ```
@@ -74,6 +77,35 @@ Where to push. Format depends on the backend:
   The remote name (before the colon) must match a configured rclone remote
   (`rclone listremotes` to see available ones). The path is created
   automatically on first sync.
+
+### `[machine]` section
+
+#### `id`
+
+A stable identifier for this machine. Used by the rclone backend to keep
+each machine's writes in its own subtree on the remote
+(`<remote>/machines/<id>/`), so two machines never write to the same file
+on the remote at the same time — the one rule that makes multi-machine
+rclone safe.
+
+If unset, a default is derived from the hostname (lowercased, with a
+trailing `.local` stripped on macOS and any non-alphanumeric characters
+replaced with `-`). `swarf doctor` writes the default the first time it
+runs on a new machine, so you usually don't have to set this by hand.
+
+Override if your hostnames are unstable (e.g. containers) or if you want
+human-readable machine names on the remote:
+
+```toml
+[machine]
+id = "desktop"
+```
+
+Once set, **don't change it** — the machine's history lives under that
+id on the remote. If you do change it, you need to rename the folder
+manually on the remote.
+
+### `[sync]` section (cont.)
 
 #### `debounce`
 
@@ -174,9 +206,93 @@ Each project gets a subdirectory matching its slug. The daemon mirrors
 file changes (including deletions) from project `swarf/` dirs into the
 store, then commits and pushes.
 
-For rclone backends, the entire store is synced to the remote — working
-files are browseable directly in Google Drive (or wherever), and `.git/`
-is included for full commit history.
+For rclone backends, the store is synced to the remote under
+`<remote>/machines/<machine_id>/` — working files are browseable directly
+in Google Drive (or wherever), and `.git/` is included for full commit
+history. See "Multi-machine rclone" below.
+
+## Multi-machine rclone
+
+Running swarf on two or more machines that share a single rclone remote
+(Google Drive, Dropbox, S3, etc.) requires a bit more structure than a
+single machine does: if both machines wrote to the same folder, their
+`.git/` directories would race and you'd end up with a corrupt store.
+
+Swarf avoids this by giving each machine its own subtree:
+
+```
+gdrive:swarf-store/
+  machines/
+    laptop/        ← only laptop writes here
+      .git/
+      my-app/
+      ...
+    desktop/       ← only desktop writes here
+      .git/
+      my-app/
+      ...
+```
+
+**Push:** the daemon syncs `~/.local/share/swarf/` → `machines/<own-id>/`.
+Because only one machine ever writes under that prefix, `rclone sync`
+(destructive by design) is safe.
+
+**Pull:** `swarf pull` lists folders under `machines/`, copies each other
+machine's folder to `~/.cache/swarf/peers/<id>/`, registers that as a
+git remote, fetches, and merges into the local store.
+
+- Clean merge (fast-forward or auto-merge): silent success.
+- Conflict: your local version stays as the main file; the peer's
+  version is written alongside as `<path>.conflict.<peer>.<timestamp>`.
+  Both are committed to the store. Open them in your editor, edit the
+  main file to what you want, and `rm` the `.conflict.*` sidecar. Next
+  sync propagates the resolution to the other machine.
+
+Nothing is ever silently overwritten. Both machines' histories survive
+in git even when working-tree content conflicts.
+
+### Setting up a second machine
+
+On the new machine, after installing swarf:
+
+```bash
+# 1. Write global config pointing at the same rclone remote.
+swarf init                     # interactive, or edit config.toml by hand
+
+# 2. Clone the store from an existing machine's folder on the remote.
+swarf clone                    # auto-picks the sole peer, or:
+swarf clone --from-peer laptop # name the peer explicitly
+
+# 3. Re-init each project directory.
+cd ~/projects/my-app && swarf init
+```
+
+The clone command detects the per-machine layout automatically. If
+there's exactly one peer it's chosen; if there are more, pass
+`--from-peer <id>`. The new machine writes to its own folder starting
+with its first sync.
+
+### Migrating from a flat (single-machine) rclone remote
+
+Older swarf versions wrote directly to `<remote>/` (with no `machines/`
+subfolder). The new code refuses to push to a remote in this layout to
+avoid clobbering data. To migrate:
+
+1. Stop the daemon on every machine using this remote: `swarf daemon stop`.
+2. Pick a machine id for the machine that currently owns the data (the
+   default is the hostname; set `[machine].id` in `config.toml` to
+   override).
+3. On the remote, move everything currently at the root — including
+   `.git/` — into `machines/<your-id>/`. You can do this in the web UI,
+   with `rclone move`, or `rclone sync`-then-cleanup. Example:
+   ```bash
+   rclone move <remote>: <remote>:/machines/<your-id> --exclude 'machines/**'
+   ```
+4. Start the daemon again: `swarf daemon start`. `swarf doctor` confirms
+   the new layout is in place.
+
+`swarf doctor` detects the legacy layout and prints these steps whenever
+it sees `.git/` at the remote root.
 
 ## Daemon service
 

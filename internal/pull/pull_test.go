@@ -119,16 +119,44 @@ func TestPullRcloneNotInstalled(t *testing.T) {
 func TestPullRcloneSuccess(t *testing.T) {
 	testutil.InitializedSwarf(t)
 
-	// Create a fake rclone that succeeds.
+	// Fake rclone: "lsf --dirs-only <remote>/machines" lists a single peer,
+	// "sync" copies an empty tree. The rest falls through to git merge.
 	fakeDir := t.TempDir()
 	fakeRclone := filepath.Join(fakeDir, "rclone")
-	os.WriteFile(fakeRclone, []byte("#!/bin/sh\nexit 0\n"), 0o755)
+	// Respond to "lsf --dirs-only" by printing "peer-one/" if the path looks
+	// like .../machines, else empty. Treat sync/mkdir/copy as no-ops.
+	script := `#!/bin/sh
+case "$1" in
+  lsf)
+    for a in "$@"; do
+      case "$a" in
+        */machines) echo "peer-one/"; exit 0 ;;
+      esac
+    done
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`
+	os.WriteFile(fakeRclone, []byte(script), 0o755)
 
 	origPath := os.Getenv("PATH")
-	os.Setenv("PATH", fakeDir)
+	os.Setenv("PATH", fakeDir+":"+origPath)
 	defer os.Setenv("PATH", origPath)
 
-	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s"})
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s", MachineID: "self"})
+
+	// Seed the store with an initial commit so git has a HEAD; pullFromPeer's
+	// rclone sync is a no-op (fake), so the peer cache is effectively empty.
+	// The fetch attempt will fail, and pullRclone treats that as a per-peer
+	// warning and continues — so Run() should return nil overall.
+	runGit(t, paths.StoreDir, "config", "user.email", "t@t")
+	runGit(t, paths.StoreDir, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(paths.StoreDir, "seed.txt"), []byte("x"), 0o644)
+	runGit(t, paths.StoreDir, "add", "-A")
+	runGit(t, paths.StoreDir, "commit", "-m", "seed")
 
 	err := Run()
 	if err != nil {
@@ -139,16 +167,25 @@ func TestPullRcloneSuccess(t *testing.T) {
 func TestPullRcloneFailure(t *testing.T) {
 	testutil.InitializedSwarf(t)
 
-	// Create a fake rclone that fails.
+	// Fake rclone that fails on every invocation. The first failure is on
+	// `rclone lsf` against the machines/ path, which surfaces as an error
+	// from listPeers → Run().
 	fakeDir := t.TempDir()
 	fakeRclone := filepath.Join(fakeDir, "rclone")
-	os.WriteFile(fakeRclone, []byte("#!/bin/sh\necho 'rclone error: bad remote'\nexit 1\n"), 0o755)
+	os.WriteFile(fakeRclone, []byte("#!/bin/sh\necho 'rclone error: bad remote' >&2\nexit 1\n"), 0o755)
 
 	origPath := os.Getenv("PATH")
-	os.Setenv("PATH", fakeDir)
+	os.Setenv("PATH", fakeDir+":"+origPath)
 	defer os.Setenv("PATH", origPath)
 
-	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s"})
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "rclone", Remote: "remote:path", Debounce: "5s", MachineID: "self"})
+
+	// Must have HEAD or pullRclone takes the "not a git repo" path.
+	runGit(t, paths.StoreDir, "config", "user.email", "t@t")
+	runGit(t, paths.StoreDir, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(paths.StoreDir, "seed.txt"), []byte("x"), 0o644)
+	runGit(t, paths.StoreDir, "add", "-A")
+	runGit(t, paths.StoreDir, "commit", "-m", "seed")
 
 	err := Run()
 	if err == nil {

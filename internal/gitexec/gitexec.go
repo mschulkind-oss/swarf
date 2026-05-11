@@ -1,6 +1,7 @@
 package gitexec
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -81,6 +82,14 @@ func ResetHard(dir string) error {
 	return err
 }
 
+// ResetHardTo resets the working tree and HEAD to match the given ref. Used
+// when bootstrapping a store that has no HEAD yet (e.g. right after first
+// contact with a peer).
+func ResetHardTo(dir, ref string) error {
+	_, err := run(dir, "reset", "--hard", ref)
+	return err
+}
+
 func StatusPorcelain(dir string) string {
 	out, _ := runStdout(dir, "status", "--porcelain")
 	return out
@@ -152,4 +161,116 @@ func GetRepoRoot(dir string) string {
 		return ""
 	}
 	return out
+}
+
+// RemoteExists reports whether a named remote is configured in the given repo.
+func RemoteExists(dir, name string) bool {
+	out, err := runStdout(dir, "remote")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SetRemoteURL sets the URL for an existing remote, replacing any prior value.
+func SetRemoteURL(dir, name, url string) error {
+	_, err := run(dir, "remote", "set-url", name, url)
+	return err
+}
+
+// Fetch runs `git fetch <remote>` in the given repo.
+func Fetch(dir, remote string) error {
+	_, err := run(dir, "fetch", remote)
+	return err
+}
+
+// FetchHead runs `git fetch <remote> HEAD` in the given repo, which writes
+// the peer's current tip to FETCH_HEAD as a merge-eligible ref. A bare
+// `git fetch <remote>` marks FETCH_HEAD as not-for-merge, which would cause
+// `git merge FETCH_HEAD` to be a no-op.
+func FetchHead(dir, remote string) error {
+	_, err := run(dir, "fetch", remote, "HEAD")
+	return err
+}
+
+// MergeFF attempts a fast-forward-only merge of the given ref into HEAD.
+// Returns an error if the merge would require a real merge commit (i.e. the
+// branches have diverged), which is the caller's signal to fall back to the
+// conflict-aware merge path.
+func MergeFF(dir, ref string) error {
+	_, err := run(dir, "merge", "--ff-only", ref)
+	return err
+}
+
+// MergeNoCommit runs a regular merge with --no-commit so the caller can
+// inspect the result (including any conflicts) before deciding what to do.
+// Returns (cleanIndex, err): cleanIndex is true when no conflicts arose.
+// An unexpected error (not a conflict) returns err!=nil.
+func MergeNoCommit(dir, ref, message string) (bool, error) {
+	// -m supplies the message in case we later finalize with `git commit`.
+	_, err := run(dir, "merge", "--no-commit", "--no-ff", "-m", message, ref)
+	if err == nil {
+		return true, nil
+	}
+	// Git returns non-zero on conflicts; detect that vs. a real error by
+	// checking for unmerged paths.
+	unmerged, lsErr := runStdout(dir, "diff", "--name-only", "--diff-filter=U")
+	if lsErr != nil {
+		return false, err
+	}
+	if strings.TrimSpace(unmerged) == "" {
+		return false, err
+	}
+	return false, nil
+}
+
+// UnmergedPaths lists paths that currently have unresolved merge conflicts.
+func UnmergedPaths(dir string) []string {
+	out, err := runStdout(dir, "diff", "--name-only", "--diff-filter=U")
+	if err != nil || strings.TrimSpace(out) == "" {
+		return nil
+	}
+	var paths []string
+	for _, line := range strings.Split(out, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			paths = append(paths, s)
+		}
+	}
+	return paths
+}
+
+// ShowStage returns the content of the given file at the given merge stage:
+// 1 = common ancestor, 2 = ours, 3 = theirs. Returns empty string if the file
+// did not exist at that stage (e.g. add/add conflicts have no stage 1).
+func ShowStage(dir string, stage int, path string) ([]byte, error) {
+	cmd := exec.Command("git", "show", fmt.Sprintf(":%d:%s", stage, path))
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CheckoutOurs resolves the conflict on the given path by keeping our version.
+func CheckoutOurs(dir, path string) error {
+	_, err := run(dir, "checkout", "--ours", "--", path)
+	return err
+}
+
+// AddPath stages a single path (used after conflict resolution).
+func AddPath(dir, path string) error {
+	_, err := run(dir, "add", "--", path)
+	return err
+}
+
+// AbortMerge aborts an in-progress merge, restoring the working tree.
+func AbortMerge(dir string) error {
+	_, err := run(dir, "merge", "--abort")
+	return err
 }

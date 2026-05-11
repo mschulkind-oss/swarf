@@ -10,6 +10,8 @@ var SwarfDirName = "swarf"
 var (
 	ConfigDir        = xdg("XDG_CONFIG_HOME", ".config") + "/swarf"
 	StoreDir         = xdg("XDG_DATA_HOME", ".local/share") + "/swarf"
+	CacheDir         = xdg("XDG_CACHE_HOME", ".cache") + "/swarf"
+	PeersDir         = CacheDir + "/peers"
 	GlobalConfigTOML = ConfigDir + "/config.toml"
 	DrawersTOML      = ConfigDir + "/drawers.toml"
 	PIDFile          = ConfigDir + "/daemon.pid"
@@ -26,9 +28,10 @@ func xdg(env, fallback string) string {
 	return filepath.Join(home, fallback)
 }
 
-func SwarfDir(hostRoot string) string     { return filepath.Join(hostRoot, SwarfDirName) }
-func LinksDir(hostRoot string) string     { return filepath.Join(SwarfDir(hostRoot), ".links") }
+func SwarfDir(hostRoot string) string        { return filepath.Join(hostRoot, SwarfDirName) }
+func LinksDir(hostRoot string) string        { return filepath.Join(SwarfDir(hostRoot), ".links") }
 func StoreProjectDir(hostRoot string) string { return filepath.Join(StoreDir, ProjectSlug(hostRoot)) }
+func PeerCacheDir(peerID string) string      { return filepath.Join(PeersDir, peerID) }
 
 func ProjectSlug(hostRoot string) string {
 	resolved, err := filepath.EvalSymlinks(hostRoot)
