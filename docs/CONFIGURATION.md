@@ -200,11 +200,17 @@ The store at `~/.local/share/swarf/` is a git repo that mirrors all projects:
 │       └── notes.md
 ├── README.md              ← auto-generated project table
 └── .git/
+    └── refs/swarf-peers/  ← one SHA per known peer (rclone backend only)
 ```
 
 Each project gets a subdirectory matching its slug. The daemon mirrors
 file changes (including deletions) from project `swarf/` dirs into the
 store, then commits and pushes.
+
+The `refs/swarf-peers/<id>` namespace records the last commit this
+machine has merged in from each peer, and is only populated by the
+rclone backend's pull path. See "Multi-machine rclone" below for how
+those refs drive the file-delta pull.
 
 For rclone backends, the store is synced to the remote under
 `<remote>/machines/<machine_id>/` — working files are browseable directly
@@ -237,19 +243,48 @@ gdrive:swarf-store/
 Because only one machine ever writes under that prefix, `rclone sync`
 (destructive by design) is safe.
 
-**Pull:** `swarf pull` lists folders under `machines/`, copies each other
-machine's folder to `~/.cache/swarf/peers/<id>/`, registers that as a
-git remote, fetches, and merges into the local store.
+**Pull:** `swarf pull` lists folders under `machines/`, copies each
+other machine's folder to `~/.cache/swarf/peers/<id>/`, and reconciles
+that peer's working tree into the local store file-by-file.
 
-- Clean merge (fast-forward or auto-merge): silent success.
-- Conflict: your local version stays as the main file; the peer's
-  version is written alongside as `<path>.conflict.<peer>.<timestamp>`.
-  Both are committed to the store. Open them in your editor, edit the
-  main file to what you want, and `rm` the `.conflict.*` sidecar. Next
-  sync propagates the resolution to the other machine.
+Per-peer progress is tracked with a ref in the local store:
 
-Nothing is ever silently overwritten. Both machines' histories survive
-in git even when working-tree content conflicts.
+```
+refs/swarf-peers/<peer-id>
+```
+
+Each ref holds the SHA of the last peer commit this machine has merged
+in. The next pull diffs `<that-SHA>..peerHEAD` inside the peer cache
+and applies only those file changes. The refs live alongside `refs/heads/`
+in the store's `.git/` and never collide with branch or tag refs.
+
+On first pull from a peer (ref missing), the code uses
+`git merge-base HEAD peerHEAD` to recover an effective last-seen —
+this matters when upgrading from a previous swarf version that relied
+on shared git history. If the two repos share no ancestor at all
+(unrelated histories, e.g. a machine restored from a backup with a
+different initial commit), pull falls back to a **content-union** mode:
+peer files are added/modified into the local tree, but nothing is
+deleted — there's no way to distinguish "peer deleted this" from
+"peer never had it."
+
+Reconciliation outcomes:
+
+- Identical content (either byte-for-byte equal or last-seen==peerHEAD):
+  no-op.
+- Clean add/modify/delete: applied directly to the working tree.
+- Conflict (peer changed a file local also changed, or peer deleted a
+  file local has modified): your local version stays as the main file;
+  the peer's version is written alongside as
+  `<path>.conflict.<peer>.<timestamp>`. Both are committed to the
+  store. Open them in your editor, edit the main file to what you
+  want, and `rm` the `.conflict.*` sidecar. Next sync propagates the
+  resolution to the other machine.
+
+Nothing is ever silently overwritten. Because the delta is computed
+from each peer's `.git/` at pull time, the machines do not need to
+share commit history — each machine's `git log` shows its own edits
+plus the auto-sync commits it generated to pull in peer changes.
 
 ### Setting up a second machine
 
