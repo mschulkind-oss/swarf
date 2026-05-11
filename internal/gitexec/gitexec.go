@@ -269,8 +269,110 @@ func AddPath(dir, path string) error {
 	return err
 }
 
+// RemovePath removes a path from the index and working tree. Used when a peer
+// has deleted a file and we want to mirror that locally.
+func RemovePath(dir, path string) error {
+	_, err := run(dir, "rm", "-f", "--", path)
+	return err
+}
+
 // AbortMerge aborts an in-progress merge, restoring the working tree.
 func AbortMerge(dir string) error {
 	_, err := run(dir, "merge", "--abort")
 	return err
+}
+
+// MergeBase returns the SHA of the best common ancestor of a and b, or ""
+// if they share no history.
+func MergeBase(dir, a, b string) (string, error) {
+	out, err := runStdout(dir, "merge-base", a, b)
+	if err != nil {
+		// git merge-base exits 1 when there is no common ancestor. That's
+		// not an error from our perspective; return "" and nil.
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// ReadRef returns the SHA the given ref points at, or "" if it doesn't exist.
+// The ref is expected in the form accepted by `git rev-parse` (e.g.
+// "refs/swarf-peers/<name>").
+func ReadRef(dir, ref string) string {
+	out, err := runStdout(dir, "rev-parse", "--verify", "--quiet", ref)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// UpdateRef sets the named ref to the given SHA, creating or moving it.
+func UpdateRef(dir, ref, sha string) error {
+	_, err := run(dir, "update-ref", ref, sha)
+	return err
+}
+
+// DiffEntry is one file-level change between two tree-ish refs, as produced
+// by `git diff --name-status -z`.
+type DiffEntry struct {
+	// Status is the single-character status code: "A" (added), "M" (modified),
+	// "D" (deleted), "T" (type changed). Renames and copies are expanded into
+	// a delete + add pair, so the caller never has to handle "R"/"C".
+	Status string
+	// Path is the path of the changed file, relative to the repo root.
+	Path string
+}
+
+// DiffNameStatus runs `git diff --name-status` between the two refs and
+// returns the parsed entries. Renames are expanded into delete+add pairs so
+// every entry carries exactly one path. Passing "" for oldRef returns entries
+// relative to the empty tree (i.e. every file in newRef as an "A" entry).
+func DiffNameStatus(dir, oldRef, newRef string) ([]DiffEntry, error) {
+	args := []string{"diff", "--name-status", "--no-renames", "-z"}
+	if oldRef == "" {
+		// Empty tree SHA is well-known. Lets us diff "from nothing" to newRef.
+		args = append(args, "4b825dc642cb6eb9a060e54bf8d69288fbee4904")
+	} else {
+		args = append(args, oldRef)
+	}
+	args = append(args, newRef)
+	out, err := runStdout(dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	return parseDiffNameStatus(out), nil
+}
+
+// parseDiffNameStatus parses the NUL-separated output of
+// `git diff --name-status --no-renames -z`. Each record is
+//
+//	<status>NUL<path>NUL
+//
+// so we split on NUL and walk pairs. --no-renames guarantees we never see R/C.
+func parseDiffNameStatus(out string) []DiffEntry {
+	if out == "" {
+		return nil
+	}
+	parts := strings.Split(out, "\x00")
+	var entries []DiffEntry
+	for i := 0; i+1 < len(parts); i += 2 {
+		status := strings.TrimSpace(parts[i])
+		path := parts[i+1]
+		if status == "" || path == "" {
+			continue
+		}
+		entries = append(entries, DiffEntry{Status: status[:1], Path: path})
+	}
+	return entries
+}
+
+// ShowFile returns the content of the file at the given ref. The ref can be
+// any tree-ish (a commit SHA, a ref name, etc.). Returns an error if the file
+// did not exist at that ref.
+func ShowFile(dir, ref, path string) ([]byte, error) {
+	cmd := exec.Command("git", "show", ref+":"+path)
+	cmd.Dir = dir
+	return cmd.Output()
 }
