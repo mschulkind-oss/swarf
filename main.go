@@ -13,8 +13,10 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/daemon"
 	"github.com/mschulkind-oss/swarf/internal/doctor"
 	"github.com/mschulkind-oss/swarf/internal/docs"
+	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/pull"
+	"github.com/mschulkind-oss/swarf/internal/setup"
 	"github.com/mschulkind-oss/swarf/internal/status"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
 	"github.com/mschulkind-oss/swarf/internal/unlink"
@@ -101,8 +103,9 @@ func initCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		Long: `Initialize swarf in the current git repository.
 
-Like 'swarf doctor', this checks and fixes system-level setup (global
-config, central store, system service). The difference: init also
+First run: walks you through creating global config (backend + remote),
+creates the central store, and offers to install the system service.
+Subsequent runs in other projects: instant — config is reused. Always
 creates swarf/ in the current directory if it doesn't exist yet.
 
 After init, drop files directly into swarf/ — they sync automatically.
@@ -112,7 +115,7 @@ must appear at a specific path in the project tree (like AGENTS.md).`,
 		Example: `  swarf init              # interactive setup (first time)
   cd ~/other-project && swarf init   # instant (reuses config)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(true, true)
+			return runInit()
 		},
 	}
 }
@@ -337,20 +340,12 @@ func doctorCmd() *cobra.Command {
 		Short:   "Validate that swarf is set up correctly",
 		GroupID: groupInfo,
 		Args:    cobra.NoArgs,
-		Long: `Checks system and project health, fixing what it can.
-
-Doctor notices and fixes problems automatically:
-  - Missing global config → prompts to create
-  - Missing store → creates it
-  - Missing symlinks → re-created
-  - Absolute symlinks → converted to relative
-  - Missing system service → offers to install
-
-Unlike 'swarf init', doctor will NOT create swarf/ in a new directory.
-Use 'swarf init' to set up swarf in a project for the first time.`,
+		Long: `Reports system and project health. Read-only — never modifies
+anything. Each failed check tells you what command to run to fix
+the issue (typically 'swarf init' or 'swarf daemon install').`,
 		Example: `  swarf doctor`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor(true, false)
+			return runDoctor()
 		},
 	}
 }
@@ -391,8 +386,29 @@ all available topics, or specify a topic name for details.`,
 
 // --- Helpers ---
 
-func runDoctor(interactive bool, initProject bool) error {
-	result := doctor.RunAllChecks("", interactive, initProject)
+// runInit drives interactive first-run setup: ensures global config,
+// creates the store, offers the service install, initializes the current
+// project, then prints the doctor report.
+func runInit() error {
+	gc := setup.SetupSystem(true)
+	if gc == nil {
+		return fmt.Errorf("setup cancelled")
+	}
+
+	// Best-effort project init — if we aren't inside a git repo, fall
+	// through to the doctor report which will explain why.
+	if err := initialize.Run(gc); err != nil {
+		if err != initialize.ErrAlreadyInitialized && err != initialize.ErrNotGitRepo {
+			return err
+		}
+	}
+
+	return runDoctor()
+}
+
+// runDoctor prints the current health report. Read-only.
+func runDoctor() error {
+	result := doctor.RunChecks("")
 
 	console.Info("")
 	if result.InJail {
@@ -437,8 +453,6 @@ func runDoctor(interactive bool, initProject bool) error {
 		console.Ok("All checks passed.")
 	}
 
-	// Return an error only if project checks failed (e.g. not a git repo).
-	// System checks (remote, daemon) are advisory — they don't block init.
 	projectOk := true
 	for _, c := range result.Project {
 		if !c.OK {

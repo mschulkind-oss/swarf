@@ -14,9 +14,9 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
 
-func TestCheckAndFixGlobalConfigMissing(t *testing.T) {
+func TestCheckGlobalConfigMissing(t *testing.T) {
 	testutil.GitRepo(t)
-	gc, c := doctor.CheckAndFixGlobalConfig(false)
+	gc, c := doctor.CheckGlobalConfig()
 	if c.OK {
 		t.Fatal("expected config missing")
 	}
@@ -25,10 +25,10 @@ func TestCheckAndFixGlobalConfigMissing(t *testing.T) {
 	}
 }
 
-func TestCheckAndFixGlobalConfigPresent(t *testing.T) {
+func TestCheckGlobalConfigPresent(t *testing.T) {
 	testutil.GitRepo(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "test", Debounce: "5s"})
-	gc, c := doctor.CheckAndFixGlobalConfig(false)
+	gc, c := doctor.CheckGlobalConfig()
 	if !c.OK {
 		t.Fatalf("expected config present: %s", c.Msg)
 	}
@@ -37,31 +37,44 @@ func TestCheckAndFixGlobalConfigPresent(t *testing.T) {
 	}
 }
 
-func TestCheckAndFixGlobalConfigNoRemote(t *testing.T) {
+func TestCheckGlobalConfigNoRemote(t *testing.T) {
 	testutil.GitRepo(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
-	gc, c := doctor.CheckAndFixGlobalConfig(false)
+	gc, c := doctor.CheckGlobalConfig()
 	if c.OK {
-		t.Fatal("expected no remote error")
+		t.Fatal("expected no-remote failure")
 	}
 	if gc == nil {
 		t.Fatal("expected non-nil config even without remote")
 	}
 }
 
-func TestCheckAndFixStoreExists(t *testing.T) {
+func TestCheckStoreExists(t *testing.T) {
 	testutil.InitializedSwarf(t)
-	c := doctor.CheckAndFixStore(nil)
+	c := doctor.CheckStore(nil)
 	if !c.OK {
 		t.Fatalf("expected store to exist: %s", c.Msg)
 	}
 }
 
-func TestCheckAndFixStoreMissing(t *testing.T) {
+func TestCheckStoreMissing(t *testing.T) {
 	testutil.GitRepo(t)
-	c := doctor.CheckAndFixStore(nil)
+	c := doctor.CheckStore(nil)
 	if c.OK {
 		t.Fatal("expected store to not exist")
+	}
+}
+
+func TestCheckStoreNoLongerAutoCreates(t *testing.T) {
+	// Doctor must never create the store — that's init's job.
+	testutil.GitRepo(t)
+	gc := &config.GlobalConfig{Backend: "git", Remote: "test", Debounce: "5s"}
+	c := doctor.CheckStore(gc)
+	if c.OK {
+		t.Fatalf("expected store failure, got: %s", c.Msg)
+	}
+	if paths.IsDir(paths.StoreDir) {
+		t.Fatal("doctor should not have created the store directory")
 	}
 }
 
@@ -93,40 +106,37 @@ func TestCheckDaemonStalePid(t *testing.T) {
 	}
 }
 
-func TestCheckAndFixLinksHealthy(t *testing.T) {
+func TestCheckLinksHealthy(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
 	target := filepath.Join(repo, "AGENTS.md")
 	os.Symlink(source, target)
-	c := doctor.CheckAndFixLinks(repo)
+	c := doctor.CheckLinks(repo)
 	if !c.OK {
 		t.Fatalf("expected links healthy: %s", c.Msg)
 	}
 }
 
-func TestCheckAndFixLinksMissing(t *testing.T) {
+func TestCheckLinksReportsMissingNoLongerFixes(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
-	// Don't create the symlink — CheckAndFixLinks should create it
-	c := doctor.CheckAndFixLinks(repo)
-	if !c.OK {
-		t.Fatalf("expected links fixed: %s", c.Msg)
+	// No symlink created.
+
+	c := doctor.CheckLinks(repo)
+	if c.OK {
+		t.Fatalf("expected failure for missing symlink, got ok: %s", c.Msg)
 	}
-	// Verify symlink was created
-	fi, err := os.Lstat(filepath.Join(repo, "AGENTS.md"))
-	if err != nil {
-		t.Fatal("expected symlink to be created")
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected symlink")
+	// Doctor must not auto-create it.
+	if _, err := os.Lstat(filepath.Join(repo, "AGENTS.md")); err == nil {
+		t.Fatal("doctor must not create the symlink")
 	}
 }
 
-func TestCheckAndFixLinksNoDir(t *testing.T) {
+func TestCheckLinksNoDir(t *testing.T) {
 	repo := testutil.GitRepo(t)
-	c := doctor.CheckAndFixLinks(repo)
+	c := doctor.CheckLinks(repo)
 	if !c.OK {
 		t.Fatal("expected ok when no links dir")
 	}
@@ -136,7 +146,6 @@ func TestCheckSymlinksRelativeAllGood(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
-	// Create a correct relative symlink.
 	target := filepath.Join(repo, "AGENTS.md")
 	relPath, _ := filepath.Rel(filepath.Dir(target), source)
 	os.Symlink(relPath, target)
@@ -150,30 +159,21 @@ func TestCheckSymlinksRelativeAllGood(t *testing.T) {
 	}
 }
 
-func TestCheckSymlinksRelativeFixesAbsolute(t *testing.T) {
+func TestCheckSymlinksRelativeReportsAbsoluteNoLongerFixes(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
-	// Create an absolute symlink (the old behavior).
 	target := filepath.Join(repo, "AGENTS.md")
-	os.Symlink(source, target)
+	os.Symlink(source, target) // absolute
 
 	c := doctor.CheckSymlinksRelative(repo)
-	if !c.OK {
-		t.Fatalf("expected ok after fix: %s", c.Msg)
+	if c.OK {
+		t.Fatalf("expected failure for absolute symlink: %s", c.Msg)
 	}
-	if !strings.Contains(c.Msg, "Fixed 1 absolute") {
-		t.Fatalf("expected fix message: %s", c.Msg)
-	}
-
-	// Verify it's now relative.
+	// Doctor must not rewrite it.
 	linkDest, _ := os.Readlink(target)
-	if filepath.IsAbs(linkDest) {
-		t.Fatalf("symlink should be relative after fix, got: %s", linkDest)
-	}
-	// Verify it still resolves correctly.
-	if _, err := os.Stat(target); err != nil {
-		t.Fatalf("symlink should still resolve: %v", err)
+	if !filepath.IsAbs(linkDest) {
+		t.Fatalf("doctor must not rewrite the symlink — still expected absolute, got %q", linkDest)
 	}
 }
 
@@ -206,9 +206,8 @@ func TestCheckGitignoreNotInRepo(t *testing.T) {
 
 func TestCheckStoreNotGitRepo(t *testing.T) {
 	testutil.GitRepo(t)
-	// Create store dir that isn't a git repo
 	os.MkdirAll(paths.StoreDir, 0o755)
-	c := doctor.CheckAndFixStore(nil)
+	c := doctor.CheckStore(nil)
 	if c.OK {
 		t.Fatal("expected failure for non-git store")
 	}
@@ -224,7 +223,6 @@ func TestCheckStoreRemoteNoStore(t *testing.T) {
 
 func TestCheckStoreRemotePresent(t *testing.T) {
 	testutil.InitializedSwarf(t)
-	// Add a remote to the store
 	os.MkdirAll(paths.StoreDir, 0o755)
 	cmd := exec.Command("git", "-C", paths.StoreDir, "remote", "add", "origin", "https://example.com/repo.git")
 	cmd.Run()
@@ -276,7 +274,6 @@ func TestCheckDaemonBadPidContent(t *testing.T) {
 
 func TestCheckGitignoreLinkedFiles(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
-	// Create a linked file and set up excludes
 	linksDir := paths.LinksDir(repo)
 	os.WriteFile(filepath.Join(linksDir, "AGENTS.md"), []byte("# Agents\n"), 0o644)
 	exclude.UpdateExcludes(repo, []string{"AGENTS.md"})
@@ -295,10 +292,10 @@ func TestCheckGitignoreLinkedFiles(t *testing.T) {
 	}
 }
 
-func TestRunAllChecks(t *testing.T) {
+func TestRunChecks(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "test", Debounce: "5s"})
-	result := doctor.RunAllChecks(repo, false, false)
+	result := doctor.RunChecks(repo)
 	if len(result.Project) == 0 {
 		t.Fatal("expected project checks")
 	}
@@ -310,10 +307,10 @@ func TestRunAllChecks(t *testing.T) {
 	}
 }
 
-func TestRunAllChecksJailMode(t *testing.T) {
+func TestRunChecksJailMode(t *testing.T) {
 	testutil.InitializedSwarf(t)
-	// Don't write global config — simulates jail environment.
-	result := doctor.RunAllChecks("", false, false)
+	// No global config written — simulates jail environment.
+	result := doctor.RunChecks("")
 	if !result.InJail {
 		t.Fatal("expected InJail=true without global config")
 	}

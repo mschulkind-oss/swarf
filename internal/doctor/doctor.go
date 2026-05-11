@@ -1,7 +1,6 @@
 package doctor
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,21 +9,22 @@ import (
 	"syscall"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
-	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
-	"github.com/mschulkind-oss/swarf/internal/initialize"
-	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
-func titleCase(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
-}
+// Package doctor observes swarf's state and reports it. All functions are
+// pure checks — they never modify config, files, services, or symlinks.
+// When something is wrong, the Check's Msg points the user at the exact
+// command that fixes it (typically 'swarf init' or 'swarf daemon install').
+//
+// Historical note: earlier versions of doctor auto-fixed things like
+// missing global config, missing store, broken symlinks, and uninstalled
+// services. That turned out to conflate two responsibilities: doctor's
+// job (observe and diagnose) and init's job (set things up). We split
+// them: doctor reports, the user (or `swarf init`) acts.
 
 type Check struct {
 	Name string
@@ -36,152 +36,57 @@ type Check struct {
 type Result struct {
 	Project []Check
 	System  []Check
-	// InJail is true when global config is unavailable and we're not interactive
-	// (e.g. inside a container).
+	// InJail is true when global config is unavailable and we're not
+	// interactive — commonly inside a container.
 	InJail bool
 }
 
-// --- System checks (and fixes) ---
+func titleCase(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
 
-// CheckAndFixGlobalConfig checks for global config and offers to create it
-// when interactive. Returns the config (possibly newly created) or nil.
-func CheckAndFixGlobalConfig(interactive bool) (*config.GlobalConfig, Check) {
+// --- System checks ---
+
+// CheckGlobalConfig reports the global config state. Returns the config
+// (possibly nil) alongside the check so callers that want to drive further
+// checks from the config don't have to read it twice.
+func CheckGlobalConfig() (*config.GlobalConfig, Check) {
 	gc := config.ReadGlobalConfig()
-	if gc != nil {
-		if gc.Remote == "" {
-			return gc, Check{"global config", false, fmt.Sprintf("Global config has no remote configured\n    Fix: edit %s and set remote", paths.GlobalConfigTOML)}
-		}
-		return gc, Check{"global config", true, fmt.Sprintf("Global config: backend=%s, remote=%s (%s)", gc.Backend, gc.Remote, paths.GlobalConfigTOML)}
+	if gc == nil {
+		return nil, Check{"global config", false,
+			fmt.Sprintf("Global config not found\n    Fix: run 'swarf init' to create %s", paths.GlobalConfigTOML)}
 	}
-
-	if !interactive {
-		return nil, Check{"global config", false, fmt.Sprintf("Global config not found — create %s", paths.GlobalConfigTOML)}
+	if gc.Remote == "" {
+		return gc, Check{"global config", false,
+			fmt.Sprintf("Global config has no remote configured\n    Fix: edit %s and set remote", paths.GlobalConfigTOML)}
 	}
-
-	// Offer to create.
-	console.Info("")
-	console.Header("No global config found. Let's set one up.")
-	console.Info("")
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Print("  Backend [git/rclone] (git): ")
-	backend, _ := reader.ReadString('\n')
-	backend = strings.TrimSpace(backend)
-	if backend == "" {
-		backend = "git"
-	}
-
-	var remote string
-	if backend == "rclone" {
-		remote = promptRcloneRemote(reader)
-		if remote == "" {
-			return nil, Check{"global config", false, "No remote configured (cancelled)"}
-		}
-	} else {
-		fmt.Print("  Remote URL (your private backup repo): ")
-		remote, _ = reader.ReadString('\n')
-		remote = strings.TrimSpace(remote)
-	}
-
-	gc = &config.GlobalConfig{Backend: backend, Remote: remote, Debounce: "5s"}
-	config.WriteGlobalConfig(gc)
-	console.Ok(fmt.Sprintf("Wrote %s", paths.GlobalConfigTOML))
-	return gc, Check{"global config", true, fmt.Sprintf("Global config: backend=%s, remote=%s", gc.Backend, gc.Remote)}
+	return gc, Check{"global config", true,
+		fmt.Sprintf("Global config: backend=%s, remote=%s (%s)", gc.Backend, gc.Remote, paths.GlobalConfigTOML)}
 }
 
-func listRcloneRemotes() []string {
-	if _, err := exec.LookPath("rclone"); err != nil {
-		return nil
-	}
-	out, err := exec.Command("rclone", "listremotes").Output()
-	if err != nil {
-		return nil
-	}
-	var remotes []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			remotes = append(remotes, line)
-		}
-	}
-	return remotes
-}
-
-// promptRcloneRemote walks the user through picking an rclone remote and path.
-// Returns the full remote spec (e.g. "gdrive:swarf-store") or "" if cancelled.
-func promptRcloneRemote(reader *bufio.Reader) string {
-	remotes := listRcloneRemotes()
-	if len(remotes) == 0 {
-		console.Info("")
-		console.Warn("No rclone remotes found.")
-		console.Info("")
-		console.Info("  Set one up first:")
-		console.Info("    rclone config")
-		console.Info("")
-		console.Hint("Then re-run this command.")
-		return ""
-	}
-
-	console.Info("")
-	console.Info("  Pick an rclone remote:")
-	console.Info("")
-	for i, r := range remotes {
-		console.Infof("    %d. %s", i+1, r)
-	}
-	console.Info("")
-	fmt.Printf("  Enter a number (1-%d), or q to quit: ", len(remotes))
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(answer)
-
-	if answer == "q" || answer == "" {
-		return ""
-	}
-
-	var idx int
-	if _, err := fmt.Sscanf(answer, "%d", &idx); err != nil || idx < 1 || idx > len(remotes) {
-		console.Error(fmt.Sprintf("Invalid choice: %s", answer))
-		return ""
-	}
-
-	chosen := remotes[idx-1] // e.g. "gdrive:"
-	defaultPath := "swarf-store"
-	console.Info("")
-	fmt.Printf("  Directory path on %s [%s]: ", chosen, defaultPath)
-	dirPath, _ := reader.ReadString('\n')
-	dirPath = strings.TrimSpace(dirPath)
-
-	if dirPath == "" {
-		dirPath = defaultPath
-	}
-	result := chosen + dirPath
-	console.Ok(fmt.Sprintf("Remote: %s", result))
-	return result
-}
-
-// CheckAndFixStore checks for the central store and creates it if missing.
-func CheckAndFixStore(gc *config.GlobalConfig) Check {
+// CheckStore reports whether the central store exists as a git repo.
+func CheckStore(gc *config.GlobalConfig) Check {
 	if paths.IsDir(paths.StoreDir) && gitexec.IsRepo(paths.StoreDir) {
 		return Check{"store", true, fmt.Sprintf("Central store exists at %s", paths.StoreDir)}
 	}
-
 	if gc == nil {
 		return Check{"store", false, "Central store not found (no config)"}
 	}
-
-	// Create it.
-	if err := initialize.EnsureStore("", gc); err != nil {
-		return Check{"store", false, fmt.Sprintf("Failed to create store: %v", err)}
-	}
-	return Check{"store", true, fmt.Sprintf("Created central store at %s", paths.StoreDir)}
+	return Check{"store", false, fmt.Sprintf("Central store missing at %s\n    Fix: run 'swarf init' to create it", paths.StoreDir)}
 }
 
+// CheckStoreRemote reports whether the store has a configured remote.
+// For rclone backends, the remote lives in global config, not in the
+// store's git config.
 func CheckStoreRemote() Check {
 	if !paths.IsDir(paths.StoreDir) {
 		return Check{"store remote", false, "Store does not exist"}
 	}
 	gc := config.ReadGlobalConfig()
 	if gc != nil && gc.Backend == "rclone" {
-		// Rclone stores don't have a git remote — the rclone remote is in the config.
 		if gc.Remote != "" {
 			return Check{"store remote", true, fmt.Sprintf("Rclone remote: %s", gc.Remote)}
 		}
@@ -194,36 +99,38 @@ func CheckStoreRemote() Check {
 	return Check{"store remote", false, "Store has no git remote configured"}
 }
 
-// CheckMachineID ensures the machine has a stable identifier in global config.
-// Writes the hostname-derived default if unset.
+// CheckMachineID reports the configured machine id. Does not write to
+// config — the machine id is persisted on first run by the init/setup
+// path or by the rclone backend's Sync.
 func CheckMachineID() Check {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
-		return Check{"machine id", false, "No global config — cannot set machine id"}
+		return Check{"machine id", false, "No global config — cannot determine machine id"}
 	}
 	if gc.MachineID != "" {
 		return Check{"machine id", true, fmt.Sprintf("Machine id: %s", gc.MachineID)}
 	}
-	id := config.EnsureMachineID()
-	return Check{"machine id", true, fmt.Sprintf("Machine id: %s (default from hostname; set [machine].id in %s to override)", id, paths.GlobalConfigTOML)}
+	// No stored id yet — report the fallback we'd use.
+	fallback := config.DefaultMachineID()
+	return Check{"machine id", true, fmt.Sprintf(
+		"Machine id: %s (default from hostname; set [machine].id in %s to override)",
+		fallback, paths.GlobalConfigTOML)}
 }
 
 // CheckRcloneLayout warns when the rclone remote is in the legacy flat layout
-// (pre-multi-machine), and would require migration before the current code
-// can safely push/pull.
+// (.git/ at root). Swarf refuses to push/pull against it.
 func CheckRcloneLayout() Check {
 	gc := config.ReadGlobalConfig()
 	if gc == nil || gc.Backend != "rclone" {
-		return Check{"rclone layout", true, ""} // N/A; caller filters empty messages
+		return Check{"rclone layout", true, ""} // N/A
 	}
 	if _, err := exec.LookPath("rclone"); err != nil {
 		return Check{"rclone layout", true, ""}
 	}
-	// Quick probe: list the remote root and see if it contains a .git/ dir.
 	cmd := exec.Command("rclone", "lsf", "--dirs-only", strings.TrimRight(gc.Remote, "/"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return Check{"rclone layout", true, ""} // unreachable; CheckRemoteReachable covers this
+		return Check{"rclone layout", true, ""}
 	}
 	hasGit := false
 	hasMachines := false
@@ -253,13 +160,12 @@ func CheckRcloneLayout() Check {
 	return Check{"rclone layout", true, "Rclone remote uses per-machine layout"}
 }
 
-// CheckPeerRefs reports the refs/swarf-peers/<id> entries in the local store.
-// Purely informational — helps diagnose "why isn't this peer's change showing
-// up" by revealing the last-seen SHA per peer.
+// CheckPeerRefs lists the refs/swarf-peers/<id> entries in the local store.
+// Informational — surfaces what "last-seen" state the pull path has cached.
 func CheckPeerRefs() Check {
 	gc := config.ReadGlobalConfig()
 	if gc == nil || gc.Backend != "rclone" {
-		return Check{"peer refs", true, ""} // N/A
+		return Check{"peer refs", true, ""}
 	}
 	if !paths.IsDir(paths.StoreDir) {
 		return Check{"peer refs", true, ""}
@@ -277,6 +183,8 @@ func CheckPeerRefs() Check {
 	return Check{"peer refs", true, "Last-seen peer tips:\n" + strings.Join(lines, "\n")}
 }
 
+// CheckRemoteReachable tries to reach the configured remote. Safe to call
+// when no config exists — returns a failure check in that case.
 func CheckRemoteReachable() Check {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
@@ -299,7 +207,6 @@ func CheckRemoteReachable() Check {
 			return Check{"remote", false, "rclone not installed — install it: https://rclone.org/install/"}
 		}
 
-		// Validate remote format: must contain a colon (e.g. "gdrive:path").
 		if !strings.Contains(gc.Remote, ":") {
 			return Check{"remote", false, fmt.Sprintf(
 				"Invalid rclone remote: %q — expected format like gdrive:swarf-store\n    Fix: edit %s and set remote to remotename:path",
@@ -307,9 +214,7 @@ func CheckRemoteReachable() Check {
 		}
 
 		remoteName := strings.Split(gc.Remote, ":")[0]
-
-		// Check that the named remote actually exists in rclone config.
-		knownRemotes := listRcloneRemotes()
+		knownRemotes := rcloneRemoteNames()
 		found := false
 		for _, r := range knownRemotes {
 			if strings.TrimSuffix(r, ":") == remoteName {
@@ -327,11 +232,9 @@ func CheckRemoteReachable() Check {
 				remoteName+":", available, paths.GlobalConfigTOML)}
 		}
 
-		// Remote exists in rclone config — try to reach it.
 		cmd := exec.Command("rclone", "lsd", gc.Remote)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			// Path might not exist yet (first sync creates it). Check the remote itself.
 			cmd2 := exec.Command("rclone", "about", remoteName+":")
 			out2, err2 := cmd2.CombinedOutput()
 			if err2 != nil {
@@ -347,6 +250,26 @@ func CheckRemoteReachable() Check {
 	return Check{"remote", false, fmt.Sprintf("Unknown backend: %s", gc.Backend)}
 }
 
+func rcloneRemoteNames() []string {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		return nil
+	}
+	out, err := exec.Command("rclone", "listremotes").Output()
+	if err != nil {
+		return nil
+	}
+	var remotes []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			remotes = append(remotes, line)
+		}
+	}
+	return remotes
+}
+
+// CheckBinaryLocation flags ephemeral install paths that would make the
+// daemon service unreliable.
 func CheckBinaryLocation() Check {
 	inVenv, path := daemon.IsInVenv()
 	if inVenv {
@@ -355,6 +278,36 @@ func CheckBinaryLocation() Check {
 	return Check{"binary location", true, "Binary is at a stable location"}
 }
 
+// CheckService reports whether the OS service unit is on disk. It does not
+// touch service state — the daemon check covers runtime health.
+func CheckService() Check {
+	kind := daemon.ServiceKind()
+	if kind == "" {
+		return Check{"service", false, "No supported service manager found (need systemd or launchd)"}
+	}
+	if isServiceInstalled(kind) {
+		return Check{"service", true, fmt.Sprintf("%s service installed", titleCase(kind))}
+	}
+	return Check{"service", false, fmt.Sprintf("%s service not installed\n    Fix: run 'swarf daemon install'", titleCase(kind))}
+}
+
+func isServiceInstalled(kind string) bool {
+	home, _ := os.UserHomeDir()
+	switch kind {
+	case "systemd":
+		_, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", "swarf.service"))
+		return err == nil
+	case "launchd":
+		_, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", "com.swarf.daemon.plist"))
+		return err == nil
+	default:
+		return false
+	}
+}
+
+// CheckDaemonRunning reports whether the daemon process is alive. When it
+// isn't, we look at systemd for hints (e.g. status=203/EXEC from a stale
+// ExecStart after a cross-source reinstall).
 func CheckDaemonRunning() Check {
 	data, err := os.ReadFile(paths.PIDFile)
 	if err != nil {
@@ -371,15 +324,12 @@ func CheckDaemonRunning() Check {
 }
 
 // diagnoseDaemonNotRunning augments a "not running" message with whatever
-// systemd tells us about why. The common case after a reinstall from a
-// different source (brew → go install, etc.) is status=203/EXEC because the
-// unit's ExecStart still points at a binary that no longer exists.
+// systemd tells us. 203/EXEC means the unit's ExecStart points at a binary
+// that no longer exists — common after switching install sources.
 func diagnoseDaemonNotRunning(base string) string {
 	if daemon.ServiceKind() != "systemd" {
 		return base
 	}
-	// 'systemctl --user show --property=ExecMainStatus,ExecStart' gives us
-	// the last exit code and the configured command in one call.
 	cmd := exec.Command("systemctl", "--user", "show", "swarf.service",
 		"--property=ExecMainStatus", "--property=ExecStart")
 	out, err := cmd.Output()
@@ -398,7 +348,6 @@ func diagnoseDaemonNotRunning(base string) string {
 	if execMainStatus != "203" {
 		return base
 	}
-	// 203/EXEC — binary path in the unit is broken. Try to surface which one.
 	path := extractExecStartPath(execStart)
 	msg := base + "\n    systemd reports status=203/EXEC — the service unit's ExecStart points at a binary that cannot be executed."
 	if path != "" {
@@ -423,8 +372,7 @@ func diagnoseDaemonNotRunning(base string) string {
 //
 //	{ path=/home/me/.local/bin/swarf ; argv[]=/home/me/.local/bin/swarf daemon start --foreground ; ignore_errors=no ; ... }
 //
-// with a simpler fallback shape for older versions. Pull out whatever looks
-// like an absolute path first.
+// with a simpler fallback shape for older versions.
 func extractExecStartPath(s string) string {
 	if i := strings.Index(s, "path="); i >= 0 {
 		rest := s[i+len("path="):]
@@ -433,7 +381,6 @@ func extractExecStartPath(s string) string {
 		}
 		return rest
 	}
-	// Fallback: first absolute-path token.
 	for _, tok := range strings.Fields(s) {
 		if strings.HasPrefix(tok, "/") {
 			return tok
@@ -442,112 +389,36 @@ func extractExecStartPath(s string) string {
 	return ""
 }
 
-// IsServiceInstalled checks whether a swarf service is installed.
-func IsServiceInstalled() bool {
-	kind := daemon.ServiceKind()
-	home, _ := os.UserHomeDir()
-	switch kind {
-	case "systemd":
-		_, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", "swarf.service"))
-		return err == nil
-	case "launchd":
-		_, err := os.Stat(filepath.Join(home, "Library", "LaunchAgents", "com.swarf.daemon.plist"))
-		return err == nil
-	default:
-		return false
-	}
-}
+// --- Project checks ---
 
-func CheckAndFixService(interactive bool) Check {
-	kind := daemon.ServiceKind()
-
-	if IsServiceInstalled() {
-		return Check{"service", true, fmt.Sprintf("%s service installed", titleCase(kind))}
-	}
-
-	if kind == "" {
-		return Check{"service", false, "No supported service manager found (need systemd or launchd)"}
-	}
-
-	if inVenv, _ := daemon.IsInVenv(); inVenv {
-		return Check{"service", false, fmt.Sprintf("%s service not installed — fix binary location first", titleCase(kind))}
-	}
-
-	if !interactive {
-		return Check{"service", false, fmt.Sprintf("%s service not installed — run 'swarf doctor' to fix", titleCase(kind))}
-	}
-
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Printf("  Install %s service for auto-sync? [Y/n] ", kind)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(strings.ToLower(answer))
-
-	if answer == "" || answer == "y" || answer == "yes" {
-		if err := daemon.InstallService(); err != nil {
-			console.Error(fmt.Sprintf("Service install failed: %v", err))
-			console.Hint("You can try again later: swarf daemon install")
-			return Check{"service", false, fmt.Sprintf("%s service install failed", titleCase(kind))}
-		}
-		return Check{"service", true, fmt.Sprintf("Installed %s service — daemon is running", titleCase(kind))}
-	}
-
-	console.Hint("No problem. Install later: swarf daemon install")
-	return Check{"service", false, fmt.Sprintf("%s service not installed (skipped)", titleCase(kind))}
-}
-
-// --- Project checks (and fixes) ---
-
-// CheckAndFixProject checks whether swarf is initialized for the current project.
-// When initProject is true (i.e. `swarf init`), it creates swarf/ if missing.
-// When initProject is false (i.e. `swarf doctor`), it only reports and fixes
-// existing projects — it won't create swarf/ in a new directory.
-func CheckAndFixProject(cwd string, gc *config.GlobalConfig, interactive bool, initProject bool) []Check {
+// CheckProject returns the set of project-level checks for the given
+// working directory. No side effects — drift is reported, not repaired.
+func CheckProject(cwd string) []Check {
 	if !gitexec.IsInsideWorkTree(cwd) {
-		if initProject {
-			return []Check{{"project", false, "Not inside a git repository — cd into a project first"}}
-		}
-		// Doctor in a non-git dir is fine — just note it.
 		return []Check{{"project", true, "Not inside a git repository."}}
 	}
-
 	hostRoot := gitexec.GetRepoRoot(cwd)
 	if hostRoot == "" {
 		hostRoot = cwd
 	}
 
-	sd := paths.SwarfDir(hostRoot)
 	var checks []Check
-
-	// Check/create swarf/ directory.
+	sd := paths.SwarfDir(hostRoot)
 	if fi, err := os.Lstat(sd); err != nil || !(fi.IsDir() || fi.Mode()&os.ModeSymlink != 0) {
-		if !initProject || gc == nil {
-			// Not an error — just inform the user. Doctor doesn't create swarf/.
-			return []Check{{paths.SwarfDirName + "/", true, fmt.Sprintf("No %s/ here. Run 'swarf init' to set up this project.", paths.SwarfDirName)}}
-		}
-
-		// Initialize the project.
-		if err := initialize.Run(gc); err != nil {
-			return []Check{{paths.SwarfDirName + "/", false, fmt.Sprintf("Init failed: %v", err)}}
-		}
-		checks = append(checks, Check{paths.SwarfDirName + "/", true, fmt.Sprintf("Initialized %s/ for %s", paths.SwarfDirName, paths.ProjectSlug(hostRoot))})
-	} else {
-		checks = append(checks, Check{paths.SwarfDirName + "/", true, fmt.Sprintf("%s/ directory exists", paths.SwarfDirName)})
-		// Ensure this project is registered (handles renames/moves).
-		slug := paths.ProjectSlug(hostRoot)
-		config.RegisterDrawer(slug, hostRoot)
-		exclude.UpdateExcludes(hostRoot, nil)
+		return []Check{{paths.SwarfDirName + "/", true,
+			fmt.Sprintf("No %s/ here. Run 'swarf init' to set up this project.", paths.SwarfDirName)}}
 	}
+	checks = append(checks, Check{paths.SwarfDirName + "/", true,
+		fmt.Sprintf("%s/ directory exists", paths.SwarfDirName)})
 
-	// Gitignore checks.
 	checks = append(checks, CheckGitignore(hostRoot)...)
-
-	// Link and symlink checks (with auto-fix).
-	checks = append(checks, CheckAndFixLinks(hostRoot))
+	checks = append(checks, CheckLinks(hostRoot))
 	checks = append(checks, CheckSymlinksRelative(hostRoot))
-
 	return checks
 }
 
+// CheckGitignore reports per-path gitignore status for swarf/ and any
+// swept files under swarf/.links/.
 func CheckGitignore(cwd string) []Check {
 	if !gitexec.IsInsideWorkTree(cwd) {
 		return []Check{{"git", false, "Not inside a git repository"}}
@@ -582,7 +453,6 @@ func CheckGitignore(cwd string) []Check {
 			} else {
 				checks = append(checks, Check{rel, false, fmt.Sprintf("%s is NOT gitignored — run 'swarf sweep' to fix", rel)})
 			}
-			// Warn if the symlink target is still tracked by git.
 			if gitexec.IsTracked(cwd, rel) {
 				checks = append(checks, Check{rel + " (tracked)", false,
 					fmt.Sprintf("%s is swept but still tracked by git — run 'git rm --cached %s' to untrack it", rel, rel)})
@@ -594,27 +464,44 @@ func CheckGitignore(cwd string) []Check {
 	return checks
 }
 
-func CheckAndFixLinks(cwd string) Check {
+// CheckLinks reports whether every file under swarf/.links/ has a
+// corresponding symlink back in the host tree. Missing symlinks are a
+// common drift mode — the daemon re-links automatically on each sync, so
+// here we just describe the situation and defer to the daemon.
+func CheckLinks(cwd string) Check {
 	linksDir := paths.LinksDir(cwd)
 	if fi, err := os.Stat(linksDir); err != nil || !fi.IsDir() {
 		return Check{"links", true, "No linked files"}
 	}
 
-	result, err := link.Run(cwd, true)
-	if err != nil {
-		return Check{"links", false, fmt.Sprintf("Link error: %v", err)}
-	}
+	var missing []string
+	filepath.Walk(linksDir, func(source string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(linksDir, source)
+		target := filepath.Join(cwd, rel)
+		fi, lErr := os.Lstat(target)
+		if lErr != nil {
+			missing = append(missing, rel)
+			return nil
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			missing = append(missing, rel+" (not a symlink)")
+		}
+		return nil
+	})
 
-	if len(result.Created) > 0 {
-		console.Ok(fmt.Sprintf("Fixed %d missing link(s): %s", len(result.Created), strings.Join(result.Created, ", ")))
+	if len(missing) > 0 {
+		return Check{"links", false, fmt.Sprintf(
+			"Missing or wrong-type symlinks: %s\n    Fix: the daemon re-links on each sync; run 'swarf init' to re-link immediately.",
+			strings.Join(missing, ", "))}
 	}
-
-	if len(result.Warnings) > 0 {
-		return Check{"links", false, fmt.Sprintf("Link warnings: %s", strings.Join(result.Warnings, "; "))}
-	}
-	return Check{"links", true, "All links healthy"}
+	return Check{"links", true, "All symlinks present"}
 }
 
+// CheckSymlinksRelative reports any absolute symlinks under the project.
+// Absolute symlinks break across machines/mounts; pure-report, no rewrite.
 func CheckSymlinksRelative(cwd string) Check {
 	linksDir := paths.LinksDir(cwd)
 	if fi, err := os.Stat(linksDir); err != nil || !fi.IsDir() {
@@ -637,50 +524,37 @@ func CheckSymlinksRelative(cwd string) Check {
 			return nil
 		}
 		if filepath.IsAbs(linkDest) {
-			relDest, err := filepath.Rel(filepath.Dir(target), source)
-			if err != nil {
-				return nil
-			}
-			os.Remove(target)
-			if err := os.Symlink(relDest, target); err == nil {
-				absolute = append(absolute, rel)
-			}
+			absolute = append(absolute, rel)
 		}
 		return nil
 	})
 
 	if len(absolute) > 0 {
-		return Check{"symlink paths", true, fmt.Sprintf("Fixed %d absolute symlink(s): %s", len(absolute), strings.Join(absolute, ", "))}
+		return Check{"symlink paths", false, fmt.Sprintf(
+			"Absolute symlinks found: %s\n    Fix: run 'swarf init' to rewrite them as relative paths.",
+			strings.Join(absolute, ", "))}
 	}
 	return Check{"symlink paths", true, "All symlinks are relative"}
 }
 
-// --- RunAllChecks ---
+// --- Orchestration ---
 
-// RunAllChecks is the universal health check and fix-it function.
-// When interactive is true, it prompts to fix system-level issues:
-//   - Missing global config → prompts to create
-//   - Missing store → creates it
-//   - Missing service → offers to install
+// RunChecks returns the complete doctor report for the given working
+// directory. Pure observation: no files created, no services installed,
+// no symlinks rewritten.
 //
-// When initProject is true (i.e. called from `swarf init`), it also
-// creates swarf/ in the current directory if missing. When false
-// (i.e. called from `swarf doctor`), it only checks/fixes existing projects.
-//
-// When global config is absent and non-interactive, InJail is set.
-func RunAllChecks(cwd string, interactive bool, initProject bool) Result {
+// When global config is missing (the usual "running inside a container"
+// case), InJail is set and only project-local checks are returned.
+func RunChecks(cwd string) Result {
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
 
 	var r Result
 
-	// Step 1: Global config. Without this, everything else depends on context.
-	gc, configCheck := CheckAndFixGlobalConfig(interactive)
+	gc, configCheck := CheckGlobalConfig()
 	if gc == nil {
-		// No config and not interactive — jail mode.
 		r.InJail = true
-		// Still run project-local checks if we're in a git repo with swarf/.
 		if gitexec.IsInsideWorkTree(cwd) {
 			hostRoot := gitexec.GetRepoRoot(cwd)
 			if hostRoot == "" {
@@ -688,18 +562,17 @@ func RunAllChecks(cwd string, interactive bool, initProject bool) Result {
 			}
 			if paths.IsDir(paths.SwarfDir(hostRoot)) {
 				r.Project = append(r.Project, CheckGitignore(hostRoot)...)
-				r.Project = append(r.Project, CheckAndFixLinks(hostRoot))
+				r.Project = append(r.Project, CheckLinks(hostRoot))
 				r.Project = append(r.Project, CheckSymlinksRelative(hostRoot))
 			}
 		}
 		return r
 	}
 
-	// Step 2: System checks — config exists (or was just created).
 	r.System = append(r.System, configCheck)
 	r.System = append(r.System, CheckBinaryLocation())
 	r.System = append(r.System, CheckMachineID())
-	r.System = append(r.System, CheckAndFixStore(gc))
+	r.System = append(r.System, CheckStore(gc))
 	r.System = append(r.System, CheckStoreRemote())
 	r.System = append(r.System, CheckRemoteReachable())
 	if layout := CheckRcloneLayout(); layout.Msg != "" {
@@ -708,11 +581,9 @@ func RunAllChecks(cwd string, interactive bool, initProject bool) Result {
 	if peers := CheckPeerRefs(); peers.Msg != "" {
 		r.System = append(r.System, peers)
 	}
-	r.System = append(r.System, CheckAndFixService(interactive))
+	r.System = append(r.System, CheckService())
 	r.System = append(r.System, CheckDaemonRunning())
 
-	// Step 3: Project checks — initialize only if initProject is true.
-	r.Project = CheckAndFixProject(cwd, gc, interactive, initProject)
-
+	r.Project = CheckProject(cwd)
 	return r
 }
