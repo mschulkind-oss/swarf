@@ -560,6 +560,59 @@ func runGitOut(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// TestPullReverseMirrorsIntoProject: after pull applies peer changes to
+// the store, it should also mirror the store subtree back into the
+// registered project's swarf/ directory, so the user sees pulled content
+// and conflict sidecars where they actually work.
+func TestPullReverseMirrorsIntoProject(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerTmp := t.TempDir()
+	peerStore := filepath.Join(peerTmp, "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	// Place a file under a per-project subdirectory, matching the store's
+	// layout (store/<slug>/file).
+	os.MkdirAll(filepath.Join(peerStore, "forms"), 0o755)
+	os.WriteFile(filepath.Join(peerStore, "forms", "peer.txt"), []byte("from peer\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "peer seed")
+
+	repo := setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+
+	// Register a drawer whose slug matches the per-project subdir in the
+	// store, and create the project's swarf/ dir so the reverse mirror has
+	// somewhere to write.
+	slug := "forms"
+	projectRoot := filepath.Join(repo, "..", "forms-project")
+	os.MkdirAll(filepath.Join(projectRoot, "swarf"), 0o755)
+	config.RegisterDrawer(slug, projectRoot)
+
+	// Peer adds a new file that should reach the project.
+	os.WriteFile(filepath.Join(peerStore, "forms", "new.txt"), []byte("newly added\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "add new.txt")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+
+	if _, err := RunWithResult(); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+
+	// Reverse-mirrored into the project?
+	got, err := os.ReadFile(filepath.Join(projectRoot, "swarf", "new.txt"))
+	if err != nil {
+		t.Fatalf("expected new.txt in project swarf/, got: %v", err)
+	}
+	if string(got) != "newly added\n" {
+		t.Fatalf("expected 'newly added\\n', got %q", got)
+	}
+}
+
 func TestListPeersMissingMachinesDir(t *testing.T) {
 	fakeRoot := t.TempDir()
 	installFakeRclone(t, fakeRoot)

@@ -18,6 +18,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
 	"github.com/mschulkind-oss/swarf/internal/initialize"
+	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
@@ -107,6 +108,13 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 		return nil, ErrNotGitRepo
 	}
 
+	// Flush any pending project → store edits first. The daemon normally
+	// does this on its own schedule, but a manual 'swarf pull' shouldn't
+	// lose work the user just saved. Forward then reverse keeps our
+	// invariant: the store is up-to-date with local edits before we start
+	// reconciling peer state into it.
+	mirrorProjectsToStore()
+
 	self := config.EnsureMachineID()
 	peers, err := listPeers(gc.Remote)
 	if err != nil {
@@ -133,6 +141,13 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 		result.PeersMerged++
 	}
 
+	// Mirror store back into every registered project's swarf/ directory so
+	// the user sees the pulled content (including conflict sidecars) where
+	// they actually work. Without this, pull updates only the store; the
+	// project's swarf/ keeps showing stale files until the daemon's next
+	// forward mirror accidentally undoes our pull.
+	mirrorStoreBackToProjects()
+
 	if len(result.ConflictFiles) > 0 {
 		console.Warn(fmt.Sprintf("Pulled %d peer(s) with %d conflict file(s):", result.PeersMerged, len(result.ConflictFiles)))
 		for _, f := range result.ConflictFiles {
@@ -144,6 +159,42 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 		console.Ok(fmt.Sprintf("Pulled %d peer(s) cleanly.", result.PeersMerged))
 	}
 	return result, nil
+}
+
+// mirrorProjectsToStore flushes project → store for every registered
+// drawer. Mirrors the daemon's forward direction so a manual pull can't
+// lose work-in-progress a user just saved.
+func mirrorProjectsToStore() {
+	for _, d := range config.ReadDrawers() {
+		src := paths.SwarfDir(d.Host)
+		dst := filepath.Join(paths.StoreDir, d.Slug)
+		if !paths.IsDir(src) {
+			continue
+		}
+		if err := mirror.Dir(src, dst); err != nil {
+			slog.Warn("pull: forward mirror failed", "project", d.Slug, "err", err)
+		}
+	}
+}
+
+// mirrorStoreBackToProjects copies the store's per-project subdirectories
+// back into each registered drawer's swarf/ directory, matching what the
+// daemon does in the forward direction. Destructive: files present in the
+// project but missing from the store are deleted, so peer deletes propagate.
+// We accept a small race window — if the user edits project/swarf/ during
+// a pull, their change can be clobbered here, same risk the daemon's
+// forward mirror already has.
+func mirrorStoreBackToProjects() {
+	for _, d := range config.ReadDrawers() {
+		src := filepath.Join(paths.StoreDir, d.Slug)
+		dst := paths.SwarfDir(d.Host)
+		if !paths.IsDir(src) {
+			continue
+		}
+		if err := mirror.Dir(src, dst); err != nil {
+			slog.Warn("pull: reverse mirror failed", "project", d.Slug, "err", err)
+		}
+	}
 }
 
 // listPeers returns the machine IDs found under <remote>/machines/.

@@ -1,4 +1,4 @@
-package daemon
+package mirror
 
 import (
 	"os"
@@ -14,7 +14,7 @@ func TestMirrorDirCopiesFiles(t *testing.T) {
 	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
 	os.WriteFile(filepath.Join(src, "sub", "b.txt"), []byte("world"), 0o644)
 
-	if err := mirrorDir(src, dst); err != nil {
+	if err := Dir(src, dst); err != nil {
 		t.Fatal(err)
 	}
 
@@ -29,11 +29,11 @@ func TestMirrorDirDeletesStaleFiles(t *testing.T) {
 	// Initial mirror with two files.
 	os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o644)
 	os.WriteFile(filepath.Join(src, "delete.txt"), []byte("gone"), 0o644)
-	mirrorDir(src, dst)
+	Dir(src, dst)
 
 	// Remove one file from source.
 	os.Remove(filepath.Join(src, "delete.txt"))
-	mirrorDir(src, dst)
+	Dir(src, dst)
 
 	assertFile(t, filepath.Join(dst, "keep.txt"), "keep")
 	if _, err := os.Stat(filepath.Join(dst, "delete.txt")); !os.IsNotExist(err) {
@@ -47,11 +47,11 @@ func TestMirrorDirDeletesStaleDirectories(t *testing.T) {
 
 	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
 	os.WriteFile(filepath.Join(src, "sub", "f.txt"), []byte("x"), 0o644)
-	mirrorDir(src, dst)
+	Dir(src, dst)
 
 	// Remove entire subdirectory from source.
 	os.RemoveAll(filepath.Join(src, "sub"))
-	mirrorDir(src, dst)
+	Dir(src, dst)
 
 	if _, err := os.Stat(filepath.Join(dst, "sub")); !os.IsNotExist(err) {
 		t.Fatal("expected sub/ to be removed from dst")
@@ -67,7 +67,7 @@ func TestMirrorDirFollowsSymlinks(t *testing.T) {
 	os.WriteFile(filepath.Join(external, "real.txt"), []byte("linked"), 0o644)
 	os.Symlink(filepath.Join(external, "real.txt"), filepath.Join(src, "link.txt"))
 
-	mirrorDir(src, dst)
+	Dir(src, dst)
 
 	// dst should have a regular file with the content, not a symlink.
 	assertFile(t, filepath.Join(dst, "link.txt"), "linked")
@@ -85,13 +85,13 @@ func TestMirrorDirSkipsUnchanged(t *testing.T) {
 	dst := t.TempDir()
 
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o644)
-	mirrorDir(src, dst)
+	Dir(src, dst)
 
 	// Record mtime of destination file.
 	info1, _ := os.Stat(filepath.Join(dst, "a.txt"))
 
 	// Mirror again without changes — destination should not be rewritten.
-	mirrorDir(src, dst)
+	Dir(src, dst)
 	info2, _ := os.Stat(filepath.Join(dst, "a.txt"))
 
 	if !info1.ModTime().Equal(info2.ModTime()) {

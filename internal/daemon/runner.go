@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,6 +14,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/link"
+	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
 )
@@ -75,89 +75,10 @@ func mirrorAllProjects() {
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirrorDir(src, dst); err != nil {
+		if err := mirror.Dir(src, dst); err != nil {
 			slog.Warn("mirror failed", "project", d.Slug, "err", err)
 		}
 	}
-}
-
-// mirrorDir recursively syncs src into dst, preserving structure.
-// Files that exist in dst but not in src are deleted.
-func mirrorDir(src, dst string) error {
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return err
-	}
-
-	// Phase 1: Copy new/changed files from src to dst.
-	var copyErr error
-	filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			slog.Warn("mirror: walk error", "path", path, "err", err)
-			return nil
-		}
-		rel, _ := filepath.Rel(src, path)
-		if rel == "." {
-			return nil
-		}
-		target := filepath.Join(dst, rel)
-
-		if d.IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				slog.Warn("mirror: mkdir failed", "path", target, "err", err)
-				copyErr = err
-			}
-			return nil
-		}
-
-		// Resolve symlinks: read the content, copy as regular file.
-		srcInfo, err := os.Stat(path)
-		if err != nil {
-			slog.Warn("mirror: stat failed", "path", path, "err", err)
-			return nil
-		}
-
-		if dstInfo, err := os.Stat(target); err == nil {
-			if srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
-				return nil
-			}
-		}
-
-		data, err := os.ReadFile(path)
-		if err != nil {
-			slog.Warn("mirror: read failed", "path", path, "err", err)
-			copyErr = err
-			return nil
-		}
-		os.MkdirAll(filepath.Dir(target), 0o755)
-		if err := os.WriteFile(target, data, srcInfo.Mode()); err != nil {
-			slog.Warn("mirror: write failed", "path", target, "err", err)
-			copyErr = err
-		}
-		return nil
-	})
-
-	// Phase 2: Delete files/dirs in dst that no longer exist in src.
-	filepath.WalkDir(dst, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(dst, path)
-		if rel == "." {
-			return nil
-		}
-		srcPath := filepath.Join(src, rel)
-		if _, err := os.Lstat(srcPath); os.IsNotExist(err) {
-			if d.IsDir() {
-				os.RemoveAll(path)
-				return filepath.SkipDir
-			}
-			os.Remove(path)
-			slog.Debug("mirror: deleted stale file", "path", rel)
-		}
-		return nil
-	})
-
-	return copyErr
 }
 
 func makeBackend(backendType, remote string) backends.SyncBackend {
