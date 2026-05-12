@@ -33,6 +33,12 @@ func Run(ctx context.Context) error {
 
 	backend := makeBackend(gc.Backend, gc.Remote)
 	debouncer := NewDebouncer(duration, func() {
+		// Daemon cycle:
+		//   1. Re-link: restore any missing symlinks from swarf/.links/
+		//   2. Forward mirror: project/swarf → store/<slug>/
+		//   3. Update store README
+		//   4. Backend sync: commit + push
+		// The CLI 'swarf push' runs the same steps via internal/push.
 		relinkAllProjects()
 		mirrorAllProjects()
 		initialize.WriteStoreReadme()

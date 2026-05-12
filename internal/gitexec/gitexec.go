@@ -1,6 +1,7 @@
 package gitexec
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -178,8 +179,14 @@ func Fetch(dir, remote string) error {
 // `git fetch <remote>` marks FETCH_HEAD as not-for-merge, which would cause
 // `git merge FETCH_HEAD` to be a no-op.
 func FetchHead(dir, remote string) error {
-	_, err := run(dir, "fetch", remote, "HEAD")
-	return err
+	out, err := run(dir, "fetch", remote, "HEAD")
+	if err != nil {
+		if out != "" {
+			return fmt.Errorf("%s: %w", out, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // AddPath stages a single path.

@@ -313,7 +313,7 @@ func pullFromPeer(remote, peer string, result *Result) error {
 		}
 	}
 	if err := gitexec.FetchHead(paths.StoreDir, remoteName); err != nil {
-		return fmt.Errorf("fetch %s: %w", remoteName, err)
+		return fmt.Errorf("fetch %s (peer-cache %s): %w", remoteName, peerCache, err)
 	}
 
 	peerHead := gitexec.RevParseHEAD(peerCache)
@@ -377,7 +377,7 @@ func pullFromPeer(remote, peer string, result *Result) error {
 	for _, e := range entries {
 		switch e.Status {
 		case "A", "M", "T":
-			c, err := applyAddOrModify(peer, peerCache, peerHead, e.Path, ts)
+			c, err := applyAddOrModify(peer, peerCache, effectiveOld, peerHead, e.Path, ts)
 			if err != nil {
 				return err
 			}
@@ -421,7 +421,16 @@ func pullFromPeer(remote, peer string, result *Result) error {
 
 // applyAddOrModify brings one peer add/modify into the local working tree.
 // Returns the path of a conflict sidecar if local diverged, or "" otherwise.
-func applyAddOrModify(peer, peerCache, peerHead, rel, ts string) (string, error) {
+//
+// Three-way comparison on modify:
+//   - local == peerNew  → already identical, no-op.
+//   - local == peerOld  → local is at the version the peer started from;
+//                         peer simply moved forward, apply cleanly.
+//   - otherwise         → both sides changed the same file, conflict sidecar.
+//
+// oldRef is the ref to use for "the version the peer had before this
+// change" — lastSeen or merge-base, whichever the caller resolved.
+func applyAddOrModify(peer, peerCache, oldRef, peerHead, rel, ts string) (string, error) {
 	peerContent, err := gitexec.ShowFile(peerCache, peerHead, rel)
 	if err != nil {
 		// The peer's working tree should still have this file since the diff
@@ -435,7 +444,7 @@ func applyAddOrModify(peer, peerCache, peerHead, rel, ts string) (string, error)
 	localPath := filepath.Join(paths.StoreDir, rel)
 	localContent, readErr := os.ReadFile(localPath)
 	if readErr == nil && bytes.Equal(localContent, peerContent) {
-		return "", nil // already identical — nothing to do
+		return "", nil
 	}
 
 	if os.IsNotExist(readErr) {
@@ -449,16 +458,48 @@ func applyAddOrModify(peer, peerCache, peerHead, rel, ts string) (string, error)
 		return "", nil
 	}
 
-	// Local exists and differs from peer. If local matches what the peer had
-	// at lastSeen/merge-base, the peer simply moved forward — apply their
-	// change cleanly. Otherwise both sides diverged: keep ours, drop theirs
-	// as a sidecar.
-	//
-	// Detecting "peer moved forward while local stayed put" requires knowing
-	// the old peer SHA; for modifies we take the conservative route and
-	// always conflict-sidecar when bytes differ. The committed content on
-	// disk is authoritative and the sidecar is cheap.
+	// Three-way merge. Check whether local is at some historical state the
+	// peer has been through — if so, peer is strictly ahead and we apply
+	// their new content cleanly.
+	if peerHasVersionMatching(peerCache, oldRef, peerHead, rel, localContent) {
+		if err := os.WriteFile(localPath, peerContent, 0o644); err != nil {
+			return "", fmt.Errorf("write %s: %w", rel, err)
+		}
+		return "", nil
+	}
+
+	// Both sides diverged from every state the peer has been through.
+	// Keep local, save peer version as a sidecar.
 	return writeConflictSidecar(rel, peer, ts, peerContent)
+}
+
+// peerHasVersionMatching reports whether the peer's history contains any
+// version of `rel` whose content equals `localContent`. When oldRef is
+// non-empty this boils down to a single ShowFile(oldRef); when oldRef is
+// empty (unrelated histories), we walk the peer's log for the file and
+// check each commit, so content-identical divergent histories still merge
+// cleanly.
+func peerHasVersionMatching(peerCache, oldRef, peerHead, rel string, localContent []byte) bool {
+	if oldRef != "" {
+		peerOld, err := gitexec.ShowFile(peerCache, oldRef, rel)
+		return err == nil && bytes.Equal(localContent, peerOld)
+	}
+	// Union-mode path: walk peer history for this file.
+	cmd := exec.Command("git", "-C", peerCache, "log", "--format=%H", peerHead, "--", rel)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	for _, sha := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if sha == "" {
+			continue
+		}
+		content, err := gitexec.ShowFile(peerCache, sha, rel)
+		if err == nil && bytes.Equal(localContent, content) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyDelete removes a file locally if the local copy matches what the peer

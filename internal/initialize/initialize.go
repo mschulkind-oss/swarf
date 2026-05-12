@@ -18,8 +18,12 @@ import (
 var ErrNotGitRepo = errors.New("not inside a git repository")
 
 // EnsureStore initializes the central store (backup mirror) if it doesn't exist.
+// Also configures repo-local git identity so commits can succeed without a
+// global ~/.gitconfig — the store is internal machinery, not an author's
+// commit log, so hard-coding an identity here is fine.
 func EnsureStore(hostRoot string, gc *config.GlobalConfig) error {
 	if paths.IsDir(paths.StoreDir) && gitexec.IsRepo(paths.StoreDir) {
+		ensureStoreGitIdentity()
 		return nil
 	}
 
@@ -30,6 +34,8 @@ func EnsureStore(hostRoot string, gc *config.GlobalConfig) error {
 		return fmt.Errorf("git init store: %w", err)
 	}
 
+	ensureStoreGitIdentity()
+
 	if gc.Backend == "git" && gc.Remote != "" {
 		gitexec.AddRemote(paths.StoreDir, "origin", gc.Remote)
 	}
@@ -38,6 +44,19 @@ func EnsureStore(hostRoot string, gc *config.GlobalConfig) error {
 
 	console.Ok(fmt.Sprintf("Created central store at %s", paths.StoreDir))
 	return nil
+}
+
+// ensureStoreGitIdentity gives the store a local user.email / user.name so
+// `git commit` works even when the user has no global git identity (common
+// in containers and fresh machines). Idempotent: re-setting the same value
+// is a no-op.
+func ensureStoreGitIdentity() {
+	if gitexec.ConfigGet(paths.StoreDir, "user.email") == "" {
+		_ = gitexec.ConfigSet(paths.StoreDir, "user.email", "swarf@localhost")
+	}
+	if gitexec.ConfigGet(paths.StoreDir, "user.name") == "" {
+		_ = gitexec.ConfigSet(paths.StoreDir, "user.name", "swarf")
+	}
 }
 
 // WriteStoreReadme creates or updates a README.md in the central store

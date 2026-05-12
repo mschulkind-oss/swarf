@@ -16,6 +16,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/pull"
+	"github.com/mschulkind-oss/swarf/internal/push"
 	"github.com/mschulkind-oss/swarf/internal/setup"
 	"github.com/mschulkind-oss/swarf/internal/status"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
@@ -81,6 +82,7 @@ Learn more:
 		unlinkCmd(),
 		forgetCmd(),
 		pullCmd(),
+		pushCmd(),
 		daemonCmd(),
 		statusCmd(),
 		doctorCmd(),
@@ -202,6 +204,22 @@ Run 'swarf status' to see registered project slugs.`,
 }
 
 // --- Sync & Remote ---
+
+func pushCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "push",
+		Short:   "Push pending local changes to the remote immediately",
+		GroupID: groupSync,
+		Args:    cobra.NoArgs,
+		Long: `Flushes every registered project's swarf/ directory into the
+central store, commits, and pushes to the configured remote — the
+same work the background daemon does on each debounce, run on
+demand. Handy when you're about to 'swarf pull' on another machine
+and don't want to wait for the daemon cycle.`,
+		Example: `  swarf push`,
+		RunE:    func(cmd *cobra.Command, args []string) error { return push.Run() },
+	}
+}
 
 func pullCmd() *cobra.Command {
 	return &cobra.Command{
