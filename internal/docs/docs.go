@@ -49,6 +49,12 @@ func Topics() []Topic {
 			Description: "Git and rclone backend configuration",
 			Content:     backendsDoc,
 		},
+		{
+			Name:        "conflicts",
+			Title:       "Resolving Conflicts",
+			Description: "What <file>.conflict.<peer>.<ts> sidecars are and how to fix them",
+			Content:     conflictsDoc,
+		},
 	}
 }
 
@@ -350,9 +356,8 @@ const backendsDoc = `
   just exchange file-level diffs over rclone.
 
   Conflicts (both machines edited the same file before syncing) are kept
-  visible as sidecars: <file>.conflict.<peer>.<timestamp>. Edit the main
-  file to reconcile, then remove the sidecar. Nothing is silently
-  overwritten; both histories remain in git.
+  visible as sidecars: <file>.conflict.<peer>.<timestamp>. See
+  'swarf docs conflicts' for the full resolution workflow.
 
   Machine id
   ----------
@@ -365,4 +370,95 @@ const backendsDoc = `
 
   Do not change the id after the first sync — the remote has a folder
   under that name.
+`
+
+const conflictsDoc = `
+  RESOLVING CONFLICTS
+
+  When two machines edit the same file between syncs — or one machine
+  deletes a file the other modified — swarf keeps BOTH versions visible
+  so nothing is silently overwritten.
+
+  What you'll see
+  ---------------
+  After 'swarf pull' (or a daemon pull), the output ends with:
+
+    ! Pulled 1 peer(s) with 2 conflict file(s):
+        docs/notes.md.conflict.laptop.20260511T230815Z
+        config.yml.conflict.laptop.20260511T230815Z
+      Open each original file, edit it to reflect what you want,
+      then rm the .conflict.* sidecar.
+
+  The canonical path (docs/notes.md) holds YOUR version. Each sidecar
+  holds the PEER's version at the moment they pushed. Both are staged
+  and committed to the store so neither side is lost.
+
+  Sidecar filename format
+  -----------------------
+    <original-path>.conflict.<peer-id>.<timestamp>
+
+    original-path    Path inside swarf/, identical to the file in
+                     conflict. Lives next to the original so you can
+                     diff them easily.
+    peer-id          Machine id of the peer whose change you're
+                     reconciling with (see 'swarf docs backends').
+    timestamp        UTC, in 20060102T150405Z form. Lets you tell
+                     multiple rounds of conflicts apart.
+
+  Resolving
+  ---------
+  Three-step loop for each sidecar:
+
+    1. Open the ORIGINAL file (e.g. swarf/<project>/docs/notes.md)
+       and the sidecar side by side.
+    2. Edit the original to the final content you want. You can pull
+       lines from the sidecar, keep your version whole, take theirs
+       whole, or merge by hand — whatever is right.
+    3. Delete the sidecar:
+
+           rm swarf/<project>/docs/notes.md.conflict.laptop.20260511T230815Z
+
+  The daemon's next sync commits your resolution. The next time the
+  other machine pulls, it sees your merged version and the sidecar's
+  content disappears from disk on that side too.
+
+  When deletes conflict
+  ---------------------
+  If a peer deletes a file that you've locally modified, swarf keeps
+  YOUR local version and writes the peer's pre-delete content into the
+  sidecar. Same resolution loop: edit the original to what you want,
+  rm the sidecar. If you decide their delete was correct, rm BOTH:
+
+      rm swarf/<project>/notes.md
+      rm swarf/<project>/notes.md.conflict.laptop.20260511T230815Z
+
+  Nothing ever disappears without your say-so.
+
+  Finding stale sidecars
+  ----------------------
+  To see sidecars you haven't resolved yet:
+
+      find ~/.local/share/swarf -name '*.conflict.*'
+
+  Or for a specific project:
+
+      find ~/projects/my-app/swarf -name '*.conflict.*'
+
+  Why this scheme
+  ---------------
+  Two alternatives were rejected:
+
+    - Git merge + conflict markers inline (<<<<<<<) — breaks non-text
+      files (images, PDFs) and tools that don't tolerate garbage in
+      their input format.
+    - Silently pick a winner (last-write-wins or pick-by-timestamp) —
+      data loss, and no way to tell it happened.
+
+  The sidecar approach keeps both versions as regular files that any
+  editor can open, works for every file type, and makes it obvious at
+  a glance that something needs human attention.
+
+  Related:
+    swarf docs backends    # machine ids and the multi-machine rclone setup
+    swarf docs daemon      # how syncs are scheduled
 `

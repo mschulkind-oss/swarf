@@ -258,6 +258,7 @@ your local version as the main file and writes the peer's version as a
 sidecar named `<file>.conflict.<peer>.<timestamp>`. Open both, edit the
 main file to reconcile, `rm` the sidecar — next sync propagates your
 resolution to the other machine. Nothing is ever silently overwritten.
+Run `swarf docs conflicts` for the full resolution workflow.
 
 See [Configuration → Multi-machine rclone](docs/CONFIGURATION.md#multi-machine-rclone)
 for the full flow and migration from a single-machine layout.

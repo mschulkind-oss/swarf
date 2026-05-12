@@ -139,6 +139,7 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 			console.Infof("  %s", f)
 		}
 		console.Hint("Open each original file, edit it to reflect what you want, then `rm` the .conflict.* sidecar.")
+		console.Hint("See 'swarf docs conflicts' for the full resolution workflow.")
 	} else {
 		console.Ok(fmt.Sprintf("Pulled %d peer(s) cleanly.", result.PeersMerged))
 	}

@@ -215,7 +215,13 @@ immediately (the daemon also pulls periodically).
 
 On a fresh machine where the store doesn't exist yet, 'swarf pull' also
 bootstraps: it creates the store and seeds it from the remote (for the
-git backend) or from any existing peer (for the rclone backend).`,
+git backend) or from any existing peer (for the rclone backend).
+
+Conflicts
+  When two machines edited the same file between syncs, pull keeps
+  your local version at the canonical path and writes the peer's
+  version as <file>.conflict.<peer-id>.<timestamp>. See
+  'swarf docs conflicts' for the resolution workflow.`,
 		Example: `  swarf pull`,
 		RunE:    func(cmd *cobra.Command, args []string) error { return pull.Run() },
 	}
