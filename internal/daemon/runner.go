@@ -71,8 +71,10 @@ func relinkAllProjects() {
 	}
 }
 
-// mirrorAllProjects copies each project's swarf/ content into the central store,
-// including deletions (files removed from swarf/ are removed from the store).
+// mirrorAllProjects copies each project's swarf/ content into the central
+// store. Uses TrackedDir so the first pass after init/pull only copies
+// (no deletes against content we've never observed locally), and
+// subsequent passes correctly delete files the user removed.
 func mirrorAllProjects() {
 	drawers := config.ReadDrawers()
 	for _, d := range drawers {
@@ -81,7 +83,7 @@ func mirrorAllProjects() {
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.Dir(src, dst); err != nil {
+		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug)); err != nil {
 			slog.Warn("mirror failed", "project", d.Slug, "err", err)
 		}
 	}

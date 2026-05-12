@@ -37,13 +37,17 @@ func Run() error {
 	}
 
 	// Forward mirror: project/swarf/ → store/<slug>/ for every drawer.
+	// TrackedDir keeps a manifest of files we've previously observed so
+	// a never-seeded or transiently-empty project directory can't wipe
+	// the store, while intentional user deletes still propagate on the
+	// next push.
 	for _, d := range config.ReadDrawers() {
 		src := paths.SwarfDir(d.Host)
 		dst := filepath.Join(paths.StoreDir, d.Slug)
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.Dir(src, dst); err != nil {
+		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug)); err != nil {
 			slog.Warn("push: mirror failed", "project", d.Slug, "err", err)
 		}
 	}

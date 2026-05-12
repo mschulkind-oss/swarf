@@ -175,8 +175,10 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 }
 
 // mirrorProjectsToStore flushes project → store for every registered
-// drawer. Mirrors the daemon's forward direction so a manual pull can't
-// lose work-in-progress a user just saved.
+// drawer. Uses the tracked mirror so we only propagate deletes for files
+// we have first-hand evidence of (i.e. they were in project/swarf/ last
+// time we looked and are gone now). Files we never saw stay in the store
+// untouched — that's the "empty project doesn't wipe the store" rule.
 func mirrorProjectsToStore() {
 	for _, d := range config.ReadDrawers() {
 		src := paths.SwarfDir(d.Host)
@@ -184,7 +186,7 @@ func mirrorProjectsToStore() {
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.Dir(src, dst); err != nil {
+		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug)); err != nil {
 			slog.Warn("pull: forward mirror failed", "project", d.Slug, "err", err)
 		}
 	}

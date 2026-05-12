@@ -427,10 +427,33 @@ func TestMultiMachine_DeletePropagates(t *testing.T) {
 	os.Remove(filepath.Join(a.project, "swarf", "doomed.md"))
 	a.push()
 
-	b.pull()
+	out, _ := b.swarf("pull")
 	if b.exists("doomed.md") {
-		t.Fatal("B's doomed.md should be gone after pull")
+		// Collect diagnostics.
+		storeList := listTree(b.storeRoot(a.slug()))
+		projectList := listTree(filepath.Join(b.project, "swarf"))
+		t.Fatalf("B's doomed.md should be gone after pull\n--- pull output ---\n%s\n--- store/%s ---\n%s\n--- project/swarf ---\n%s",
+			out, a.slug(), storeList, projectList)
 	}
+}
+
+// storeRoot returns the path to this machine's store/<slug>/ directory.
+func (m *machine) storeRoot(slug string) string {
+	return filepath.Join(m.home, ".local", "share", "swarf", slug)
+}
+
+// listTree returns a recursive file listing (one per line) rooted at dir.
+func listTree(dir string) string {
+	var out []string
+	filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(dir, p)
+		out = append(out, rel)
+		return nil
+	})
+	return strings.Join(out, "\n")
 }
 
 // newMachineWithSlug lets us force two machines to share a project slug
@@ -733,6 +756,60 @@ func TestMultiMachine_FreshMachineBootstrapsViaPull(t *testing.T) {
 	b.init()
 	if !b.exists("hello.md") {
 		t.Fatal("after init, project should have hello.md")
+	}
+}
+
+// REGRESSION: the exact scenario the user hit.
+// matt-schulkind-3wny6v has a full project with README.md and several
+// subdirectories. matt-dev2 pulls (store gets populated), then a daemon
+// cycle on matt-dev2 runs forward-mirror from its project/swarf/
+// (which is empty, since init hasn't seeded anything locally yet) and
+// destructively wipes the store's content.
+func TestMultiMachine_EmptyProjectDoesNotWipeStore(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	// A has lots of content.
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("README.md", "A's README\n")
+	a.write("docs/design.md", "design notes\n")
+	a.write("src/mod/notes.md", "nested content\n")
+	a.push()
+
+	// B does the bare "pull then init"; init has already registered the
+	// drawer and seeded project/swarf/ from the store.
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+
+	// Sanity: after pull+init, B has A's content locally.
+	if !b.exists("README.md") {
+		t.Fatal("setup: B should have README.md after pull+init")
+	}
+
+	// SIMULATE: the user's project/swarf/ got cleared (e.g. by a prior
+	// buggy daemon cycle, or the user manually running rm). Before the
+	// fix, a subsequent push would destructively mirror this empty
+	// project into the store, losing A's content forever.
+	os.RemoveAll(filepath.Join(b.project, "swarf", "docs"))
+	os.RemoveAll(filepath.Join(b.project, "swarf", "src"))
+	os.Remove(filepath.Join(b.project, "swarf", "README.md"))
+
+	// Push: forward mirror runs. Pre-fix this wiped the store.
+	b.push()
+
+	// The store MUST still have A's content. If forward mirror was
+	// destructive we'd lose it; the safe rule is "don't delete store
+	// content when project/swarf/ is plainly incomplete."
+	if !b.storeHas(a.slug(), "README.md") {
+		t.Fatal("REGRESSION: forward mirror wiped README.md out of the store")
+	}
+	if !b.storeHas(a.slug(), "docs/design.md") {
+		t.Fatal("REGRESSION: forward mirror wiped docs/design.md out of the store")
+	}
+	if !b.storeHas(a.slug(), "src/mod/notes.md") {
+		t.Fatal("REGRESSION: forward mirror wiped src/mod/notes.md out of the store")
 	}
 }
 

@@ -33,6 +33,14 @@ func LinksDir(hostRoot string) string        { return filepath.Join(SwarfDir(hos
 func StoreProjectDir(hostRoot string) string { return filepath.Join(StoreDir, ProjectSlug(hostRoot)) }
 func PeerCacheDir(peerID string) string      { return filepath.Join(PeersDir, peerID) }
 
+// ProjectManifest returns the path where the forward mirror records the
+// set of files it last observed in project/swarf/<slug>/. Used by
+// mirror.TrackedDir to distinguish "user deleted this" from "never
+// seeded" — see mirror.TrackedDir for the full argument.
+func ProjectManifest(slug string) string {
+	return filepath.Join(CacheDir, "manifests", slug+".txt")
+}
+
 func ProjectSlug(hostRoot string) string {
 	resolved, err := filepath.EvalSymlinks(hostRoot)
 	if err != nil {
