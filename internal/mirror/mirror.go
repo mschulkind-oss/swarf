@@ -55,16 +55,16 @@ func Dir(src, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := mkdirAllRepair(target); err != nil {
 				slog.Warn("mirror: mkdir failed", "path", target, "err", err)
 				lastErr = err
 			}
 			return nil
 		}
 
-		srcInfo, err := os.Stat(path)
+		srcInfo, err := statResolvable(path)
 		if err != nil {
-			slog.Warn("mirror: stat failed", "path", path, "err", err)
+			slog.Debug("mirror: skipping unreadable entry", "path", path, "err", err)
 			return nil
 		}
 
@@ -82,7 +82,7 @@ func Dir(src, dst string) error {
 			lastErr = err
 			return nil
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := mkdirAllRepair(filepath.Dir(target)); err != nil {
 			slog.Warn("mirror: mkdir for file failed", "path", target, "err", err)
 			lastErr = err
 			return nil
@@ -154,20 +154,21 @@ func TrackedDir(src, dst, manifestPath string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := mkdirAllRepair(target); err != nil {
 				slog.Warn("mirror: mkdir failed", "path", target, "err", err)
 				lastErr = err
 			}
 			return nil
 		}
 
-		newSet[rel] = struct{}{}
-
-		srcInfo, err := os.Stat(path)
+		srcInfo, err := statResolvable(path)
 		if err != nil {
-			slog.Warn("mirror: stat failed", "path", path, "err", err)
+			slog.Debug("mirror: skipping unreadable entry", "path", path, "err", err)
 			return nil
 		}
+
+		newSet[rel] = struct{}{}
+
 		if dstInfo, err := os.Stat(target); err == nil {
 			if srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
 				return nil
@@ -179,7 +180,7 @@ func TrackedDir(src, dst, manifestPath string) error {
 			lastErr = err
 			return nil
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := mkdirAllRepair(filepath.Dir(target)); err != nil {
 			slog.Warn("mirror: mkdir for file failed", "path", target, "err", err)
 			lastErr = err
 			return nil
@@ -289,16 +290,16 @@ func CopyOnly(src, dst string) error {
 		target := filepath.Join(dst, rel)
 
 		if d.IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := mkdirAllRepair(target); err != nil {
 				slog.Warn("mirror: mkdir failed", "path", target, "err", err)
 				lastErr = err
 			}
 			return nil
 		}
 
-		srcInfo, err := os.Stat(path)
+		srcInfo, err := statResolvable(path)
 		if err != nil {
-			slog.Warn("mirror: stat failed", "path", path, "err", err)
+			slog.Debug("mirror: skipping unreadable entry", "path", path, "err", err)
 			return nil
 		}
 		if dstInfo, err := os.Stat(target); err == nil {
@@ -312,7 +313,7 @@ func CopyOnly(src, dst string) error {
 			lastErr = err
 			return nil
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := mkdirAllRepair(filepath.Dir(target)); err != nil {
 			slog.Warn("mirror: mkdir for file failed", "path", target, "err", err)
 			lastErr = err
 			return nil
@@ -324,4 +325,75 @@ func CopyOnly(src, dst string) error {
 		return nil
 	})
 	return lastErr
+}
+
+// mkdirAllRepair is os.MkdirAll with one extra behavior: if some
+// component along the path exists as a non-directory (a regular file or
+// symlink), remove it first and retry. That lets the mirror recover
+// when the destination tree has stale state from an older layout where
+// a path that now needs to be a directory is sitting as a file — real
+// case: a previous sync copied `foo/bar.pdf` before we started tracking
+// `foo/bar/` as a directory, and on the next pass the store has a file
+// at `foo/bar` blocking the mkdir.
+func mkdirAllRepair(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err == nil {
+		return nil
+	}
+	// Walk ancestors and heal any non-directory we find.
+	parts := strings.Split(filepath.Clean(dir), string(os.PathSeparator))
+	// Re-prefix the leading separator on absolute paths.
+	if strings.HasPrefix(dir, string(os.PathSeparator)) && len(parts) > 0 && parts[0] == "" {
+		parts[0] = string(os.PathSeparator)
+	}
+	var cur string
+	for i, p := range parts {
+		if i == 0 {
+			cur = p
+		} else {
+			cur = filepath.Join(cur, p)
+		}
+		if cur == "" {
+			continue
+		}
+		info, err := os.Lstat(cur)
+		if err != nil {
+			if os.IsNotExist(err) {
+				if err := os.Mkdir(cur, 0o755); err != nil {
+					return err
+				}
+				continue
+			}
+			return err
+		}
+		if info.IsDir() {
+			continue
+		}
+		// Non-dir in the way: remove it and replace with a dir.
+		slog.Info("mirror: replacing non-directory with directory", "path", cur)
+		if err := os.Remove(cur); err != nil {
+			return err
+		}
+		if err := os.Mkdir(cur, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// statResolvable returns os.Stat(path), but treats broken symlinks (the
+// link exists but the target doesn't) as a non-fatal "skip this entry"
+// signal by returning fs.ErrNotExist. The caller can log at debug and
+// move on without drowning output in warnings for every stale symlink
+// in a large tree.
+func statResolvable(path string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err == nil {
+		return info, nil
+	}
+	// If Lstat succeeds the entry exists but points at nothing — broken
+	// symlink. Normalize to ErrNotExist so callers have one case to handle.
+	if _, lerr := os.Lstat(path); lerr == nil {
+		return nil, os.ErrNotExist
+	}
+	return nil, err
 }

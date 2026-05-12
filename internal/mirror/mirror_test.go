@@ -99,6 +99,76 @@ func TestMirrorDirSkipsUnchanged(t *testing.T) {
 	}
 }
 
+// A broken symlink in src (target no longer exists) must not block the
+// mirror. Before the fix this emitted 'stat failed: no such file' and
+// left the dst in an incomplete state.
+func TestMirrorHandlesBrokenSymlink(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	os.WriteFile(filepath.Join(src, "good.txt"), []byte("good"), 0o644)
+	// Symlink pointing at a file that will never exist.
+	os.Symlink(filepath.Join(src, "nonexistent"), filepath.Join(src, "broken"))
+
+	if err := Dir(src, dst); err != nil {
+		t.Fatalf("Dir: %v", err)
+	}
+	assertFile(t, filepath.Join(dst, "good.txt"), "good")
+	if _, err := os.Lstat(filepath.Join(dst, "broken")); err == nil {
+		t.Fatal("broken symlink should be skipped, not copied")
+	}
+}
+
+// When src has a subdirectory but dst already has a REGULAR FILE at
+// that path, the mirror must replace it with a directory so copies can
+// succeed. Before the fix this aborted with 'mkdir X: not a directory'.
+func TestMirrorReplacesFileWithDirectory(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	os.MkdirAll(filepath.Join(src, "conflict"), 0o755)
+	os.WriteFile(filepath.Join(src, "conflict", "inner.txt"), []byte("v"), 0o644)
+
+	// dst has 'conflict' as a REGULAR FILE, not a directory.
+	os.WriteFile(filepath.Join(dst, "conflict"), []byte("stale"), 0o644)
+
+	if err := Dir(src, dst); err != nil {
+		t.Fatalf("Dir should recover from file-where-dir-wanted: %v", err)
+	}
+	assertFile(t, filepath.Join(dst, "conflict", "inner.txt"), "v")
+}
+
+// Same as above but via TrackedDir (the forward-mirror path).
+func TestTrackedDirReplacesFileWithDirectory(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "m.txt")
+
+	os.MkdirAll(filepath.Join(src, "conflict"), 0o755)
+	os.WriteFile(filepath.Join(src, "conflict", "inner.txt"), []byte("v"), 0o644)
+
+	os.WriteFile(filepath.Join(dst, "conflict"), []byte("stale"), 0o644)
+
+	if err := TrackedDir(src, dst, manifest); err != nil {
+		t.Fatalf("TrackedDir should recover from file-where-dir-wanted: %v", err)
+	}
+	assertFile(t, filepath.Join(dst, "conflict", "inner.txt"), "v")
+}
+
+func TestTrackedDirHandlesBrokenSymlink(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "m.txt")
+
+	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644)
+	os.Symlink(filepath.Join(src, "nope"), filepath.Join(src, "broken"))
+
+	if err := TrackedDir(src, dst, manifest); err != nil {
+		t.Fatalf("TrackedDir: %v", err)
+	}
+	assertFile(t, filepath.Join(dst, "a.txt"), "a")
+}
+
 func assertFile(t *testing.T, path, want string) {
 	t.Helper()
 	data, err := os.ReadFile(path)
