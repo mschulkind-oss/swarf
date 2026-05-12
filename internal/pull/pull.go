@@ -279,6 +279,18 @@ func peekLegacyLayout(remote string) (bool, string) {
 	return false, ""
 }
 
+// isStoreMetadata reports whether `path` (relative to the store root) is a
+// per-machine metadata file that pull should ignore. These files are
+// regenerated on every push from the local drawer list, so they legitimately
+// differ across machines — pulling them in would create spurious conflicts.
+func isStoreMetadata(path string) bool {
+	switch path {
+	case "README.md":
+		return true
+	}
+	return false
+}
+
 // peerRefName is the per-peer "last-seen SHA" ref we advance after each
 // successful pull. Stored under refs/swarf-peers/ so it never collides with
 // branch or tag refs and never ships with a normal `git push`.
@@ -375,6 +387,13 @@ func pullFromPeer(remote, peer string, result *Result) error {
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	var conflicts []string
 	for _, e := range entries {
+		if isStoreMetadata(e.Path) {
+			// Skip store-local metadata files (e.g. the auto-generated
+			// README.md). Each machine regenerates these from its own
+			// drawer list, so pulling them would create spurious
+			// conflicts that users can't meaningfully resolve.
+			continue
+		}
 		switch e.Status {
 		case "A", "M", "T":
 			c, err := applyAddOrModify(peer, peerCache, effectiveOld, peerHead, e.Path, ts)

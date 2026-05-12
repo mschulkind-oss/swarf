@@ -479,3 +479,289 @@ func mustSwarf(t *testing.T, m *machine, args ...string) string {
 	}
 	return out
 }
+
+// --- More interleavings ---
+
+// Three machines: A pushes, B pulls+pushes a change, C pulls and must
+// see B's content. Covers propagation past the first hop.
+func TestMultiMachine_ThreeMachineChain(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("chain.md", "A's initial\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.write("chain.md", "B's update\n")
+	b.push()
+
+	c := newMachineWithSlug(t, "c", fakeRemote, a.slug())
+	c.pull()
+	c.init()
+	// C should see B's update. It'll pull from both A and B. B's version
+	// is newer in wall-clock terms but that's not what pull reasons about —
+	// pull applies each peer's file-level changes in turn. Depending on
+	// iteration order we either pick A's then B overwrites, or B's first
+	// (no-op for C) then A conflicts. Accept either A-wins-with-sidecar
+	// or B-wins-cleanly as long as B's content is reachable.
+	if got := c.read("chain.md"); got != "B's update\n" && got != "A's initial\n" {
+		t.Fatalf("C should see A or B version, got %q", got)
+	}
+	if got := c.read("chain.md"); got != "B's update\n" {
+		// A-wins path — the sidecar should contain B's version.
+		sidecars := findSidecars(t, c.project, "chain.md")
+		if len(sidecars) == 0 {
+			t.Fatal("if A wins, B's update must appear as a sidecar")
+		}
+		foundB := false
+		for _, s := range sidecars {
+			data, _ := os.ReadFile(filepath.Join(c.project, "swarf", s))
+			if string(data) == "B's update\n" {
+				foundB = true
+			}
+		}
+		if !foundB {
+			t.Fatal("B's update not found in any sidecar")
+		}
+	}
+}
+
+// Independent edits on different files: each machine edits a distinct
+// file, they push, each pulls; both should end up with both files.
+func TestMultiMachine_ParallelIndependentEdits(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("seed.md", "shared seed\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+
+	a.write("from_a.md", "A's file\n")
+	b.write("from_b.md", "B's file\n")
+	a.push()
+	b.push()
+
+	a.pull()
+	b.pull()
+
+	if !a.exists("from_b.md") {
+		t.Fatal("A should have B's file after pulling")
+	}
+	if !b.exists("from_a.md") {
+		t.Fatal("B should have A's file after pulling")
+	}
+	if a.read("from_b.md") != "B's file\n" {
+		t.Fatal("A's copy of B's file has wrong content")
+	}
+	if b.read("from_a.md") != "A's file\n" {
+		t.Fatal("B's copy of A's file has wrong content")
+	}
+}
+
+// Pull against an empty remote (no peers) should be a no-op.
+func TestMultiMachine_PullEmptyRemote(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	// No push, no peers.
+	out, err := a.swarf("pull")
+	if err != nil {
+		t.Fatalf("pull on empty remote should succeed: %s\nerr: %v", out, err)
+	}
+	if !strings.Contains(out, "No peers found") && !strings.Contains(out, "cleanly") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+// Idempotent pull: pulling twice with no new remote changes should be a
+// clean no-op each time.
+func TestMultiMachine_IdempotentPull(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("x.md", "x\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+
+	// Second pull should be a no-op.
+	out1, err := b.swarf("pull")
+	if err != nil {
+		t.Fatalf("pull: %s\nerr: %v", out1, err)
+	}
+	out2, err := b.swarf("pull")
+	if err != nil {
+		t.Fatalf("pull: %s\nerr: %v", out2, err)
+	}
+	if strings.Contains(out2, "conflict") {
+		t.Fatalf("second pull should not produce conflicts: %s", out2)
+	}
+	if b.read("x.md") != "x\n" {
+		t.Fatal("x.md content changed during idempotent pull")
+	}
+}
+
+// Local edit after pull, before next push: the local change should
+// survive a subsequent pull that brings nothing new from the peer.
+func TestMultiMachine_LocalEditSurvivesPull(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+
+	b.write("shared.md", "B's local v2\n")
+	// B pulls before pushing — nothing new from A, local change must survive.
+	b.pull()
+	if got := b.read("shared.md"); got != "B's local v2\n" {
+		t.Fatalf("B's unpushed local change should survive pull, got %q", got)
+	}
+}
+
+// Rename on peer (delete + add) should apply cleanly if local hasn't
+// touched either path.
+func TestMultiMachine_PeerRename(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("old-name.md", "content\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	if !b.exists("old-name.md") {
+		t.Fatal("B should have old-name.md after initial pull")
+	}
+
+	// A renames the file.
+	os.Rename(filepath.Join(a.project, "swarf", "old-name.md"),
+		filepath.Join(a.project, "swarf", "new-name.md"))
+	a.push()
+
+	b.pull()
+	if b.exists("old-name.md") {
+		t.Fatal("B should have lost old-name.md after pull")
+	}
+	if !b.exists("new-name.md") {
+		t.Fatal("B should have new-name.md after pull")
+	}
+	if got := b.read("new-name.md"); got != "content\n" {
+		t.Fatalf("wrong content for new-name.md: %q", got)
+	}
+}
+
+// Same content added on both sides (e.g. two machines both sweep the
+// same AGENTS.md) — should NOT produce a conflict because the content
+// is identical.
+func TestMultiMachine_SameAddNoConflict(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.init()
+
+	// Both write identical content before either has synced.
+	a.write("twin.md", "identical\n")
+	b.write("twin.md", "identical\n")
+	a.push()
+	b.push()
+
+	out, err := a.swarf("pull")
+	if err != nil {
+		t.Fatalf("A pull: %s\nerr: %v", out, err)
+	}
+	if strings.Contains(out, "conflict") {
+		t.Fatalf("A should not see a conflict (same content), got: %s", out)
+	}
+	sidecars := findSidecars(t, a.project, "twin.md")
+	if len(sidecars) != 0 {
+		t.Fatalf("no sidecars expected for identical add, got %v", sidecars)
+	}
+}
+
+// Fresh-machine bootstrap: no prior config or store. 'swarf pull' alone
+// (with config pre-written) must create the store and populate it from
+// peers.
+func TestMultiMachine_FreshMachineBootstrapsViaPull(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("hello.md", "hello from A\n")
+	a.push()
+
+	// B: config is pre-written by newMachineWithSlug, but no init yet.
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	// Pull alone should set up the store and bring hello.md down.
+	b.pull()
+	if !b.storeHas(a.slug(), "hello.md") {
+		t.Fatal("B's store should have hello.md after a bootstrap pull")
+	}
+	// Project/swarf isn't populated yet (no drawer registered) — that's
+	// the 'unregistered' case; user must 'swarf init' next.
+	if b.exists("hello.md") {
+		t.Fatal("B's project shouldn't have hello.md until init registers the drawer")
+	}
+
+	b.init()
+	if !b.exists("hello.md") {
+		t.Fatal("after init, project should have hello.md")
+	}
+}
+
+// Repeated push+pull with no changes should be stable — no new commits,
+// no new files appearing/disappearing.
+func TestMultiMachine_StablePushPullLoop(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("x.md", "x\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+
+	// Run five idle pull/push cycles on both sides — nothing should drift.
+	for range 5 {
+		a.push()
+		b.push()
+		a.pull()
+		b.pull()
+	}
+	if a.read("x.md") != "x\n" {
+		t.Fatal("A's x.md drifted in idle loop")
+	}
+	if b.read("x.md") != "x\n" {
+		t.Fatal("B's x.md drifted in idle loop")
+	}
+}
