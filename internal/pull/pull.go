@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
@@ -470,20 +472,34 @@ func writeConflictSidecar(rel, peer, ts string, peerContent []byte) (string, err
 	return sidecar, nil
 }
 
-// runRcloneSyncStreaming runs `rclone sync src dst` with periodic one-line
-// progress stats streamed straight to our stdout/stderr, so a user watching
-// 'swarf pull' sees activity instead of a silent block. On failure we still
-// capture stderr (via a tee) so the error message surfaces in the returned
-// error even though it also appeared on screen.
+// runRcloneSyncStreaming runs `rclone sync src dst` with progress output
+// streamed to our stderr so a user watching 'swarf pull' isn't staring at
+// a blank terminal for minutes. On a TTY we use rclone's live --progress
+// dashboard (clears and redraws in place). Off a TTY — piped to a file,
+// journald, etc. — we use multi-line stats so the listing phase shows
+// "Checks: N/M" counters rather than only "0 B / 0 B, -, 0 B/s, ETA -".
+//
+// Why the distinction: Google Drive (and other cloud backends) spend most
+// of their time listing and checksumming before any bytes transfer. One-
+// line stats were hiding the "Checks" counter; users saw only the bytes
+// line tick past with zeros and assumed the process was hung.
 func runRcloneSyncStreaming(src, dst string) error {
-	cmd := exec.Command("rclone", "sync", src, dst,
-		"--stats=5s", "--stats-one-line", "-v")
-	cmd.Stdout = os.Stderr // rclone stats go to stderr anyway; keep both there
+	args := []string{"sync", src, dst, "-v"}
+	if term.IsTerminal(int(os.Stderr.Fd())) {
+		// --progress redraws a live dashboard in place; includes Checks,
+		// Transferred, and the active transfer list.
+		args = append(args, "--progress", "--stats=1s")
+	} else {
+		// Multi-line stats every 5s. Shows Checks: N/M and Transferred: lines
+		// so the listing phase has visible progress.
+		args = append(args, "--stats=5s")
+	}
+	cmd := exec.Command("rclone", args...)
+	cmd.Stdout = os.Stderr
 	var errBuf bytes.Buffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 	if err := cmd.Run(); err != nil {
 		tail := strings.TrimSpace(errBuf.String())
-		// Keep the error message short — the live stream already showed the detail.
 		if len(tail) > 500 {
 			tail = tail[len(tail)-500:]
 		}
