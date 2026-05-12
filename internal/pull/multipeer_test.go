@@ -613,6 +613,52 @@ func TestPullReverseMirrorsIntoProject(t *testing.T) {
 	}
 }
 
+// TestPullFlagsUnregisteredProjects: after pull, any slug in the store
+// that has no drawer entry shows up in result/log as "unregistered" so
+// the user knows to 'swarf init' it. The mirror itself skips those slugs
+// (we don't know where to put their files without a drawer).
+func TestPullFlagsUnregisteredProjects(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerTmp := t.TempDir()
+	peerStore := filepath.Join(peerTmp, "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.MkdirAll(filepath.Join(peerStore, "forms"), 0o755)
+	os.WriteFile(filepath.Join(peerStore, "forms", "peer.txt"), []byte("peer\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "peer seed")
+
+	repo := setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+
+	// Note: no drawer registered for 'forms'. The pull must not silently
+	// drop its content on the floor.
+	_ = repo
+
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+
+	// We can't introspect the Result for unregistered slugs directly —
+	// the check is that the mirror helper returns them correctly.
+	synced, unregistered := mirrorStoreBackToProjects()
+	if len(synced) != 0 {
+		t.Fatalf("no drawers registered, expected nothing synced; got %v", synced)
+	}
+	foundForms := false
+	for _, s := range unregistered {
+		if s == "forms" {
+			foundForms = true
+		}
+	}
+	if !foundForms {
+		t.Fatalf("expected 'forms' in unregistered, got %v", unregistered)
+	}
+}
+
 func TestListPeersMissingMachinesDir(t *testing.T) {
 	fakeRoot := t.TempDir()
 	installFakeRclone(t, fakeRoot)

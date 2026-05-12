@@ -148,7 +148,7 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 	// they actually work. Without this, pull updates only the store; the
 	// project's swarf/ keeps showing stale files until the daemon's next
 	// forward mirror accidentally undoes our pull.
-	mirrorStoreBackToProjects()
+	synced, unregistered := mirrorStoreBackToProjects()
 
 	if len(result.ConflictFiles) > 0 {
 		console.Warn(fmt.Sprintf("Pulled %d peer(s) with %d conflict file(s):", result.PeersMerged, len(result.ConflictFiles)))
@@ -159,6 +159,17 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 		console.Hint("See 'swarf docs conflicts' for the full resolution workflow.")
 	} else {
 		console.Ok(fmt.Sprintf("Pulled %d peer(s) cleanly.", result.PeersMerged))
+	}
+
+	if len(synced) > 0 {
+		console.Infof("Synced into %d project(s): %s", len(synced), strings.Join(synced, ", "))
+	}
+	if len(unregistered) > 0 {
+		console.Warn(fmt.Sprintf("%d project(s) in the store aren't registered on this machine:", len(unregistered)))
+		for _, slug := range unregistered {
+			console.Infof("  %s", slug)
+		}
+		console.Hint("cd into each one and run 'swarf init' to register and materialize its files.")
 	}
 	return result, nil
 }
@@ -186,17 +197,44 @@ func mirrorProjectsToStore() {
 // We accept a small race window — if the user edits project/swarf/ during
 // a pull, their change can be clobbered here, same risk the daemon's
 // forward mirror already has.
-func mirrorStoreBackToProjects() {
-	for _, d := range config.ReadDrawers() {
-		src := filepath.Join(paths.StoreDir, d.Slug)
-		dst := paths.SwarfDir(d.Host)
-		if !paths.IsDir(src) {
+//
+// Returns the slugs that were mirrored, and the slugs present in the store
+// that have no drawer on this machine (so the caller can tell the user to
+// 'swarf init' them).
+func mirrorStoreBackToProjects() (synced, unregistered []string) {
+	drawers := config.ReadDrawers()
+	registered := make(map[string]string, len(drawers)) // slug → host
+	for _, d := range drawers {
+		registered[d.Slug] = d.Host
+	}
+
+	// Walk the store's top-level entries — each directory that isn't .git/
+	// is a project slug.
+	entries, err := os.ReadDir(paths.StoreDir)
+	if err != nil {
+		return nil, nil
+	}
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() == ".git" {
 			continue
 		}
-		if err := mirror.Dir(src, dst); err != nil {
-			slog.Warn("pull: reverse mirror failed", "project", d.Slug, "err", err)
+		slug := e.Name()
+		host, ok := registered[slug]
+		if !ok {
+			unregistered = append(unregistered, slug)
+			continue
 		}
+		src := filepath.Join(paths.StoreDir, slug)
+		dst := paths.SwarfDir(host)
+		if err := mirror.Dir(src, dst); err != nil {
+			slog.Warn("pull: reverse mirror failed", "project", slug, "err", err)
+			continue
+		}
+		synced = append(synced, slug)
 	}
+	sort.Strings(synced)
+	sort.Strings(unregistered)
+	return synced, unregistered
 }
 
 // listPeers returns the machine IDs found under <remote>/machines/.

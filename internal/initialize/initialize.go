@@ -92,9 +92,16 @@ func WriteStoreReadme() {
 }
 
 // Run initializes swarf for the current project. Idempotent: calling it
-// again in an already-initialized project re-registers the drawer, refreshes
-// excludes, and recreates any missing symlinks under swarf/.links/ — that's
-// the "fix my broken state" path users hit after removing a file by hand.
+// again in an already-set-up project re-registers the drawer, refreshes
+// excludes, and recreates any missing symlinks — the "fix my broken state"
+// path users hit after deleting a file by hand or running 'swarf init' in
+// a project whose store content came from a pull on another machine.
+//
+// Seeding behavior: whenever the central store has content for this
+// project's slug, we copy it into project/swarf/. The copy is additive
+// (never deletes local files) so a user with their own work-in-progress
+// in swarf/ won't lose it. The ongoing daemon mirror handles the
+// destructive direction later.
 func Run(globalConfig *config.GlobalConfig) error {
 	hostRoot := gitexec.GetRepoRoot("")
 	if hostRoot == "" {
@@ -104,8 +111,6 @@ func Run(globalConfig *config.GlobalConfig) error {
 	sd := paths.SwarfDir(hostRoot)
 	slug := paths.ProjectSlug(hostRoot)
 
-	// Distinguish first-time init from re-init so the user sees the right
-	// message. Functionally the work below is the same either way.
 	firstTime := true
 	if fi, err := os.Lstat(sd); err == nil && (fi.IsDir() || fi.Mode()&os.ModeSymlink != 0) {
 		firstTime = false
@@ -115,16 +120,22 @@ func Run(globalConfig *config.GlobalConfig) error {
 		return err
 	}
 
-	if firstTime {
-		// Seed local swarf/ from the store mirror if the store already has
-		// content for this project (common on a new machine after pull).
-		storeProject := paths.StoreProjectDir(hostRoot)
-		if paths.IsDir(storeProject) {
-			if err := copyDir(storeProject, sd); err != nil {
-				return fmt.Errorf("seed from store: %w", err)
-			}
-			console.Ok(fmt.Sprintf("Restored %s from store.", slug))
+	// Seed project/swarf/ from the store whenever the store has content for
+	// this slug. Covers:
+	//   - First-time init on a new project (store empty, no-op).
+	//   - First-time init after 'swarf pull' on a fresh machine, where
+	//     the store already holds this project's files from a peer.
+	//   - Re-init over a manually-created or stale swarf/ dir that's
+	//     missing files the store has. copyDir is additive, so any
+	//     local-only files the user has are preserved.
+	storeProject := paths.StoreProjectDir(hostRoot)
+	seededCount := 0
+	if paths.IsDir(storeProject) {
+		n, err := copyDirInto(storeProject, sd)
+		if err != nil {
+			return fmt.Errorf("seed from store: %w", err)
 		}
+		seededCount = n
 	}
 
 	if err := os.MkdirAll(paths.LinksDir(hostRoot), 0o755); err != nil {
@@ -142,6 +153,9 @@ func Run(globalConfig *config.GlobalConfig) error {
 	} else {
 		console.Ok(fmt.Sprintf("Refreshed swarf setup for %s", slug))
 	}
+	if seededCount > 0 {
+		console.Ok(fmt.Sprintf("Seeded %d file(s) from store/%s/ into %s/", seededCount, slug, paths.SwarfDirName))
+	}
 	console.Infof("  Backend: %s", globalConfig.Backend)
 	if globalConfig.Remote != "" {
 		console.Infof("  Remote: %s", globalConfig.Remote)
@@ -149,9 +163,12 @@ func Run(globalConfig *config.GlobalConfig) error {
 	return nil
 }
 
-// copyDir recursively copies src into dst.
-func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+// copyDirInto recursively copies src into dst (additive — never deletes
+// anything in dst). Returns the number of files written. Used for seeding
+// project/swarf/ from the store.
+func copyDirInto(src, dst string) (int, error) {
+	written := 0
+	err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -167,7 +184,14 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return nil
 		}
-		os.MkdirAll(filepath.Dir(target), 0o755)
-		return os.WriteFile(target, data, info.Mode())
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return nil
+		}
+		if err := os.WriteFile(target, data, info.Mode()); err != nil {
+			return nil
+		}
+		written++
+		return nil
 	})
+	return written, err
 }
