@@ -97,10 +97,40 @@ case "$cmd" in
     done
     src=$(resolve "$src")
     dst=$(resolve "$dst")
+    mkdir -p "$dst"
+
+    # Detect path conflicts: any directory under src whose matching path
+    # in dst exists as a non-directory. Real rclone hits 'mkdir X: not a
+    # directory' in this case; emulate it so pull's self-heal path is
+    # exercised by tests.
+    conflict=""
+    check_conflicts() {
+      local base_src="$1" base_dst="$2" entry rel tgt
+      for entry in "$base_src"/* "$base_src"/.*; do
+        [ -e "$entry" ] || continue
+        case "$(basename "$entry")" in .|..) continue ;; esac
+        rel="${entry#"$base_src"/}"
+        tgt="$base_dst/$rel"
+        if [ -d "$entry" ]; then
+          if [ -e "$tgt" ] && [ ! -d "$tgt" ]; then
+            conflict="$rel"
+            return
+          fi
+          check_conflicts "$entry" "$tgt"
+          [ -n "$conflict" ] && return
+        fi
+      done
+    }
+    check_conflicts "$src" "$dst"
+    if [ -n "$conflict" ]; then
+      echo "ERROR : $conflict: Failed to copy: mkdir $dst/$conflict: not a directory" >&2
+      exit 1
+    fi
+
     if [ "$cmd" = "sync" ]; then
       rm -rf "$dst"
+      mkdir -p "$dst"
     fi
-    mkdir -p "$dst"
     cp -a "$src/." "$dst/"
     exit 0
     ;;
@@ -501,6 +531,42 @@ func mustSwarf(t *testing.T, m *machine, args ...string) string {
 		t.Fatalf("swarf %v: %v\n%s", args, err, out)
 	}
 	return out
+}
+
+// REGRESSION: if the peer cache on disk has a stale layout (a file at
+// a path that the incoming sync wants to be a directory), rclone fails
+// with 'not a directory'. Pull should detect this, wipe the cache, and
+// retry cleanly instead of leaving the user with a perpetually-broken
+// sync.
+func TestMultiMachine_StalePeerCacheSelfHeals(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	// A pushes a nested directory structure.
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("deep/nested/file.md", "deep content\n")
+	a.push()
+
+	// B comes online. Before any pull, plant a stale peer cache that has
+	// a FILE where one of the dirs should be — simulating a leftover
+	// from an older layout.
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	peerCache := filepath.Join(b.home, ".cache", "swarf", "peers", "a")
+	os.MkdirAll(filepath.Join(peerCache, "deep"), 0o755)
+	// 'nested' should be a directory but exists as a file.
+	os.WriteFile(filepath.Join(peerCache, "deep", "nested"), []byte("stale\n"), 0o644)
+
+	// Pull must heal the cache and complete successfully.
+	out, err := b.swarf("pull")
+	if err != nil {
+		t.Fatalf("pull should self-heal stale peer cache: %s\nerr: %v", out, err)
+	}
+
+	// After pull, B's store should have A's file.
+	if !b.storeHas(a.slug(), "deep/nested/file.md") {
+		t.Fatalf("store missing A's file after self-healed pull\n%s", out)
+	}
 }
 
 // --- More interleavings ---

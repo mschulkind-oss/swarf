@@ -583,15 +583,32 @@ func writeConflictSidecar(rel, peer, ts string, peerContent []byte) (string, err
 // of their time listing and checksumming before any bytes transfer. One-
 // line stats were hiding the "Checks" counter; users saw only the bytes
 // line tick past with zeros and assumed the process was hung.
+//
+// Self-heal: if rclone reports "not a directory" errors (a stale file
+// blocks a path that now needs to be a directory), we wipe the
+// destination and retry once. This recovers peer caches left over from
+// older layouts without the user having to clean up by hand.
 func runRcloneSyncStreaming(src, dst string) error {
+	if err := runRcloneSyncOnce(src, dst); err == nil {
+		return nil
+	} else if !isNotADirectoryError(err) {
+		return err
+	}
+	slog.Warn("pull: peer cache has stale non-directory entries; wiping and retrying", "cache", dst)
+	if rmErr := os.RemoveAll(dst); rmErr != nil {
+		return fmt.Errorf("wipe peer cache %s: %w", dst, rmErr)
+	}
+	if mkErr := os.MkdirAll(dst, 0o755); mkErr != nil {
+		return fmt.Errorf("recreate peer cache %s: %w", dst, mkErr)
+	}
+	return runRcloneSyncOnce(src, dst)
+}
+
+func runRcloneSyncOnce(src, dst string) error {
 	args := []string{"sync", src, dst, "-v"}
 	if term.IsTerminal(int(os.Stderr.Fd())) {
-		// --progress redraws a live dashboard in place; includes Checks,
-		// Transferred, and the active transfer list.
 		args = append(args, "--progress", "--stats=1s")
 	} else {
-		// Multi-line stats every 5s. Shows Checks: N/M and Transferred: lines
-		// so the listing phase has visible progress.
 		args = append(args, "--stats=5s")
 	}
 	cmd := exec.Command("rclone", args...)
@@ -600,10 +617,18 @@ func runRcloneSyncStreaming(src, dst string) error {
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 	if err := cmd.Run(); err != nil {
 		tail := strings.TrimSpace(errBuf.String())
-		if len(tail) > 500 {
-			tail = tail[len(tail)-500:]
+		if len(tail) > 2000 {
+			tail = tail[len(tail)-2000:]
 		}
 		return fmt.Errorf("%s", tail)
 	}
 	return nil
+}
+
+// isNotADirectoryError reports whether an rclone failure mentions a
+// "not a directory" mkdir error. rclone exits with a generic non-zero
+// code and puts the actual error lines in its stderr output, so we
+// pattern-match on the captured tail we returned.
+func isNotADirectoryError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not a directory")
 }
