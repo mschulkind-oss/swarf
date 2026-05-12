@@ -178,16 +178,24 @@ func TestE2ESweepAndRelink(t *testing.T) {
 		t.Fatal("expected file in swarf/.links/")
 	}
 
-	// Remove the symlink, then doctor should re-create it
+	// Remove the symlink. Doctor reports the problem but doesn't fix it
+	// (doctor is pure-check). Re-running 'swarf init' is the fix and
+	// re-creates the symlink via the initialize path.
 	os.Remove(filepath.Join(e.repo, "AGENTS.md"))
 	out, _ = e.swarf("doctor")
-	// Doctor auto-fixes missing links
+	if !strings.Contains(out, "AGENTS.md") {
+		t.Fatalf("doctor should report missing AGENTS.md: %s", out)
+	}
+	if _, err := os.Lstat(filepath.Join(e.repo, "AGENTS.md")); err == nil {
+		t.Fatal("doctor must not auto-create the symlink")
+	}
+	out, _ = e.swarf("init")
 	fi, err = os.Lstat(filepath.Join(e.repo, "AGENTS.md"))
 	if err != nil {
-		t.Fatal("expected doctor to re-create missing symlink")
+		t.Fatalf("expected init to re-create missing symlink: %s", out)
 	}
 	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("expected symlink after doctor")
+		t.Fatal("expected symlink after init")
 	}
 }
 
@@ -263,12 +271,15 @@ func TestE2EFullLifecycle(t *testing.T) {
 		t.Fatal("CLAUDE.md should be symlink")
 	}
 
-	// 4. Remove symlink, doctor should re-create it
+	// 4. Remove symlink. 'swarf init' re-links (doctor is pure-check now).
 	os.Remove(filepath.Join(e.repo, "CLAUDE.md"))
-	e.swarf("doctor")
-	fi, _ = os.Lstat(filepath.Join(e.repo, "CLAUDE.md"))
+	e.swarf("init")
+	fi, err = os.Lstat(filepath.Join(e.repo, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("CLAUDE.md should be re-linked after init: %v", err)
+	}
 	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatal("CLAUDE.md should be re-linked after doctor")
+		t.Fatal("CLAUDE.md should be a symlink after init")
 	}
 
 	// 5. Status

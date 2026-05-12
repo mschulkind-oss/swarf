@@ -401,12 +401,11 @@ func runInit() error {
 		return fmt.Errorf("setup cancelled")
 	}
 
-	// Best-effort project init — if we aren't inside a git repo, fall
-	// through to the doctor report which will explain why.
+	// initialize.Run is idempotent: re-running in an already-set-up project
+	// refreshes excludes and missing symlinks. Only real errors (notably
+	// ErrNotGitRepo) are fatal.
 	if err := initialize.Run(gc); err != nil {
-		if err != initialize.ErrAlreadyInitialized && err != initialize.ErrNotGitRepo {
-			return err
-		}
+		return err
 	}
 
 	return runDoctor()

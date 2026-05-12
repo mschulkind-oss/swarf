@@ -61,16 +61,32 @@ func TestInitRegistersDrawer(t *testing.T) {
 	}
 }
 
-func TestInitRefusesIfAlreadyInitialized(t *testing.T) {
-	testutil.GitRepo(t)
+func TestInitIsIdempotent(t *testing.T) {
+	// Re-running init in an already-set-up project is a no-error refresh:
+	// re-registers the drawer, re-creates any missing symlinks, touches
+	// excludes. This is what 'swarf init' does when a user runs it after
+	// deleting a linked file by accident.
+	repo := testutil.GitRepo(t)
 	config.WriteGlobalConfig(testConfig)
-	initialize.Run(testConfig)
-	err := initialize.Run(testConfig)
-	if err == nil {
-		t.Fatal("expected error for already initialized")
+	if err := initialize.Run(testConfig); err != nil {
+		t.Fatalf("first init: %v", err)
 	}
-	if !strings.Contains(err.Error(), "already initialized") {
-		t.Fatalf("unexpected error: %v", err)
+
+	// Drop a file into .links/ and remove any symlink; a second init should
+	// restore the symlink without erroring.
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
+	os.WriteFile(source, []byte("# Agents\n"), 0o644)
+	os.Remove(filepath.Join(repo, "AGENTS.md"))
+
+	if err := initialize.Run(testConfig); err != nil {
+		t.Fatalf("second init should be idempotent, got: %v", err)
+	}
+	fi, err := os.Lstat(filepath.Join(repo, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("expected symlink recreated by re-init: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected a symlink after re-init")
 	}
 }
 

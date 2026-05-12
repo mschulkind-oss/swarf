@@ -15,10 +15,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
-var (
-	ErrNotGitRepo         = errors.New("not inside a git repository")
-	ErrAlreadyInitialized = errors.New("swarf is already initialized here")
-)
+var ErrNotGitRepo = errors.New("not inside a git repository")
 
 // EnsureStore initializes the central store (backup mirror) if it doesn't exist.
 func EnsureStore(hostRoot string, gc *config.GlobalConfig) error {
@@ -94,7 +91,10 @@ func WriteStoreReadme() {
 	os.WriteFile(filepath.Join(paths.StoreDir, "README.md"), []byte(b.String()), 0o644)
 }
 
-// Run initializes swarf for the current project.
+// Run initializes swarf for the current project. Idempotent: calling it
+// again in an already-initialized project re-registers the drawer, refreshes
+// excludes, and recreates any missing symlinks under swarf/.links/ — that's
+// the "fix my broken state" path users hit after removing a file by hand.
 func Run(globalConfig *config.GlobalConfig) error {
 	hostRoot := gitexec.GetRepoRoot("")
 	if hostRoot == "" {
@@ -104,28 +104,29 @@ func Run(globalConfig *config.GlobalConfig) error {
 	sd := paths.SwarfDir(hostRoot)
 	slug := paths.ProjectSlug(hostRoot)
 
-	if fi, err := os.Lstat(sd); err == nil {
-		if fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-			return ErrAlreadyInitialized
-		}
+	// Distinguish first-time init from re-init so the user sees the right
+	// message. Functionally the work below is the same either way.
+	firstTime := true
+	if fi, err := os.Lstat(sd); err == nil && (fi.IsDir() || fi.Mode()&os.ModeSymlink != 0) {
+		firstTime = false
 	}
 
 	if err := EnsureStore(hostRoot, globalConfig); err != nil {
 		return err
 	}
 
-	// Create swarf/ as a real directory in the project.
-	// If the store already has content for this project (e.g., after clone),
-	// seed the local swarf/ from the store mirror.
-	storeProject := paths.StoreProjectDir(hostRoot)
-	if paths.IsDir(storeProject) {
-		if err := copyDir(storeProject, sd); err != nil {
-			return fmt.Errorf("seed from store: %w", err)
+	if firstTime {
+		// Seed local swarf/ from the store mirror if the store already has
+		// content for this project (common on a new machine after pull).
+		storeProject := paths.StoreProjectDir(hostRoot)
+		if paths.IsDir(storeProject) {
+			if err := copyDir(storeProject, sd); err != nil {
+				return fmt.Errorf("seed from store: %w", err)
+			}
+			console.Ok(fmt.Sprintf("Restored %s from store.", slug))
 		}
-		console.Ok(fmt.Sprintf("Restored %s from store.", slug))
 	}
 
-	// Always ensure .links/ exists, even if the store didn't have one.
 	if err := os.MkdirAll(paths.LinksDir(hostRoot), 0o755); err != nil {
 		return fmt.Errorf("create .links/: %w", err)
 	}
@@ -133,10 +134,14 @@ func Run(globalConfig *config.GlobalConfig) error {
 	exclude.UpdateExcludes(hostRoot, nil)
 	config.RegisterDrawer(slug, hostRoot)
 
-	// Re-create symlinks from swarf/.links/ (e.g. after clone + init).
+	// Re-create any missing symlinks for files under swarf/.links/.
 	link.Run(hostRoot, true)
 
-	console.Ok(fmt.Sprintf("Initialized swarf for %s", slug))
+	if firstTime {
+		console.Ok(fmt.Sprintf("Initialized swarf for %s", slug))
+	} else {
+		console.Ok(fmt.Sprintf("Refreshed swarf setup for %s", slug))
+	}
 	console.Infof("  Backend: %s", globalConfig.Backend)
 	if globalConfig.Remote != "" {
 		console.Infof("  Remote: %s", globalConfig.Remote)
