@@ -77,6 +77,18 @@ func BareRemote(t *testing.T) string {
 	return bare
 }
 
+// GitAdd stages a file in the given repo.
+func GitAdd(t *testing.T, repo, file string) {
+	t.Helper()
+	run(t, repo, "git", "add", "--force", file)
+}
+
+// GitCommit creates a commit in the given repo.
+func GitCommit(t *testing.T, repo, msg string) {
+	t.Helper()
+	run(t, repo, "git", "commit", "-m", msg, "--allow-empty")
+}
+
 func run(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)

@@ -12,6 +12,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/daemon"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
+	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
@@ -455,7 +456,7 @@ func CheckGitignore(cwd string) []Check {
 			}
 			if gitexec.IsTracked(cwd, rel) {
 				checks = append(checks, Check{rel + " (tracked)", false,
-					fmt.Sprintf("%s is swept but still tracked by git — run 'git rm --cached %s' to untrack it", rel, rel)})
+					fmt.Sprintf("%s is swept but still tracked by git — run 'swarf doctor --fix' to heal", rel)})
 			}
 			return nil
 		})
@@ -494,7 +495,7 @@ func CheckLinks(cwd string) Check {
 
 	if len(missing) > 0 {
 		return Check{"links", false, fmt.Sprintf(
-			"Missing or wrong-type symlinks: %s\n    Fix: the daemon re-links on each sync; run 'swarf init' to re-link immediately.",
+			"Missing or wrong-type symlinks: %s\n    Fix: run 'swarf doctor --fix' to heal, or 'swarf init' to re-initialize.",
 			strings.Join(missing, ", "))}
 	}
 	return Check{"links", true, "All symlinks present"}
@@ -545,6 +546,23 @@ func CheckSymlinksRelative(cwd string) Check {
 //
 // When global config is missing (the usual "running inside a container"
 // case), InJail is set and only project-local checks are returned.
+// FixProject runs the content-aware reconcile for the current project:
+// heals clobbered symlinks, copies divergent content into .links/,
+// untracks swept files still in the git index, and ensures excludes.
+func FixProject(cwd string) (link.Result, error) {
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	hostRoot := gitexec.GetRepoRoot(cwd)
+	if hostRoot == "" {
+		return link.Result{}, fmt.Errorf("not inside a git repository")
+	}
+	if !paths.IsDir(paths.SwarfDir(hostRoot)) {
+		return link.Result{}, fmt.Errorf("no %s/ directory — run 'swarf init' first", paths.SwarfDirName)
+	}
+	return link.RunWithFix(hostRoot, false, true)
+}
+
 func RunChecks(cwd string) Result {
 	if cwd == "" {
 		cwd, _ = os.Getwd()

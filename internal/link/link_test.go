@@ -34,7 +34,6 @@ func TestLinkCreatesSymlinks(t *testing.T) {
 		t.Fatal("expected symlink")
 	}
 
-	// Symlink must be relative for jail/remapped-dir portability.
 	linkTarget, _ := os.Readlink(target)
 	if filepath.IsAbs(linkTarget) {
 		t.Fatalf("expected relative symlink, got absolute: %s", linkTarget)
@@ -82,28 +81,113 @@ func TestLinkNestedDirs(t *testing.T) {
 		t.Fatal("expected symlink")
 	}
 
-	// Nested symlinks must also be relative.
 	linkTarget, _ := os.Readlink(target)
 	if filepath.IsAbs(linkTarget) {
 		t.Fatalf("expected relative symlink, got absolute: %s", linkTarget)
 	}
 }
 
-func TestLinkWarnsOnRealFile(t *testing.T) {
+func TestLinkHealsIdenticalRegularFile(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
+	content := []byte("# Agents\n")
 	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
-	os.WriteFile(source, []byte("# Agents\n"), 0o644)
-	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("real file\n"), 0o644)
+	os.WriteFile(source, content, 0o644)
+
+	// Create symlink first, then replace with identical regular file.
+	link.Run(repo, true)
+	target := filepath.Join(repo, "AGENTS.md")
+	os.Remove(target)
+	os.WriteFile(target, content, 0o644)
 
 	result, err := link.Run(repo, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Warnings) != 1 {
-		t.Fatalf("expected 1 warning, got %d", len(result.Warnings))
+	if len(result.Healed) != 1 {
+		t.Fatalf("expected 1 healed, got %d", len(result.Healed))
 	}
-	if len(result.Created) != 0 {
-		t.Fatal("should not create link when real file exists")
+
+	// Target should be a symlink again.
+	fi, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected symlink after heal")
+	}
+
+	// .links/ content should be unchanged.
+	data, _ := os.ReadFile(source)
+	if string(data) != string(content) {
+		t.Fatalf("expected .links/ content to be unchanged, got %q", string(data))
+	}
+}
+
+func TestLinkHealsDivergentRegularFile(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	oldContent := []byte("# Agents v1\n")
+	newContent := []byte("# Agents v2 — with extra rules\n")
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
+	os.WriteFile(source, oldContent, 0o644)
+
+	// Create symlink first, then replace with divergent regular file
+	// (simulates an atomic-save editor clobbering the symlink).
+	link.Run(repo, true)
+	target := filepath.Join(repo, "AGENTS.md")
+	os.Remove(target)
+	os.WriteFile(target, newContent, 0o644)
+
+	result, err := link.Run(repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Healed) != 1 {
+		t.Fatalf("expected 1 healed, got %d", len(result.Healed))
+	}
+
+	// Target should be a symlink again.
+	fi, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected symlink after heal")
+	}
+
+	// .links/ content should now match the newer host content.
+	data, _ := os.ReadFile(source)
+	if string(data) != string(newContent) {
+		t.Fatalf("expected .links/ to have new content, got %q", string(data))
+	}
+
+	// Reading through the symlink should return new content.
+	data, _ = os.ReadFile(target)
+	if string(data) != string(newContent) {
+		t.Fatalf("expected target to read new content through symlink, got %q", string(data))
+	}
+}
+
+func TestLinkHealsMissingHostPath(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
+	os.WriteFile(source, []byte("# Agents\n"), 0o644)
+
+	// Don't create the host file — just run link. It should create the symlink.
+	result, err := link.Run(repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Created) != 1 {
+		t.Fatalf("expected 1 created, got %d", len(result.Created))
+	}
+
+	target := filepath.Join(repo, "AGENTS.md")
+	fi, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected symlink")
 	}
 }
 
@@ -170,5 +254,56 @@ func TestLinkFixesStaleSymlink(t *testing.T) {
 	}
 	if len(result.Created) != 1 {
 		t.Fatalf("expected 1 created (stale fix), got %d", len(result.Created))
+	}
+}
+
+func TestLinkHealIsIdempotent(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
+	os.WriteFile(source, []byte("# Agents\n"), 0o644)
+
+	// First run creates symlink.
+	r1, _ := link.Run(repo, true)
+	if len(r1.Created) != 1 {
+		t.Fatalf("expected 1 created on first run, got %d", len(r1.Created))
+	}
+
+	// Second run should skip (already healthy).
+	r2, _ := link.Run(repo, true)
+	if len(r2.Skipped) != 1 {
+		t.Fatalf("expected 1 skipped on second run, got %d", len(r2.Skipped))
+	}
+	if len(r2.Created) != 0 || len(r2.Healed) != 0 {
+		t.Fatal("expected no created or healed on second run")
+	}
+}
+
+func TestRunWithFixUntracksSweptFile(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
+	os.WriteFile(source, []byte("# Agents\n"), 0o644)
+
+	// Stage and commit the file so it's tracked.
+	target := filepath.Join(repo, "AGENTS.md")
+	os.WriteFile(target, []byte("# Agents\n"), 0o644)
+	testutil.GitAdd(t, repo, "AGENTS.md")
+	testutil.GitCommit(t, repo, "add AGENTS.md")
+
+	// RunWithFix should untrack it and heal the symlink.
+	result, err := link.RunWithFix(repo, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Healed) != 1 {
+		t.Fatalf("expected 1 healed, got %d", len(result.Healed))
+	}
+
+	// Verify it's a symlink now.
+	fi, err := os.Lstat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("expected symlink after fix")
 	}
 }

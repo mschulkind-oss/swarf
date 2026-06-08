@@ -155,6 +155,12 @@ func IsTracked(dir, path string) bool {
 	return err == nil && out != ""
 }
 
+// RmCached removes a file from the git index without touching the working tree.
+func RmCached(dir, path string) error {
+	_, err := run(dir, "rm", "--cached", "--", path)
+	return err
+}
+
 func GetRepoRoot(dir string) string {
 	out, err := runStdout(dir, "rev-parse", "--show-toplevel")
 	if err != nil {

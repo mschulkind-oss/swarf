@@ -368,19 +368,41 @@ sync status, and daemon health. A quick way to see everything at a glance.`,
 }
 
 func doctorCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "doctor",
 		Short:   "Validate that swarf is set up correctly",
 		GroupID: groupInfo,
 		Args:    cobra.NoArgs,
-		Long: `Reports system and project health. Read-only — never modifies
-anything. Each failed check tells you what command to run to fix
-the issue (typically 'swarf init' or 'swarf daemon install').`,
-		Example: `  swarf doctor`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDoctor()
-		},
+		Long: `Reports system and project health. By default read-only.
+
+With --fix: heals clobbered symlinks (copies newer content into
+.links/, restores the symlink), untracks swept files still in the
+git index, and ensures gitignore entries are present.`,
+		Example: `  swarf doctor
+  swarf doctor --fix`,
 	}
+	fixFlag := cmd.Flags().Bool("fix", false, "Heal broken symlinks and untrack swept files")
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if *fixFlag {
+			result, err := doctor.FixProject("")
+			if err != nil {
+				return err
+			}
+			if len(result.Healed) > 0 {
+				console.Ok(fmt.Sprintf("Healed %d symlink(s): %s", len(result.Healed), strings.Join(result.Healed, ", ")))
+			}
+			if len(result.Warnings) > 0 {
+				for _, w := range result.Warnings {
+					console.Warn(w)
+				}
+			}
+			if len(result.Healed) == 0 && len(result.Warnings) == 0 {
+				console.Ok("Nothing to fix.")
+			}
+		}
+		return runDoctor()
+	}
+	return cmd
 }
 
 func docsCmd() *cobra.Command {

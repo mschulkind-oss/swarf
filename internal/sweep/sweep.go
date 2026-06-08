@@ -10,6 +10,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
+	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
@@ -92,6 +93,14 @@ func sweepOne(pathStr, hostRoot, linksDir string) (string, bool) {
 
 	dest := filepath.Join(linksDir, rel)
 	if _, err := os.Stat(dest); err == nil {
+		// .links/ entry exists. If the host path is a regular file (clobbered
+		// symlink), heal it instead of skipping.
+		if fi, lErr := os.Lstat(source); lErr == nil && fi.Mode()&os.ModeSymlink == 0 {
+			result, _ := link.RunWithFix(hostRoot, false, true)
+			if len(result.Healed) > 0 {
+				return rel, true
+			}
+		}
 		console.Warn(fmt.Sprintf("%s already exists in %s/.links/, skipping.", rel, paths.SwarfDirName))
 		return "", false
 	}
