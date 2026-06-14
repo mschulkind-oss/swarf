@@ -49,12 +49,6 @@ func Run(hostRoot string, quiet bool) (Result, error) {
 		return nil
 	})
 
-	if quiet {
-		for _, msg := range result.Warnings {
-			console.Warn(msg)
-		}
-	}
-
 	allLinked := append(result.Created, result.Skipped...)
 	if len(allLinked) > 0 {
 		normalized := make([]string, len(allLinked))

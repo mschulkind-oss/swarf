@@ -58,9 +58,17 @@ func Run(ctx context.Context) error {
 	return watchProjects(ctx, debouncer)
 }
 
+// loggedRelinkWarnings remembers relink warnings we've already emitted so a
+// permanently-stuck link (a real file sitting where a swept symlink belongs)
+// is reported once rather than re-spammed to the journal on every debounce
+// cycle. Cleared entries (the conflict went away) drop out so a recurrence is
+// logged afresh.
+var loggedRelinkWarnings = map[string]bool{}
+
 // relinkAllProjects re-creates missing symlinks from swarf/.links/ for all projects.
 func relinkAllProjects() {
 	drawers := config.ReadDrawers()
+	seen := make(map[string]bool)
 	for _, d := range drawers {
 		if !paths.IsDir(paths.SwarfDir(d.Host)) {
 			continue
@@ -72,7 +80,20 @@ func relinkAllProjects() {
 		if len(result.Created) > 0 {
 			slog.Info("re-linked", "project", d.Slug, "files", result.Created)
 		}
+		// Log each unresolved conflict (e.g. "real file exists, won't
+		// overwrite") only the first time we see it. Without this the daemon
+		// re-announces the same stuck links on every cycle, drowning the
+		// journal — exactly the noise the shutdown audit surfaced.
+		for _, w := range result.Warnings {
+			seen[w] = true
+			if !loggedRelinkWarnings[w] {
+				slog.Warn("re-link skipped", "project", d.Slug, "detail", w)
+			}
+		}
 	}
+	// Remember exactly the conflicts seen this cycle: repeats next cycle are
+	// suppressed, and any that vanished drop out so a recurrence re-logs.
+	loggedRelinkWarnings = seen
 }
 
 // mirrorAllProjects copies each project's swarf/ content into the central

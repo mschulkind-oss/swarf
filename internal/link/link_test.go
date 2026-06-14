@@ -1,10 +1,12 @@
 package link_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
@@ -102,6 +104,34 @@ func TestLinkWarnsOnRealFile(t *testing.T) {
 	}
 	if len(result.Created) != 0 {
 		t.Fatal("should not create link when real file exists")
+	}
+}
+
+// TestLinkQuietSuppressesConsole locks in the spam fix: with quiet=true the
+// warning must be returned to the caller (so the daemon can decide whether to
+// log it) but nothing may be written to the console. Previously quiet=true
+// still printed every warning, so the daemon re-dumped the same unresolved
+// conflicts to the journal on every relink cycle.
+func TestLinkQuietSuppressesConsole(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
+	os.WriteFile(source, []byte("# Agents\n"), 0o644)
+	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("real file\n"), 0o644)
+
+	var out, errOut bytes.Buffer
+	oldOut, oldErr := console.Stdout, console.Stderr
+	console.Stdout, console.Stderr = &out, &errOut
+	defer func() { console.Stdout, console.Stderr = oldOut, oldErr }()
+
+	result, err := link.Run(repo, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("expected 1 warning in result, got %d", len(result.Warnings))
+	}
+	if out.Len() != 0 || errOut.Len() != 0 {
+		t.Fatalf("quiet=true wrote to console: stdout=%q stderr=%q", out.String(), errOut.String())
 	}
 }
 
