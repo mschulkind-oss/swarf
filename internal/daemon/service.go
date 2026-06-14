@@ -137,7 +137,11 @@ func installSystemd() error {
 	for _, args := range [][]string{
 		{"systemctl", "--user", "daemon-reload"},
 		{"systemctl", "--user", "enable", "swarf"},
-		{"systemctl", "--user", "start", "swarf"},
+		// restart, not start: a reinstall over an already-running daemon must
+		// re-exec the freshly-installed binary. 'start' is a no-op when the
+		// unit is active, leaving the old code running. (launchd reinstall
+		// below already unloads-then-loads for the same reason.)
+		{"systemctl", "--user", "restart", "swarf"},
 	} {
 		if err := exec.Command(args[0], args[1:]...).Run(); err != nil {
 			return fmt.Errorf("%s failed: %w", args[0], err)
