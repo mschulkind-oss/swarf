@@ -106,6 +106,21 @@ func (r *Result) processLink(source, target, rel, hostRoot string, quiet, fix bo
 		}
 		os.Remove(target) // stale symlink → will recreate below
 	} else if err == nil {
+		// A regular file sits at target. It may be a genuine editor/checkout
+		// write to heal, OR it may be the *same* file reached through an
+		// ancestor directory symlink that swarf itself created (a directory
+		// sweep — e.g. .hs -> .links/.hs). Lstat only refuses to follow the
+		// symlink in the final path component; an ancestor .hs symlink is
+		// still resolved, so the walk lands back inside .links/.hs and the
+		// leaf looks like a real file. In that case the projection is already
+		// correct — skip silently rather than "healing" a file onto itself.
+		if resolved, e1 := filepath.EvalSymlinks(target); e1 == nil {
+			if sourceResolved, e2 := filepath.EvalSymlinks(source); e2 == nil && resolved == sourceResolved {
+				r.maybeUntrack(hostRoot, rel, fix)
+				r.Skipped = append(r.Skipped, rel)
+				return
+			}
+		}
 		// Regular file where symlink should be — heal it.
 		r.healRegularFile(source, target, rel, hostRoot, quiet, fix)
 		return

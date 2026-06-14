@@ -222,6 +222,46 @@ func TestLinkQuietSuppressesConsole(t *testing.T) {
 	}
 }
 
+// TestLinkSkipsSweptDirectory locks in the phantom-conflict fix. When swarf
+// has swept a whole directory, the host tree holds a single *directory*
+// symlink (sub -> .links/sub) rather than per-file symlinks. Walking .links
+// file by file builds target = hostRoot/sub/f.txt; Lstat follows the ancestor
+// sub symlink and lands on the real file, which used to be misreported as a
+// "real file exists" conflict on every relink cycle. Since the file already
+// resolves to the source through that ancestor symlink, it must be reported as
+// Skipped with zero Warnings.
+func TestLinkSkipsSweptDirectory(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	source := filepath.Join(paths.LinksDir(repo), "sub", "f.txt")
+	os.MkdirAll(filepath.Dir(source), 0o755)
+	os.WriteFile(source, []byte("# swept\n"), 0o644)
+
+	// Simulate a directory sweep: host `sub` is a single symlink to the swept
+	// subtree in .links, mirroring `.hs -> .links/.hs`.
+	dirTarget := filepath.Join(repo, "sub")
+	rel, err := filepath.Rel(repo, filepath.Dir(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(rel, dirTarget); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := link.Run(repo, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Warnings) != 0 {
+		t.Fatalf("expected 0 warnings for swept directory, got %d: %v", len(result.Warnings), result.Warnings)
+	}
+	if len(result.Skipped) != 1 {
+		t.Fatalf("expected 1 skipped, got %d: %v", len(result.Skipped), result.Skipped)
+	}
+	if len(result.Created) != 0 {
+		t.Fatalf("expected 0 created, got %d", len(result.Created))
+	}
+}
+
 func TestLinkEmptyLinksDir(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	result, err := link.Run(repo, false)
