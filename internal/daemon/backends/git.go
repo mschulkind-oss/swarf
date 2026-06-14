@@ -1,6 +1,7 @@
 package backends
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,7 +12,7 @@ import (
 
 type GitBackend struct{}
 
-func (g *GitBackend) Sync(storePath string) SyncResult {
+func (g *GitBackend) Sync(ctx context.Context, storePath string) SyncResult {
 	slog.Info("sync: staging all changes", "store", storePath)
 	gitexec.AddAll(storePath)
 
@@ -45,7 +46,7 @@ func (g *GitBackend) Sync(storePath string) SyncResult {
 	remote := gitexec.RemoteURL(storePath, "")
 	if remote != "" {
 		slog.Info("sync: pushing to remote", "remote", remote)
-		if err := gitexec.Push(storePath, "origin"); err != nil {
+		if err := gitexec.PushContext(ctx, storePath, "origin"); err != nil {
 			slog.Warn("sync: push failed (will retry later)", "remote", remote, "err", err)
 			return SyncResult{Success: true, Message: fmt.Sprintf("Committed %d files locally, push failed", nFiles), FilesChanged: nFiles}
 		}

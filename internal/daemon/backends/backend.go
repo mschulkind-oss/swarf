@@ -1,6 +1,7 @@
 package backends
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"time"
@@ -13,7 +14,11 @@ type SyncResult struct {
 }
 
 type SyncBackend interface {
-	Sync(storePath string) SyncResult
+	// Sync stages, commits, and pushes the store. The context governs the
+	// network portion of the sync (rclone / git push): cancelling it kills
+	// the in-flight transfer so the daemon can shut down promptly. Local git
+	// operations (add/commit) are fast and run to completion regardless.
+	Sync(ctx context.Context, storePath string) SyncResult
 	HasChanges(storePath string) bool
 }
 

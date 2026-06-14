@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 	"syscall"
 
@@ -89,7 +91,14 @@ Learn more:
 		docsCmd(),
 	)
 
-	if err := root.Execute(); err != nil {
+	// Execute with a signal-cancelled context so long-running commands
+	// (notably `swarf push`, which can sit in a network sync) abort promptly
+	// on Ctrl-C / SIGTERM instead of blocking. The daemon installs its own
+	// NotifyContext in DoStart; this covers the one-shot CLI commands.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	if err := root.ExecuteContext(ctx); err != nil {
 		console.Error(err.Error())
 		os.Exit(1)
 	}
@@ -217,7 +226,7 @@ same work the background daemon does on each debounce, run on
 demand. Handy when you're about to 'swarf pull' on another machine
 and don't want to wait for the daemon cycle.`,
 		Example: `  swarf push`,
-		RunE:    func(cmd *cobra.Command, args []string) error { return push.Run() },
+		RunE:    func(cmd *cobra.Command, args []string) error { return push.Run(cmd.Context()) },
 	}
 }
 

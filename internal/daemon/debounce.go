@@ -64,3 +64,18 @@ func (d *Debouncer) Cancel() {
 		d.timer = nil
 	}
 }
+
+// Drain stops any pending timer and blocks until an in-flight callback (if
+// one is running) returns. Unlike Flush, it never starts a new callback —
+// it only waits for one already executing to unwind. Used on shutdown: the
+// daemon's context is cancelled first, which kills any in-flight rclone/
+// git-push child, so the running callback returns promptly; Drain then makes
+// sure the daemon doesn't exit out from under that goroutine and orphan the
+// child. Local git operations are fast, so the wait is bounded.
+func (d *Debouncer) Drain() {
+	d.Cancel()
+	// Acquiring and immediately releasing the running lock blocks only while
+	// a callback is mid-flight, then returns once it has finished.
+	d.running.Lock()
+	d.running.Unlock() //nolint:staticcheck // intentional wait-for-idle
+}

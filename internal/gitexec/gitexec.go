@@ -1,13 +1,21 @@
 package gitexec
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
 )
 
 func run(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	return runCtx(context.Background(), dir, args...)
+}
+
+// runCtx is the context-aware form of run. A cancelled ctx kills the git
+// child process, so a network-bound git command (e.g. push) can be aborted
+// promptly on daemon shutdown.
+func runCtx(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -58,10 +66,17 @@ func Commit(dir, message string) error {
 }
 
 func Push(dir string, remote string) error {
+	return PushContext(context.Background(), dir, remote)
+}
+
+// PushContext runs `git push` with a cancellable context. On daemon shutdown
+// a cancelled ctx kills the push child so reboot isn't blocked on a slow or
+// stuck network push.
+func PushContext(ctx context.Context, dir string, remote string) error {
 	if remote == "" {
 		remote = "origin"
 	}
-	_, err := run(dir, "push", remote)
+	_, err := runCtx(ctx, dir, "push", remote)
 	return err
 }
 

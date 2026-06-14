@@ -9,6 +9,7 @@
 package push
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,8 +25,10 @@ import (
 
 var ErrNoConfig = errors.New("no global config found — run 'swarf init' first")
 
-// Run executes one full push cycle.
-func Run() error {
+// Run executes one full push cycle. The context governs the network portion
+// of the backend sync, so an interrupted `swarf push` (Ctrl-C) aborts the
+// in-flight rclone/git-push rather than blocking.
+func Run(ctx context.Context) error {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
 		return ErrNoConfig
@@ -57,7 +60,7 @@ func Run() error {
 
 	// Backend commits and pushes.
 	backend := makeBackend(gc)
-	result := backend.Sync(paths.StoreDir)
+	result := backend.Sync(ctx, paths.StoreDir)
 	if !result.Success {
 		return fmt.Errorf("sync failed: %s", result.Message)
 	}

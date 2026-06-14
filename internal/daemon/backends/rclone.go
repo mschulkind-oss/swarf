@@ -1,6 +1,7 @@
 package backends
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -30,7 +31,7 @@ func MachineRemote(remote, machineID string) string {
 	return strings.TrimRight(remote, "/") + "/" + MachineSuffix + "/" + machineID
 }
 
-func (r *RcloneBackend) Sync(storePath string) SyncResult {
+func (r *RcloneBackend) Sync(ctx context.Context, storePath string) SyncResult {
 	if r.MachineID == "" {
 		r.MachineID = config.EnsureMachineID()
 	}
@@ -73,7 +74,7 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 	// Refuse to push into a legacy flat layout (files at the remote root with
 	// no machines/ prefix). Silently writing into a flat layout would delete
 	// whatever was there — see docs on migration.
-	if legacy, reason := hasLegacyLayout(r.Remote); legacy {
+	if legacy, reason := hasLegacyLayout(ctx, r.Remote); legacy {
 		msg := fmt.Sprintf("remote is in legacy flat layout (%s); see 'swarf doctor' for migration steps", reason)
 		slog.Warn("sync: refusing to push", "remote", r.Remote, "reason", reason)
 		return SyncResult{Success: false, Message: msg, FilesChanged: nFiles}
@@ -82,7 +83,7 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 	// Create our machine's remote directory on first sync only.
 	if !r.remoteMkdir {
 		slog.Info("sync: ensuring remote directory exists (first sync)", "remote", target)
-		mkdirCmd := exec.Command("rclone", "mkdir", target)
+		mkdirCmd := exec.CommandContext(ctx, "rclone", "mkdir", target)
 		if mkOut, mkErr := mkdirCmd.CombinedOutput(); mkErr != nil {
 			slog.Warn("sync: rclone mkdir failed (may be ok)", "remote", target, "err", mkErr, "output", strings.TrimSpace(string(mkOut)))
 		}
@@ -93,7 +94,7 @@ func (r *RcloneBackend) Sync(storePath string) SyncResult {
 	// here, `rclone sync` (destructive) is safe — nothing on the remote could
 	// have legitimate content from another writer.
 	slog.Info("sync: rclone sync starting", "from", storePath, "to", target)
-	cmd := exec.Command("rclone", "sync", storePath, target, "-v")
+	cmd := exec.CommandContext(ctx, "rclone", "sync", storePath, target, "-v")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := fmt.Sprintf("rclone sync failed: %s", strings.TrimSpace(string(out)))
@@ -114,9 +115,9 @@ func (r *RcloneBackend) HasChanges(_ string) bool {
 // already contain a store at its root (i.e. a .git/ directory), which would
 // indicate a pre-multi-machine flat layout. A remote that has only a
 // machines/ directory, or is entirely empty, returns false.
-func hasLegacyLayout(remote string) (bool, string) {
+func hasLegacyLayout(ctx context.Context, remote string) (bool, string) {
 	// `rclone lsf` with --dirs-only is cheap and doesn't list files.
-	cmd := exec.Command("rclone", "lsf", "--dirs-only", strings.TrimRight(remote, "/"))
+	cmd := exec.CommandContext(ctx, "rclone", "lsf", "--dirs-only", strings.TrimRight(remote, "/"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Network/config error: can't tell, treat as not-legacy to avoid

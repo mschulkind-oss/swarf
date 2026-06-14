@@ -71,6 +71,60 @@ func TestDebouncerNoConcurrentCallbacks(t *testing.T) {
 	}
 }
 
+func TestDebouncerDrainWaitsForInflight(t *testing.T) {
+	var started, finished atomic.Bool
+	release := make(chan struct{})
+	d := NewDebouncer(10*time.Millisecond, func() {
+		started.Store(true)
+		<-release // block until the test lets the callback finish
+		finished.Store(true)
+	})
+
+	d.Trigger()
+	// Wait for the callback to actually be running.
+	for i := 0; i < 100 && !started.Load(); i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !started.Load() {
+		t.Fatal("callback never started")
+	}
+
+	// Drain must block until the in-flight callback returns. Run it in a
+	// goroutine and confirm it hasn't returned while the callback is stuck.
+	drained := make(chan struct{})
+	go func() { d.Drain(); close(drained) }()
+
+	select {
+	case <-drained:
+		t.Fatal("Drain returned before the in-flight callback finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release) // let the callback finish
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("Drain did not return after callback finished")
+	}
+	if !finished.Load() {
+		t.Fatal("callback did not finish")
+	}
+}
+
+func TestDebouncerDrainNeverStartsCallback(t *testing.T) {
+	var count atomic.Int32
+	d := NewDebouncer(1*time.Hour, func() { count.Add(1) })
+	d.Trigger() // arm a timer that won't fire for an hour
+
+	// Unlike Flush, Drain must NOT run the pending callback — it only waits
+	// for one already in flight (there is none here).
+	d.Drain()
+	time.Sleep(20 * time.Millisecond)
+	if count.Load() != 0 {
+		t.Fatalf("Drain ran the callback; expected 0 fires, got %d", count.Load())
+	}
+}
+
 func TestDebouncerFlush(t *testing.T) {
 	var count atomic.Int32
 	d := NewDebouncer(1*time.Hour, func() { count.Add(1) })

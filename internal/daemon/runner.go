@@ -39,10 +39,14 @@ func Run(ctx context.Context) error {
 		//   3. Update store README
 		//   4. Backend sync: commit + push
 		// The CLI 'swarf push' runs the same steps via internal/push.
+		//
+		// ctx is the daemon's signal context: on SIGTERM it's cancelled,
+		// which kills any in-flight rclone/git-push child so shutdown is
+		// prompt rather than blocking on a slow network transfer.
 		relinkAllProjects()
 		mirrorAllProjects()
 		initialize.WriteStoreReadme()
-		result := backend.Sync(paths.StoreDir)
+		result := backend.Sync(ctx, paths.StoreDir)
 		if result.Success && result.FilesChanged > 0 {
 			slog.Info("sync: " + result.Message)
 		} else if !result.Success {
@@ -177,7 +181,17 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 	for {
 		select {
 		case <-ctx.Done():
-			debouncer.Flush()
+			// Shutdown (SIGTERM/SIGINT). Do NOT run a final flush here: the
+			// flush would shell out to rclone/git-push synchronously and the
+			// network call can block reboot for a minute or more. Local git
+			// commits from the last debounce cycle are already on disk, and
+			// the next boot's startup Trigger() catches the remote up.
+			//
+			// ctx is already cancelled, so any sync still in flight has its
+			// rclone/git-push child killed. Drain waits for that callback to
+			// unwind (fast, since the child is being killed) so we don't exit
+			// out from under it and orphan the process.
+			debouncer.Drain()
 			return ctx.Err()
 		case <-ticker.C:
 			refreshWatches()
