@@ -67,7 +67,11 @@ func RunWithFix(hostRoot string, quiet bool, fix bool) (Result, error) {
 		return nil
 	})
 
-	if quiet {
+	// Print unresolved conflicts to the console only for interactive runs.
+	// In quiet mode (the daemon) warnings are returned via result.Warnings so
+	// the caller can dedup them — printing here would re-spam the journal every
+	// relink cycle, the exact regression the quiet flag exists to prevent.
+	if !quiet {
 		for _, msg := range result.Warnings {
 			console.Warn(msg)
 		}

@@ -200,7 +200,10 @@ func TestLinkQuietSuppressesConsole(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	source := filepath.Join(paths.LinksDir(repo), "AGENTS.md")
 	os.WriteFile(source, []byte("# Agents\n"), 0o644)
-	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("real file\n"), 0o644)
+	// A directory at the host path is an unresolvable conflict (heal can't read
+	// it), so link.Run returns a warning we can assert on. A divergent regular
+	// file would just be healed and produce no warning.
+	os.Mkdir(filepath.Join(repo, "AGENTS.md"), 0o755)
 
 	var out, errOut bytes.Buffer
 	oldOut, oldErr := console.Stdout, console.Stderr

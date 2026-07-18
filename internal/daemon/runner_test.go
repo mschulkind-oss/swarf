@@ -17,8 +17,10 @@ import (
 )
 
 // TestRelinkConflictLoggedOnce is the regression guard for the journal-spam
-// audit finding: a permanently-stuck swept link (a real file sitting where the
-// symlink belongs) must be logged once, not re-announced on every relink cycle.
+// audit finding: a permanently-stuck swept link must be logged once, not
+// re-announced on every relink cycle. A divergent regular file is no longer
+// stuck — content-aware heal resolves it — so the enduring conflict is a
+// directory sitting where the swept symlink belongs, which heal cannot read.
 func TestRelinkConflictLoggedOnce(t *testing.T) {
 	repo := testutil.InitializedSwarf(t)
 	slug := filepath.Base(repo)
@@ -26,10 +28,10 @@ func TestRelinkConflictLoggedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Swept file in .links/ whose target is occupied by a real file → relink
-	// can't restore the symlink and warns every cycle.
+	// Swept file in .links/ whose target is occupied by a directory → relink
+	// can't read it to heal and warns every cycle.
 	os.WriteFile(filepath.Join(paths.LinksDir(repo), "AGENTS.md"), []byte("swept\n"), 0o644)
-	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("real\n"), 0o644)
+	os.Mkdir(filepath.Join(repo, "AGENTS.md"), 0o755)
 
 	var buf bytes.Buffer
 	oldLogger := slog.Default()
