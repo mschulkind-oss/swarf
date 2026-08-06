@@ -5,3 +5,6 @@ coverage.out
 # Build artifacts
 dist/
 
+
+# YOLO Jail workspace state
+.yolo/
