@@ -41,8 +41,66 @@ func Run(filePaths []string, hostRoot string) error {
 
 	if len(unlinked) > 0 {
 		exclude.RemoveExcludes(hostRoot, unlinked)
+		purgeFromStore(hostRoot, unlinked)
 	}
 	return nil
+}
+
+// purgeFromStore removes the unlinked files from the central store's copy of
+// this project and drops them from the forward-mirror manifest.
+//
+// Without this, unlink only half-reverses a sweep: swarf/.links/<rel> is gone
+// locally, but store/<slug>/.links/<rel> survives — and init seeds
+// project/swarf/ *additively* from the store, so the next 'swarf init' (or
+// pull's reverse mirror) copies the entry straight back. The host file stays a
+// regular file, so the resurrected .links/ entry is never re-linked and doctor
+// reports the path as not-gitignored / still-tracked / "not a symlink" on
+// every run, with no command that fixes it.
+//
+// The manifest entry must go too. It records what the forward mirror last saw
+// in project/swarf/; leaving <rel> in it makes the next mirror pass treat the
+// file as a fresh user deletion, which is harmless but redundant. Dropping it
+// keeps the manifest an accurate picture of the project.
+func purgeFromStore(hostRoot string, unlinked []string) {
+	slug := paths.ProjectSlug(hostRoot)
+	storeLinks := filepath.Join(paths.StoreDir, slug, ".links")
+	if !paths.IsDir(storeLinks) {
+		return
+	}
+	for _, rel := range unlinked {
+		target := filepath.Join(storeLinks, rel)
+		if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+			console.Warn(fmt.Sprintf("%s: failed to remove store copy: %v", rel, err))
+			continue
+		}
+		cleanEmptyParents(filepath.Dir(target), storeLinks)
+	}
+	dropFromManifest(paths.ProjectManifest(slug), unlinked)
+}
+
+// dropFromManifest rewrites the forward-mirror manifest without the given
+// project-relative .links/ entries. Missing manifest is not an error — that's
+// the "first run, no deletes yet" state mirror.TrackedDir relies on.
+func dropFromManifest(manifestPath string, unlinked []string) {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return
+	}
+	drop := make(map[string]bool, len(unlinked))
+	for _, rel := range unlinked {
+		drop[filepath.ToSlash(filepath.Join(".links", rel))] = true
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || drop[trimmed] {
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	if err := os.WriteFile(manifestPath, []byte(strings.Join(kept, "\n")+"\n"), 0o644); err != nil {
+		console.Warn(fmt.Sprintf("failed to update mirror manifest: %v", err))
+	}
 }
 
 func unlinkOne(pathStr, hostRoot, linksDir string) (string, bool) {
