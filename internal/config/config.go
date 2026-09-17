@@ -22,9 +22,13 @@ type GlobalConfig struct {
 	// backends.ListingFlags). Spelled as the negative so that the zero
 	// value — every config written before the flag existed, and every
 	// GlobalConfig literal that omits it — means "fast listing on".
-	NoFastList bool     `toml:"no_fast_list"`
-	MachineID  string   `toml:"-"`
-	AutoSweep  []string `toml:"-"`
+	NoFastList bool `toml:"no_fast_list"`
+	// Exclude holds the [sync] exclude patterns: paths inside a drawer
+	// that the mirror never copies into the store. See
+	// mirror.SkipPatterns for the pattern forms.
+	Exclude   []string `toml:"exclude"`
+	MachineID string   `toml:"-"`
+	AutoSweep []string `toml:"-"`
 }
 
 type globalConfigFile struct {
@@ -34,11 +38,12 @@ type globalConfigFile struct {
 }
 
 type syncSection struct {
-	Backend    string `toml:"backend"`
-	Remote     string `toml:"remote"`
-	Debounce   string `toml:"debounce"`
-	DirName    string `toml:"dir_name,omitempty"`
-	NoFastList bool   `toml:"no_fast_list,omitempty"`
+	Backend    string   `toml:"backend"`
+	Remote     string   `toml:"remote"`
+	Debounce   string   `toml:"debounce"`
+	DirName    string   `toml:"dir_name,omitempty"`
+	NoFastList bool     `toml:"no_fast_list,omitempty"`
+	Exclude    []string `toml:"exclude,omitempty"`
 }
 
 type machineSection struct {
@@ -64,6 +69,7 @@ func ReadGlobalConfig() *GlobalConfig {
 		Debounce:   f.Sync.Debounce,
 		DirName:    f.Sync.DirName,
 		NoFastList: f.Sync.NoFastList,
+		Exclude:    f.Sync.Exclude,
 		MachineID:  f.Machine.ID,
 	}
 	if c.Backend == "" {
@@ -90,6 +96,7 @@ func WriteGlobalConfig(c *GlobalConfig) error {
 			Debounce:   c.Debounce,
 			DirName:    c.DirName,
 			NoFastList: c.NoFastList,
+			Exclude:    c.Exclude,
 		},
 	}
 	if c.MachineID != "" {

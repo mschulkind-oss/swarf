@@ -32,6 +32,7 @@ Created by `swarf init` on first run. You can also edit it directly.
 backend = "git"                                      # "git" or "rclone"
 remote = "git@github.com:you/my-swarf-store.git"     # git URL or rclone remote:path
 debounce = "5s"                                      # wait after last change before syncing
+exclude = [".yolo/"]                                 # drawer paths never copied to the store
 
 [machine]
 id = "laptop"                                        # stable name for this machine (rclone multi-machine)
@@ -146,6 +147,43 @@ no_fast_list = true
 
 Backends with no recursive-listing support ignore the flag, so leaving it on
 costs nothing there.
+
+#### `exclude`
+
+Glob patterns for paths inside a drawer that should **not** be synced. They
+stay in your project; they never reach the store, the remote, or a peer.
+
+```toml
+[sync]
+exclude = [
+  ".yolo/",          # a directory of that name at any depth, and all of it
+  "node_modules/",
+  "*.tmp",           # a base-name glob, at any depth
+  "home/ssh/*",      # a glob over the drawer-relative path
+]
+```
+
+Three forms, each matched against the path relative to the drawer's
+`swarf/` directory:
+
+| Pattern | Matches |
+|---------|---------|
+| ends in `/` | a directory of that name at any depth, and everything under it |
+| contains `/` | a glob over the whole relative path, plus everything under a match |
+| no `/` | a glob over the file's base name, at any depth |
+
+Globs are `path.Match`, so `*` does not cross a `/`.
+
+Adding an exclude for content that is **already** in the store removes it
+from the store on the next sync, and from the remote on the sync after
+that — the same mechanism as deleting the file, so the store's git history
+still has it. If what you excluded was a secret, treat the exclude as
+step one: the blobs stay in the store's history until you rewrite it.
+
+Excludes also keep the daemon from watching those directories, which is
+worth having on its own for a tree that churns (jail state, build output):
+a watched churning directory wakes a full remote sync per write and has
+nothing to copy.
 
 ### `[auto_sweep]` section
 

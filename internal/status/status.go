@@ -60,7 +60,7 @@ func printStoreInfo(gc *config.GlobalConfig) {
 		// Pending = files that haven't reached the remote yet.
 		// This includes: unmirrored project files + uncommitted store
 		// changes + committed-but-not-pushed commits.
-		pending := countPendingFiles()
+		pending := countPendingFiles(gc)
 		storeStatus := gitexec.StatusPorcelain(paths.StoreDir)
 		storeDirty := countNonEmpty(strings.Split(strings.TrimSpace(storeStatus), "\n"))
 		pending += storeDirty
@@ -297,15 +297,16 @@ func countUnpushedCommits(gc *config.GlobalConfig) int {
 // ~30-byte link against the copied file and reported as pending on every
 // run, so `swarf status` claimed files were uncommitted on a store whose
 // git status was empty, forever.
-func countPendingFiles() int {
+func countPendingFiles(gc *config.GlobalConfig) int {
 	drawers := config.ReadDrawers()
+	skip := mirror.SkipPatterns(gc.Exclude)
 	pending := 0
 	for _, d := range drawers {
 		src := paths.SwarfDir(d.Host)
 		if !paths.IsDir(src) {
 			continue
 		}
-		pending += mirror.PendingFiles(src, filepath.Join(paths.StoreDir, d.Slug))
+		pending += mirror.PendingFiles(src, filepath.Join(paths.StoreDir, d.Slug), skip)
 	}
 	return pending
 }

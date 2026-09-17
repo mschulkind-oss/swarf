@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -35,7 +36,7 @@ import (
 // for real fsnotify events, not by one-shot mirror passes.
 //
 // Errors from individual files are logged but don't short-circuit.
-func Dir(src, dst string) error {
+func Dir(src, dst string, skip Skip) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dst, err)
 	}
@@ -50,6 +51,12 @@ func Dir(src, dst string) error {
 		}
 		rel, _ := filepath.Rel(src, path)
 		if rel == "." {
+			return nil
+		}
+		if skips(skip, rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		target := filepath.Join(dst, rel)
@@ -101,6 +108,15 @@ func Dir(src, dst string) error {
 		if rel == "." {
 			return nil
 		}
+		// An excluded entry is absent from src by design. Deleting it
+		// here would delete the very files the exclude was added to keep
+		// out of the store, from the project the user works in.
+		if skips(skip, rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		srcPath := filepath.Join(src, rel)
 		if _, err := os.Lstat(srcPath); os.IsNotExist(err) {
 			if d.IsDir() {
@@ -130,7 +146,7 @@ func Dir(src, dst string) error {
 //
 // Returns the last fatal error encountered (or nil). Per-file errors
 // are logged and do not abort.
-func TrackedDir(src, dst, manifestPath string) error {
+func TrackedDir(src, dst, manifestPath string, skip Skip) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dst, err)
 	}
@@ -147,6 +163,12 @@ func TrackedDir(src, dst, manifestPath string) error {
 		}
 		rel, _ := filepath.Rel(src, path)
 		if rel == "." {
+			return nil
+		}
+		if skips(skip, rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		target := filepath.Join(dst, rel)
@@ -210,6 +232,78 @@ func TrackedDir(src, dst, manifestPath string) error {
 	return lastErr
 }
 
+// Skip decides whether one entry is outside the mirror's remit. rel is
+// the entry's path relative to the drawer's swarf/ directory, in slash
+// form; isDir says whether it is a directory. A nil Skip mirrors
+// everything.
+//
+// The same Skip has to be handed to both directions. Forward, it keeps
+// the entry out of the store. Reverse, it also protects the entry from
+// the delete pass: the store legitimately has no copy of an excluded
+// path, and the reverse mirror deletes whatever the store lacks, so a
+// Skip missing there would delete the excluded files out of the user's
+// project — the opposite of what excluding them asked for.
+type Skip func(rel string, isDir bool) bool
+
+// SkipPatterns builds a Skip from the [sync] exclude patterns. Returns
+// nil for an empty list, which mirrors everything.
+//
+// Three pattern forms, each matched against the drawer-relative path:
+//
+//   - trailing slash (".yolo/") — a directory of that name at any depth,
+//     and everything beneath it.
+//   - contains a slash ("home/ssh/*") — a glob over the whole relative
+//     path, plus everything beneath a match.
+//   - no slash ("*.tmp") — a glob over the file's base name, at any depth.
+//
+// Globbing is path.Match, so * does not cross a slash.
+func SkipPatterns(patterns []string) Skip {
+	var cleaned []string
+	for _, p := range patterns {
+		if p = strings.TrimSpace(filepath.ToSlash(p)); p != "" {
+			cleaned = append(cleaned, p)
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return func(rel string, _ bool) bool {
+		rel = strings.Trim(filepath.ToSlash(rel), "/")
+		if rel == "" || rel == "." {
+			return false
+		}
+		segments := strings.Split(rel, "/")
+		for _, p := range cleaned {
+			switch {
+			case strings.HasSuffix(p, "/"):
+				name := strings.TrimSuffix(p, "/")
+				for _, seg := range segments {
+					if ok, _ := path.Match(name, seg); ok {
+						return true
+					}
+				}
+			case strings.Contains(p, "/"):
+				if ok, _ := path.Match(p, rel); ok {
+					return true
+				}
+				if strings.HasPrefix(rel, p+"/") {
+					return true
+				}
+			default:
+				if ok, _ := path.Match(p, path.Base(rel)); ok {
+					return true
+				}
+			}
+		}
+		return false
+	}
+}
+
+// skips reports whether skip excludes rel, tolerating a nil Skip.
+func skips(skip Skip, rel string, isDir bool) bool {
+	return skip != nil && skip(rel, isDir)
+}
+
 // upToDate reports whether target already holds what srcInfo describes.
 // Size plus "src is no newer" is the whole test — cheap enough to run on
 // every file of every pass, which is what keeps repeated mirrors
@@ -236,17 +330,32 @@ func upToDate(srcInfo os.FileInfo, target string) bool {
 // so counting them yields a number that can never reach zero — a
 // permanent false alarm. The copy pass logs them when it meets them,
 // which is the right place to surface a stuck file.
-func PendingFiles(src, dst string) int {
+//
+// skip must be the same Skip the copy pass is given, for the same
+// reason: an excluded file is never going to be copied either.
+func PendingFiles(src, dst string, skip Skip) int {
 	pending := 0
 	filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(src, path)
+		if rel == "." {
+			return nil
+		}
+		if skips(skip, rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		srcInfo, err := statResolvable(path)
 		if err != nil || srcInfo.IsDir() {
 			return nil
 		}
-		rel, _ := filepath.Rel(src, path)
 		if !upToDate(srcInfo, filepath.Join(dst, rel)) {
 			pending++
 		}
@@ -314,7 +423,7 @@ func removeEmptyDirsUpTo(file, stop string) {
 //
 // Returns the last fatal error encountered (or nil). Per-file errors
 // are logged and do not abort.
-func CopyOnly(src, dst string) error {
+func CopyOnly(src, dst string, skip Skip) error {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", dst, err)
 	}
@@ -326,6 +435,12 @@ func CopyOnly(src, dst string) error {
 		}
 		rel, _ := filepath.Rel(src, path)
 		if rel == "." {
+			return nil
+		}
+		if skips(skip, rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		target := filepath.Join(dst, rel)

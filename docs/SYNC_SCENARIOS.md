@@ -28,6 +28,10 @@ to verify each scenario is handled correctly — when one isn't, the
   propagate only via the manifest)
 - **reverse mirror** — store → project (`mirror.Dir`, destructive:
   anything in project missing from store gets deleted)
+- **sync exclude** — a glob from `[sync] exclude` in `config.toml`,
+  matched against a drawer-relative path (`mirror.SkipPatterns`). An
+  excluded path lives in the project only: it is never copied to the
+  store, never watched, and never counted as pending
 
 ## The two mirror functions
 
@@ -55,6 +59,31 @@ Three call sites use `TrackedDir`:
 
 One call site uses `mirror.Dir`:
 - `internal/pull/pull.go:mirrorStoreBackToProjects` (end of `swarf pull`)
+
+### Sync excludes cut across both directions
+
+Every one of those four call sites passes the same
+`mirror.SkipPatterns(gc.Exclude)`, and it has to be all four. The forward
+mirror is only half of an exclude:
+
+- **Forward** — an excluded path is not copied, and if the manifest says
+  we used to copy it, the ordinary manifest delete pass prunes it from the
+  store. That is what takes it off the remote as well, since the store is
+  what `rclone sync` uploads.
+- **Reverse** — the same Skip has to suppress the *delete* pass. The store
+  has no copy of an excluded path by design, and the reverse mirror
+  deletes whatever the store lacks, so without the Skip the first `swarf
+  pull` after adding an exclude would delete those files out of the
+  project. Excluding a directory would destroy it.
+
+Two non-mirror consumers follow from the same rule: the daemon does not
+watch excluded subtrees (`addRecursive`, `isExcluded`), and `swarf status`
+does not count excluded files as pending (`mirror.PendingFiles`).
+
+What an exclude does **not** do is rewrite history. Content already
+committed to the store stays in `.git` and keeps being pushed; getting it
+out of the store's history is a separate, one-time `git filter-repo`
+operation.
 
 ## Scenario 1: User edits a file in project
 

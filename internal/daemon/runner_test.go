@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
@@ -72,7 +73,7 @@ func TestWatchProjectsShutdownSkipsFlush(t *testing.T) {
 	cancel() // shutdown is already requested before we enter the loop
 
 	done := make(chan error, 1)
-	go func() { done <- watchProjects(ctx, d) }()
+	go func() { done <- watchProjects(ctx, d, nil) }()
 
 	select {
 	case err := <-done:
@@ -88,4 +89,55 @@ func TestWatchProjectsShutdownSkipsFlush(t *testing.T) {
 	if ran.Load() {
 		t.Fatal("shutdown ran the sync callback; it must skip the final flush")
 	}
+}
+
+// An excluded directory is outside sync entirely, so writes inside it must
+// not wake a sync cycle. Excluded trees are the churning ones — a jail's
+// state directory, build output — and before the watcher consulted the
+// excludes, every write inside one scheduled a full remote sync with
+// nothing to copy.
+func TestWatchProjectsIgnoresExcludedWrites(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	slug := filepath.Base(repo)
+	if err := config.RegisterDrawer(slug, repo); err != nil {
+		t.Fatal(err)
+	}
+	swarfDir := paths.SwarfDir(repo)
+	excluded := filepath.Join(swarfDir, ".yolo", "home")
+	if err := os.MkdirAll(excluded, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var cycles atomic.Int32
+	d := NewDebouncer(50*time.Millisecond, func() { cycles.Add(1) })
+	defer d.Cancel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go watchProjects(ctx, d, mirror.SkipPatterns([]string{".yolo/"}))
+
+	// watchProjects triggers one cycle at startup no matter what. Wait it
+	// out so later counts are attributable to the writes below.
+	waitForCycles(t, &cycles, 1)
+
+	os.WriteFile(filepath.Join(excluded, "bash_history"), []byte("churn"), 0o644)
+	time.Sleep(400 * time.Millisecond)
+	if got := cycles.Load(); got != 1 {
+		t.Fatalf("a write under an excluded directory must not schedule a sync, got %d cycles", got)
+	}
+
+	os.WriteFile(filepath.Join(swarfDir, "notes.md"), []byte("real work"), 0o644)
+	waitForCycles(t, &cycles, 2)
+}
+
+func waitForCycles(t *testing.T, cycles *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cycles.Load() >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected at least %d sync cycle(s), got %d", want, cycles.Load())
 }

@@ -44,13 +44,14 @@ func Run(ctx context.Context) error {
 	// a never-seeded or transiently-empty project directory can't wipe
 	// the store, while intentional user deletes still propagate on the
 	// next push.
+	skip := mirror.SkipPatterns(gc.Exclude)
 	for _, d := range config.ReadDrawers() {
 		src := paths.SwarfDir(d.Host)
 		dst := filepath.Join(paths.StoreDir, d.Slug)
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug)); err != nil {
+		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip); err != nil {
 			slog.Warn("push: mirror failed", "project", d.Slug, "err", err)
 		}
 	}

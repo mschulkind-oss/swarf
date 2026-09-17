@@ -644,7 +644,7 @@ func TestPullFlagsUnregisteredProjects(t *testing.T) {
 
 	// We can't introspect the Result for unregistered slugs directly —
 	// the check is that the mirror helper returns them correctly.
-	synced, unregistered := mirrorStoreBackToProjects()
+	synced, unregistered := mirrorStoreBackToProjects(nil)
 	if len(synced) != 0 {
 		t.Fatalf("no drawers registered, expected nothing synced; got %v", synced)
 	}

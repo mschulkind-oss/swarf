@@ -186,6 +186,7 @@ const configDoc = `
   backend = "git"          # "git" or "rclone"
   remote = ""              # git remote URL or rclone remote:path
   debounce = "5s"          # wait time after last change before syncing
+  exclude = [".yolo/"]     # drawer paths to keep out of the store entirely
 
   [auto_sweep]
   paths = ["AGENTS.md"]    # files to sweep automatically when they appear

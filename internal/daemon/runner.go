@@ -44,7 +44,7 @@ func Run(ctx context.Context) error {
 		// which kills any in-flight rclone/git-push child so shutdown is
 		// prompt rather than blocking on a slow network transfer.
 		relinkAllProjects()
-		mirrorAllProjects()
+		mirrorAllProjects(mirror.SkipPatterns(gc.Exclude))
 		initialize.WriteStoreReadme()
 		result := backend.Sync(ctx, paths.StoreDir)
 		if result.Success && result.FilesChanged > 0 {
@@ -55,7 +55,7 @@ func Run(ctx context.Context) error {
 	})
 	defer debouncer.Cancel()
 
-	return watchProjects(ctx, debouncer)
+	return watchProjects(ctx, debouncer, mirror.SkipPatterns(gc.Exclude))
 }
 
 // loggedRelinkWarnings remembers relink warnings we've already emitted so a
@@ -100,7 +100,7 @@ func relinkAllProjects() {
 // store. Uses TrackedDir so the first pass after init/pull only copies
 // (no deletes against content we've never observed locally), and
 // subsequent passes correctly delete files the user removed.
-func mirrorAllProjects() {
+func mirrorAllProjects(skip mirror.Skip) {
 	drawers := config.ReadDrawers()
 	for _, d := range drawers {
 		src := paths.SwarfDir(d.Host)
@@ -108,7 +108,7 @@ func mirrorAllProjects() {
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug)); err != nil {
+		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip); err != nil {
 			slog.Warn("mirror failed", "project", d.Slug, "err", err)
 		}
 	}
@@ -127,7 +127,7 @@ func makeBackend(gc *config.GlobalConfig) backends.SyncBackend {
 
 // watchProjects watches all registered project swarf/ dirs and project roots
 // (for auto-sweep targets) for changes.
-func watchProjects(ctx context.Context, debouncer *Debouncer) error {
+func watchProjects(ctx context.Context, debouncer *Debouncer, skip mirror.Skip) error {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
@@ -148,7 +148,7 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 
 			// Watch swarf/ dir for sync.
 			if paths.IsDir(sd) && !watchedSwarf[sd] {
-				if err := addRecursive(watcher, sd); err == nil {
+				if err := addRecursive(watcher, sd, skip); err == nil {
 					watchedSwarf[sd] = true
 					slog.Info("Watching project", "name", d.Slug, "path", sd)
 				}
@@ -228,7 +228,14 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 			if strings.Contains(event.Name, "/.git/") || strings.HasSuffix(event.Name, "/.git") {
 				continue
 			}
-			if event.Has(fsnotify.Create) && paths.IsDir(event.Name) {
+			// An excluded path is outside sync entirely: it is not watched,
+			// and it does not wake a cycle. Excluded trees are exactly the
+			// ones that churn — jail state, build output — so watching one
+			// spends inotify watches to schedule remote syncs with nothing
+			// to copy.
+			excluded := isExcluded(event.Name, watchedSwarf, skip)
+
+			if event.Has(fsnotify.Create) && !excluded && paths.IsDir(event.Name) {
 				watcher.Add(event.Name)
 			}
 
@@ -238,10 +245,12 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 			}
 
 			// Only trigger sync debouncer for changes inside swarf/ dirs.
-			for sd := range watchedSwarf {
-				if strings.HasPrefix(event.Name, sd) {
-					debouncer.Trigger()
-					break
+			if !excluded {
+				for sd := range watchedSwarf {
+					if strings.HasPrefix(event.Name, sd) {
+						debouncer.Trigger()
+						break
+					}
 				}
 			}
 		case err, ok := <-watcher.Errors:
@@ -253,8 +262,34 @@ func watchProjects(ctx context.Context, debouncer *Debouncer) error {
 	}
 }
 
-func addRecursive(w *fsnotify.Watcher, root string) error {
-	return walkDirs(root, func(dir string) error {
+// isExcluded reports whether an event path falls under one of the watched
+// swarf/ dirs at a drawer-relative path the excludes cover. A path
+// outside every watched drawer is not excluded — it is simply not ours.
+func isExcluded(name string, watchedSwarf map[string]bool, skip mirror.Skip) bool {
+	if skip == nil {
+		return false
+	}
+	for sd := range watchedSwarf {
+		if !strings.HasPrefix(name, sd) {
+			continue
+		}
+		rel, err := filepath.Rel(sd, name)
+		if err != nil {
+			continue
+		}
+		if skip(rel, false) {
+			return true
+		}
+	}
+	return false
+}
+
+// addRecursive watches root and every directory under it, minus the
+// excluded subtrees: an excluded directory is outside sync entirely, and
+// a churning one (a jail's state directory, a build tree) would otherwise
+// spend inotify watches and wake a sync cycle that has nothing to copy.
+func addRecursive(w *fsnotify.Watcher, root string, skip mirror.Skip) error {
+	return walkDirsSkipping(root, skip, func(dir string) error {
 		if strings.HasSuffix(dir, "/.git") || strings.Contains(dir, "/.git/") {
 			return nil
 		}

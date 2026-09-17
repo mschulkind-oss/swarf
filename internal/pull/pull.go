@@ -115,7 +115,7 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 	// lose work the user just saved. Forward then reverse keeps our
 	// invariant: the store is up-to-date with local edits before we start
 	// reconciling peer state into it.
-	mirrorProjectsToStore()
+	mirrorProjectsToStore(mirror.SkipPatterns(gc.Exclude))
 
 	self := config.EnsureMachineID()
 	peers, err := listPeers(gc.Remote)
@@ -148,7 +148,7 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 	// they actually work. Without this, pull updates only the store; the
 	// project's swarf/ keeps showing stale files until the daemon's next
 	// forward mirror accidentally undoes our pull.
-	synced, unregistered := mirrorStoreBackToProjects()
+	synced, unregistered := mirrorStoreBackToProjects(mirror.SkipPatterns(gc.Exclude))
 
 	if len(result.ConflictFiles) > 0 {
 		console.Warn(fmt.Sprintf("Pulled %d peer(s) with %d conflict file(s):", result.PeersMerged, len(result.ConflictFiles)))
@@ -179,14 +179,14 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 // we have first-hand evidence of (i.e. they were in project/swarf/ last
 // time we looked and are gone now). Files we never saw stay in the store
 // untouched — that's the "empty project doesn't wipe the store" rule.
-func mirrorProjectsToStore() {
+func mirrorProjectsToStore(skip mirror.Skip) {
 	for _, d := range config.ReadDrawers() {
 		src := paths.SwarfDir(d.Host)
 		dst := filepath.Join(paths.StoreDir, d.Slug)
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug)); err != nil {
+		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip); err != nil {
 			slog.Warn("pull: forward mirror failed", "project", d.Slug, "err", err)
 		}
 	}
@@ -203,7 +203,7 @@ func mirrorProjectsToStore() {
 // Returns the slugs that were mirrored, and the slugs present in the store
 // that have no drawer on this machine (so the caller can tell the user to
 // 'swarf init' them).
-func mirrorStoreBackToProjects() (synced, unregistered []string) {
+func mirrorStoreBackToProjects(skip mirror.Skip) (synced, unregistered []string) {
 	drawers := config.ReadDrawers()
 	registered := make(map[string]string, len(drawers)) // slug → host
 	for _, d := range drawers {
@@ -228,7 +228,7 @@ func mirrorStoreBackToProjects() (synced, unregistered []string) {
 		}
 		src := filepath.Join(paths.StoreDir, slug)
 		dst := paths.SwarfDir(host)
-		if err := mirror.Dir(src, dst); err != nil {
+		if err := mirror.Dir(src, dst, skip); err != nil {
 			slog.Warn("pull: reverse mirror failed", "project", slug, "err", err)
 			continue
 		}

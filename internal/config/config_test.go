@@ -214,3 +214,20 @@ func TestNoFastListDefaultsToOff(t *testing.T) {
 		t.Fatal("no_fast_list = true must survive a write/read round trip")
 	}
 }
+
+func TestExcludeRoundTrip(t *testing.T) {
+	setupTestConfig(t)
+	WriteGlobalConfig(&GlobalConfig{
+		Backend: "rclone", Remote: "hs:swarf-store", Debounce: "5s",
+		Exclude: []string{".yolo/", "*.tmp"},
+	})
+	got := ReadGlobalConfig()
+	if len(got.Exclude) != 2 || got.Exclude[0] != ".yolo/" || got.Exclude[1] != "*.tmp" {
+		t.Fatalf("exclude did not survive a write/read round trip: %v", got.Exclude)
+	}
+
+	os.WriteFile(paths.GlobalConfigTOML, []byte("[sync]\nbackend = \"git\"\nremote = \"x\"\ndebounce = \"5s\"\n"), 0o644)
+	if got := ReadGlobalConfig(); len(got.Exclude) != 0 {
+		t.Fatalf("expected no excludes by default, got %v", got.Exclude)
+	}
+}

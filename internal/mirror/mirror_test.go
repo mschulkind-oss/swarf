@@ -14,7 +14,7 @@ func TestMirrorDirCopiesFiles(t *testing.T) {
 	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
 	os.WriteFile(filepath.Join(src, "sub", "b.txt"), []byte("world"), 0o644)
 
-	if err := Dir(src, dst); err != nil {
+	if err := Dir(src, dst, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -29,11 +29,11 @@ func TestMirrorDirDeletesStaleFiles(t *testing.T) {
 	// Initial mirror with two files.
 	os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o644)
 	os.WriteFile(filepath.Join(src, "delete.txt"), []byte("gone"), 0o644)
-	Dir(src, dst)
+	Dir(src, dst, nil)
 
 	// Remove one file from source.
 	os.Remove(filepath.Join(src, "delete.txt"))
-	Dir(src, dst)
+	Dir(src, dst, nil)
 
 	assertFile(t, filepath.Join(dst, "keep.txt"), "keep")
 	if _, err := os.Stat(filepath.Join(dst, "delete.txt")); !os.IsNotExist(err) {
@@ -47,11 +47,11 @@ func TestMirrorDirDeletesStaleDirectories(t *testing.T) {
 
 	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
 	os.WriteFile(filepath.Join(src, "sub", "f.txt"), []byte("x"), 0o644)
-	Dir(src, dst)
+	Dir(src, dst, nil)
 
 	// Remove entire subdirectory from source.
 	os.RemoveAll(filepath.Join(src, "sub"))
-	Dir(src, dst)
+	Dir(src, dst, nil)
 
 	if _, err := os.Stat(filepath.Join(dst, "sub")); !os.IsNotExist(err) {
 		t.Fatal("expected sub/ to be removed from dst")
@@ -67,7 +67,7 @@ func TestMirrorDirFollowsSymlinks(t *testing.T) {
 	os.WriteFile(filepath.Join(external, "real.txt"), []byte("linked"), 0o644)
 	os.Symlink(filepath.Join(external, "real.txt"), filepath.Join(src, "link.txt"))
 
-	Dir(src, dst)
+	Dir(src, dst, nil)
 
 	// dst should have a regular file with the content, not a symlink.
 	assertFile(t, filepath.Join(dst, "link.txt"), "linked")
@@ -85,13 +85,13 @@ func TestMirrorDirSkipsUnchanged(t *testing.T) {
 	dst := t.TempDir()
 
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o644)
-	Dir(src, dst)
+	Dir(src, dst, nil)
 
 	// Record mtime of destination file.
 	info1, _ := os.Stat(filepath.Join(dst, "a.txt"))
 
 	// Mirror again without changes — destination should not be rewritten.
-	Dir(src, dst)
+	Dir(src, dst, nil)
 	info2, _ := os.Stat(filepath.Join(dst, "a.txt"))
 
 	if !info1.ModTime().Equal(info2.ModTime()) {
@@ -110,7 +110,7 @@ func TestMirrorHandlesBrokenSymlink(t *testing.T) {
 	// Symlink pointing at a file that will never exist.
 	os.Symlink(filepath.Join(src, "nonexistent"), filepath.Join(src, "broken"))
 
-	if err := Dir(src, dst); err != nil {
+	if err := Dir(src, dst, nil); err != nil {
 		t.Fatalf("Dir: %v", err)
 	}
 	assertFile(t, filepath.Join(dst, "good.txt"), "good")
@@ -132,7 +132,7 @@ func TestMirrorReplacesFileWithDirectory(t *testing.T) {
 	// dst has 'conflict' as a REGULAR FILE, not a directory.
 	os.WriteFile(filepath.Join(dst, "conflict"), []byte("stale"), 0o644)
 
-	if err := Dir(src, dst); err != nil {
+	if err := Dir(src, dst, nil); err != nil {
 		t.Fatalf("Dir should recover from file-where-dir-wanted: %v", err)
 	}
 	assertFile(t, filepath.Join(dst, "conflict", "inner.txt"), "v")
@@ -149,7 +149,7 @@ func TestTrackedDirReplacesFileWithDirectory(t *testing.T) {
 
 	os.WriteFile(filepath.Join(dst, "conflict"), []byte("stale"), 0o644)
 
-	if err := TrackedDir(src, dst, manifest); err != nil {
+	if err := TrackedDir(src, dst, manifest, nil); err != nil {
 		t.Fatalf("TrackedDir should recover from file-where-dir-wanted: %v", err)
 	}
 	assertFile(t, filepath.Join(dst, "conflict", "inner.txt"), "v")
@@ -163,7 +163,7 @@ func TestTrackedDirHandlesBrokenSymlink(t *testing.T) {
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644)
 	os.Symlink(filepath.Join(src, "nope"), filepath.Join(src, "broken"))
 
-	if err := TrackedDir(src, dst, manifest); err != nil {
+	if err := TrackedDir(src, dst, manifest, nil); err != nil {
 		t.Fatalf("TrackedDir: %v", err)
 	}
 	assertFile(t, filepath.Join(dst, "a.txt"), "a")
@@ -200,10 +200,10 @@ func TestPendingFilesZeroAfterMirror(t *testing.T) {
 	os.WriteFile(filepath.Join(external, "real.txt"), []byte("linked content, much longer than the link"), 0o644)
 	os.Symlink(filepath.Join(external, "real.txt"), filepath.Join(src, "link.txt"))
 
-	if err := TrackedDir(src, dst, manifest); err != nil {
+	if err := TrackedDir(src, dst, manifest, nil); err != nil {
 		t.Fatalf("TrackedDir: %v", err)
 	}
-	if got := PendingFiles(src, dst); got != 0 {
+	if got := PendingFiles(src, dst, nil); got != 0 {
 		t.Fatalf("nothing is pending right after a mirror pass, got %d", got)
 	}
 }
@@ -214,17 +214,17 @@ func TestPendingFilesCountsUnmirroredWork(t *testing.T) {
 	manifest := filepath.Join(t.TempDir(), "m.txt")
 
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644)
-	TrackedDir(src, dst, manifest)
+	TrackedDir(src, dst, manifest, nil)
 
 	os.WriteFile(filepath.Join(src, "new.txt"), []byte("brand new"), 0o644)
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a, now edited"), 0o644)
 
-	if got := PendingFiles(src, dst); got != 2 {
+	if got := PendingFiles(src, dst, nil); got != 2 {
 		t.Fatalf("expected the new file and the edit to be pending, got %d", got)
 	}
 
-	TrackedDir(src, dst, manifest)
-	if got := PendingFiles(src, dst); got != 0 {
+	TrackedDir(src, dst, manifest, nil)
+	if got := PendingFiles(src, dst, nil); got != 0 {
 		t.Fatalf("expected 0 pending after the mirror caught up, got %d", got)
 	}
 }
@@ -236,11 +236,11 @@ func TestPendingFilesIgnoresBrokenSymlink(t *testing.T) {
 
 	os.WriteFile(filepath.Join(src, "good.txt"), []byte("good"), 0o644)
 	os.Symlink(filepath.Join(src, "nonexistent"), filepath.Join(src, "broken"))
-	TrackedDir(src, dst, manifest)
+	TrackedDir(src, dst, manifest, nil)
 
 	// The mirror skips a broken link permanently, so pending would never
 	// clear if we counted it.
-	if got := PendingFiles(src, dst); got != 0 {
+	if got := PendingFiles(src, dst, nil); got != 0 {
 		t.Fatalf("a broken symlink is not pending work, got %d", got)
 	}
 }
@@ -253,17 +253,129 @@ func TestPendingFilesIgnoresSymlinkedDirectory(t *testing.T) {
 
 	os.WriteFile(filepath.Join(external, "inner.txt"), []byte("x"), 0o644)
 	os.Symlink(external, filepath.Join(src, "dirlink"))
-	TrackedDir(src, dst, manifest)
+	TrackedDir(src, dst, manifest, nil)
 
 	// A link to a directory resolves to a directory, which the copy pass
 	// cannot write as a file. Not pending work either.
-	if got := PendingFiles(src, dst); got != 0 {
+	if got := PendingFiles(src, dst, nil); got != 0 {
 		t.Fatalf("a symlinked directory is not pending work, got %d", got)
 	}
 }
 
 func TestPendingFilesMissingSource(t *testing.T) {
-	if got := PendingFiles(filepath.Join(t.TempDir(), "nope"), t.TempDir()); got != 0 {
+	if got := PendingFiles(filepath.Join(t.TempDir(), "nope"), t.TempDir(), nil); got != 0 {
 		t.Fatalf("a missing source has nothing pending, got %d", got)
 	}
+}
+
+func TestSkipPatterns(t *testing.T) {
+	skip := SkipPatterns([]string{".yolo/", "*.tmp", "home/ssh/*"})
+	cases := []struct {
+		rel   string
+		isDir bool
+		want  bool
+	}{
+		{".yolo", true, true},                    // the directory itself
+		{".yolo/home/bash_history", false, true}, // anything under it
+		{"forms/.yolo/state.db", false, true},    // at any depth
+		{"notes/.yolonot/keep.md", false, false}, // not a prefix match
+		{"build/out.tmp", false, true},           // base-name glob, any depth
+		{"out.tmpx", false, false},
+		{"home/ssh/id_rsa", false, true}, // path glob
+		{"home/ssh", true, false},        // the glob needs a segment after it
+		{"home/notes.md", false, false},
+		{"", false, false},
+		{".", false, false},
+	}
+	for _, c := range cases {
+		if got := skip(c.rel, c.isDir); got != c.want {
+			t.Errorf("skip(%q, isDir=%v) = %v, want %v", c.rel, c.isDir, got, c.want)
+		}
+	}
+
+	if SkipPatterns(nil) != nil {
+		t.Error("no patterns must yield a nil Skip (mirror everything)")
+	}
+	if SkipPatterns([]string{"", "   "}) != nil {
+		t.Error("blank patterns must yield a nil Skip")
+	}
+}
+
+// An excluded path already in the store has to leave it, or excluding it
+// does nothing for the remote — which is the whole reason to exclude a
+// 300 MB directory of jail state. The manifest already knows the path was
+// ours, so the existing delete pass does it.
+func TestTrackedDirPrunesNewlyExcludedContent(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "m.txt")
+
+	os.MkdirAll(filepath.Join(src, ".yolo", "home"), 0o755)
+	os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644)
+	os.WriteFile(filepath.Join(src, ".yolo", "home", "bash_history"), []byte("secrets"), 0o644)
+
+	// Synced before anyone thought to exclude it.
+	if err := TrackedDir(src, dst, manifest, nil); err != nil {
+		t.Fatalf("TrackedDir: %v", err)
+	}
+	assertFile(t, filepath.Join(dst, ".yolo", "home", "bash_history"), "secrets")
+
+	// Now excluded.
+	skip := SkipPatterns([]string{".yolo/"})
+	if err := TrackedDir(src, dst, manifest, skip); err != nil {
+		t.Fatalf("TrackedDir with skip: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".yolo", "home", "bash_history")); !os.IsNotExist(err) {
+		t.Error("an excluded file already in the store must be pruned from it")
+	}
+	assertFile(t, filepath.Join(dst, "notes.md"), "keep me")
+
+	// And it stays in the project, which is where it belongs.
+	assertFile(t, filepath.Join(src, ".yolo", "home", "bash_history"), "secrets")
+
+	if got := PendingFiles(src, dst, skip); got != 0 {
+		t.Errorf("an excluded file is not pending work, got %d", got)
+	}
+}
+
+// The reverse mirror deletes whatever the store lacks, and the store
+// lacks every excluded path by design. Without the Skip on this side,
+// excluding a directory would delete it out of the user's project on the
+// next pull — the exact opposite of what they asked for.
+func TestDirLeavesExcludedDestinationContentAlone(t *testing.T) {
+	store := t.TempDir()
+	project := t.TempDir()
+
+	os.WriteFile(filepath.Join(store, "shared.md"), []byte("from a peer"), 0o644)
+	os.MkdirAll(filepath.Join(project, ".yolo"), 0o755)
+	os.WriteFile(filepath.Join(project, ".yolo", "state.db"), []byte("local jail state"), 0o644)
+	os.WriteFile(filepath.Join(project, "stale.md"), []byte("deleted on the peer"), 0o644)
+
+	if err := Dir(store, project, SkipPatterns([]string{".yolo/"})); err != nil {
+		t.Fatalf("Dir: %v", err)
+	}
+
+	assertFile(t, filepath.Join(project, ".yolo", "state.db"), "local jail state")
+	assertFile(t, filepath.Join(project, "shared.md"), "from a peer")
+	if _, err := os.Stat(filepath.Join(project, "stale.md")); !os.IsNotExist(err) {
+		t.Error("a non-excluded file missing from the store should still be deleted")
+	}
+}
+
+func TestDirDoesNotCopyExcludedContent(t *testing.T) {
+	store := t.TempDir()
+	project := t.TempDir()
+
+	// A peer that had no exclude pushed its jail state into the store.
+	os.MkdirAll(filepath.Join(store, ".yolo"), 0o755)
+	os.WriteFile(filepath.Join(store, ".yolo", "peer.db"), []byte("peer jail state"), 0o644)
+	os.WriteFile(filepath.Join(store, "shared.md"), []byte("ok"), 0o644)
+
+	if err := Dir(store, project, SkipPatterns([]string{".yolo/"})); err != nil {
+		t.Fatalf("Dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, ".yolo", "peer.db")); !os.IsNotExist(err) {
+		t.Error("an excluded path must not be written into the project either")
+	}
+	assertFile(t, filepath.Join(project, "shared.md"), "ok")
 }

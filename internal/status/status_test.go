@@ -259,15 +259,15 @@ func TestCountPendingFilesAfterMirror(t *testing.T) {
 	os.WriteFile(linked, []byte("{ // long enough to differ from the link's own size\n}\n"), 0o644)
 	os.Symlink(linked, filepath.Join(swarfDir, "config.jsonc"))
 
-	if err := mirror.TrackedDir(swarfDir, filepath.Join(paths.StoreDir, slug), paths.ProjectManifest(slug)); err != nil {
+	if err := mirror.TrackedDir(swarfDir, filepath.Join(paths.StoreDir, slug), paths.ProjectManifest(slug), nil); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
-	if got := countPendingFiles(); got != 0 {
+	if got := countPendingFiles(&config.GlobalConfig{}); got != 0 {
 		t.Fatalf("expected 0 pending right after a mirror pass, got %d", got)
 	}
 
 	os.WriteFile(filepath.Join(swarfDir, "fresh.md"), []byte("not mirrored yet"), 0o644)
-	if got := countPendingFiles(); got != 1 {
+	if got := countPendingFiles(&config.GlobalConfig{}); got != 1 {
 		t.Fatalf("expected the unmirrored file to be pending, got %d", got)
 	}
 }
