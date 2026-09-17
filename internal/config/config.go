@@ -14,12 +14,17 @@ import (
 )
 
 type GlobalConfig struct {
-	Backend   string   `toml:"backend"`
-	Remote    string   `toml:"remote"`
-	Debounce  string   `toml:"debounce"`
-	DirName   string   `toml:"dir_name"`
-	MachineID string   `toml:"-"`
-	AutoSweep []string `toml:"-"`
+	Backend  string `toml:"backend"`
+	Remote   string `toml:"remote"`
+	Debounce string `toml:"debounce"`
+	DirName  string `toml:"dir_name"`
+	// NoFastList turns off rclone's --fast-list (see
+	// backends.ListingFlags). Spelled as the negative so that the zero
+	// value — every config written before the flag existed, and every
+	// GlobalConfig literal that omits it — means "fast listing on".
+	NoFastList bool     `toml:"no_fast_list"`
+	MachineID  string   `toml:"-"`
+	AutoSweep  []string `toml:"-"`
 }
 
 type globalConfigFile struct {
@@ -29,10 +34,11 @@ type globalConfigFile struct {
 }
 
 type syncSection struct {
-	Backend  string `toml:"backend"`
-	Remote   string `toml:"remote"`
-	Debounce string `toml:"debounce"`
-	DirName  string `toml:"dir_name,omitempty"`
+	Backend    string `toml:"backend"`
+	Remote     string `toml:"remote"`
+	Debounce   string `toml:"debounce"`
+	DirName    string `toml:"dir_name,omitempty"`
+	NoFastList bool   `toml:"no_fast_list,omitempty"`
 }
 
 type machineSection struct {
@@ -53,11 +59,12 @@ func ReadGlobalConfig() *GlobalConfig {
 		return nil
 	}
 	c := &GlobalConfig{
-		Backend:   f.Sync.Backend,
-		Remote:    f.Sync.Remote,
-		Debounce:  f.Sync.Debounce,
-		DirName:   f.Sync.DirName,
-		MachineID: f.Machine.ID,
+		Backend:    f.Sync.Backend,
+		Remote:     f.Sync.Remote,
+		Debounce:   f.Sync.Debounce,
+		DirName:    f.Sync.DirName,
+		NoFastList: f.Sync.NoFastList,
+		MachineID:  f.Machine.ID,
 	}
 	if c.Backend == "" {
 		c.Backend = "git"
@@ -78,10 +85,11 @@ func WriteGlobalConfig(c *GlobalConfig) error {
 	}
 	f := globalConfigFile{
 		Sync: syncSection{
-			Backend:  c.Backend,
-			Remote:   c.Remote,
-			Debounce: c.Debounce,
-			DirName:  c.DirName,
+			Backend:    c.Backend,
+			Remote:     c.Remote,
+			Debounce:   c.Debounce,
+			DirName:    c.DirName,
+			NoFastList: c.NoFastList,
 		},
 	}
 	if c.MachineID != "" {

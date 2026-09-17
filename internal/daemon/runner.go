@@ -31,7 +31,7 @@ func Run(ctx context.Context) error {
 		duration = 5 * time.Second
 	}
 
-	backend := makeBackend(gc.Backend, gc.Remote)
+	backend := makeBackend(gc)
 	debouncer := NewDebouncer(duration, func() {
 		// Daemon cycle:
 		//   1. Re-link: restore any missing symlinks from swarf/.links/
@@ -114,9 +114,13 @@ func mirrorAllProjects() {
 	}
 }
 
-func makeBackend(backendType, remote string) backends.SyncBackend {
-	if backendType == "rclone" {
-		return &backends.RcloneBackend{Remote: remote, MachineID: config.EnsureMachineID()}
+func makeBackend(gc *config.GlobalConfig) backends.SyncBackend {
+	if gc.Backend == "rclone" {
+		return &backends.RcloneBackend{
+			Remote:     gc.Remote,
+			MachineID:  config.EnsureMachineID(),
+			NoFastList: gc.NoFastList,
+		}
 	}
 	return &backends.GitBackend{}
 }

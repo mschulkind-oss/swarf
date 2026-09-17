@@ -122,6 +122,31 @@ with a unit suffix:
 A shorter debounce means faster sync but more commits. The default of `5s`
 batches rapid edits into a single commit.
 
+#### `no_fast_list`
+
+Turns off rclone's `--fast-list`, which swarf passes on every store sync and
+peer pull. Default `false` — that is, fast listing is **on**.
+
+An rclone sync stat-checks every file in the store, and without the flag
+rclone sends one listing request per directory. On a 12,000-file store that
+is ~28,000 round-trips, and it dominates the cycle: a no-op sync measured
+148s without the flag and 10s with it, against the same remote. Note that
+this is a count-of-files cost, not a bytes cost — dropping 10 GB of packfile
+out of that same store changed the 148s by about 12 seconds.
+
+`--fast-list` holds the listing in memory in the rclone child process,
+proportional to the number of objects rather than their size (tens of MB at
+15,000 objects). Set this to `true` if a remote holds so many objects that
+the listing no longer fits in RAM:
+
+```toml
+[sync]
+no_fast_list = true
+```
+
+Backends with no recursive-listing support ignore the flag, so leaving it on
+costs nothing there.
+
 ### `[auto_sweep]` section
 
 #### `paths`

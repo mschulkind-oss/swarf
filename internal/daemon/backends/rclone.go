@@ -15,7 +15,30 @@ import (
 type RcloneBackend struct {
 	Remote      string
 	MachineID   string
+	NoFastList  bool
 	remoteMkdir bool // true after we've confirmed/created our machine dir
+}
+
+// ListingFlags returns the rclone flags a full store sync needs for its
+// listing phase.
+//
+// A store sync stat-checks every file in the store, and without
+// --fast-list rclone issues one listing request per directory: ~28k
+// round-trips for a 12k-file store, which measured 148s per no-op cycle
+// against 10s with the flag on the same remote. Bytes were never the
+// bottleneck — dropping 10 GB of packfile out of that store bought 12
+// seconds; the flag bought 138.
+//
+// The cost is memory in the rclone child process, and it scales with the
+// number of objects listed rather than their size (tens of MB at 15k
+// objects). A remote holding millions of objects can turn it off with
+// no_fast_list = true under [sync]. Backends with no recursive listing
+// ignore the flag rather than failing on it.
+func ListingFlags(noFastList bool) []string {
+	if noFastList {
+		return nil
+	}
+	return []string{"--fast-list"}
 }
 
 // MachineSuffix is the path inside the rclone remote under which each machine
@@ -94,7 +117,8 @@ func (r *RcloneBackend) Sync(ctx context.Context, storePath string) SyncResult {
 	// here, `rclone sync` (destructive) is safe — nothing on the remote could
 	// have legitimate content from another writer.
 	slog.Info("sync: rclone sync starting", "from", storePath, "to", target)
-	cmd := exec.CommandContext(ctx, "rclone", "sync", storePath, target, "-v")
+	args := append([]string{"sync", storePath, target, "-v"}, ListingFlags(r.NoFastList)...)
+	cmd := exec.CommandContext(ctx, "rclone", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := fmt.Sprintf("rclone sync failed: %s", strings.TrimSpace(string(out)))

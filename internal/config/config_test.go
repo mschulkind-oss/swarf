@@ -197,3 +197,20 @@ func TestEffectiveMachineID(t *testing.T) {
 		t.Fatalf("nil receiver: expected %q, got %q", DefaultMachineID(), id)
 	}
 }
+
+// Fast listing is on unless the config says otherwise: a config.toml
+// written before the key existed has no [sync] no_fast_list, and must
+// still get the flag that takes a sync cycle from 148s to 10s.
+func TestNoFastListDefaultsToOff(t *testing.T) {
+	setupTestConfig(t)
+	os.WriteFile(paths.GlobalConfigTOML,
+		[]byte("[sync]\nbackend = \"rclone\"\nremote = \"hs:swarf-store\"\ndebounce = \"5s\"\n"), 0o644)
+	if got := ReadGlobalConfig(); got.NoFastList {
+		t.Fatal("a config without the key must leave fast listing enabled")
+	}
+
+	WriteGlobalConfig(&GlobalConfig{Backend: "rclone", Remote: "hs:swarf-store", Debounce: "5s", NoFastList: true})
+	if got := ReadGlobalConfig(); !got.NoFastList {
+		t.Fatal("no_fast_list = true must survive a write/read round trip")
+	}
+}

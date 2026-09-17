@@ -136,7 +136,7 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 		if peer == self {
 			continue
 		}
-		if err := pullFromPeer(gc.Remote, peer, result); err != nil {
+		if err := pullFromPeer(gc, peer, result); err != nil {
 			console.Warn(fmt.Sprintf("peer %s: %v", peer, err))
 			continue
 		}
@@ -302,14 +302,14 @@ func peerRefName(peer string) string {
 
 // pullFromPeer refreshes the peer's cache, computes a file delta against the
 // last-seen peer HEAD, and applies it to the local store.
-func pullFromPeer(remote, peer string, result *Result) error {
+func pullFromPeer(gc *config.GlobalConfig, peer string, result *Result) error {
 	peerCache := paths.PeerCacheDir(peer)
 	if err := os.MkdirAll(peerCache, 0o755); err != nil {
 		return fmt.Errorf("mkdir peer cache: %w", err)
 	}
-	peerRemote := strings.TrimRight(remote, "/") + "/" + backends.MachineSuffix + "/" + peer
+	peerRemote := strings.TrimRight(gc.Remote, "/") + "/" + backends.MachineSuffix + "/" + peer
 	slog.Info("pull: copying peer", "peer", peer, "from", peerRemote, "to", peerCache)
-	if err := runRcloneSyncStreaming(peerRemote, peerCache); err != nil {
+	if err := runRcloneSyncStreaming(peerRemote, peerCache, backends.ListingFlags(gc.NoFastList)...); err != nil {
 		return fmt.Errorf("rclone sync from peer: %w", err)
 	}
 
@@ -588,8 +588,8 @@ func writeConflictSidecar(rel, peer, ts string, peerContent []byte) (string, err
 // blocks a path that now needs to be a directory), we wipe the
 // destination and retry once. This recovers peer caches left over from
 // older layouts without the user having to clean up by hand.
-func runRcloneSyncStreaming(src, dst string) error {
-	if err := runRcloneSyncOnce(src, dst); err == nil {
+func runRcloneSyncStreaming(src, dst string, flags ...string) error {
+	if err := runRcloneSyncOnce(src, dst, flags...); err == nil {
 		return nil
 	} else if !isNotADirectoryError(err) {
 		return err
@@ -601,11 +601,11 @@ func runRcloneSyncStreaming(src, dst string) error {
 	if mkErr := os.MkdirAll(dst, 0o755); mkErr != nil {
 		return fmt.Errorf("recreate peer cache %s: %w", dst, mkErr)
 	}
-	return runRcloneSyncOnce(src, dst)
+	return runRcloneSyncOnce(src, dst, flags...)
 }
 
-func runRcloneSyncOnce(src, dst string) error {
-	args := []string{"sync", src, dst, "-v"}
+func runRcloneSyncOnce(src, dst string, flags ...string) error {
+	args := append([]string{"sync", src, dst, "-v"}, flags...)
 	if term.IsTerminal(int(os.Stderr.Fd())) {
 		args = append(args, "--progress", "--stats=1s")
 	} else {

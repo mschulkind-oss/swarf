@@ -74,7 +74,11 @@ func Run(ctx context.Context) error {
 
 func makeBackend(gc *config.GlobalConfig) backends.SyncBackend {
 	if gc.Backend == "rclone" {
-		return &backends.RcloneBackend{Remote: gc.Remote, MachineID: config.EnsureMachineID()}
+		return &backends.RcloneBackend{
+			Remote:     gc.Remote,
+			MachineID:  config.EnsureMachineID(),
+			NoFastList: gc.NoFastList,
+		}
 	}
 	return &backends.GitBackend{}
 }
