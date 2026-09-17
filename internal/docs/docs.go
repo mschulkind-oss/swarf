@@ -283,6 +283,12 @@ const daemonDoc = `
 
   PID file:   ~/.config/swarf/daemon.pid
   Log file:   ~/.config/swarf/daemon.log
+
+  Under a service manager the same lines also go to stderr, so the
+  supervisor's own log works:
+
+    journalctl --user -u swarf -f          (systemd)
+    ~/Library/Logs/swarf/swarf.err.log     (launchd)
 `
 
 const backendsDoc = `
