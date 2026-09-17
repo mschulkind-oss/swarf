@@ -130,6 +130,18 @@ func slugifyMachineID(s string) string {
 	return out
 }
 
+// EffectiveMachineID returns the machine ID this machine syncs under
+// without writing anything: the configured [machine].id, or else the
+// hostname default that EnsureMachineID would persist. Reporting code
+// (swarf status) uses this so asking about sync state never mutates
+// config. A nil receiver answers with the default.
+func (c *GlobalConfig) EffectiveMachineID() string {
+	if c == nil || c.MachineID == "" {
+		return DefaultMachineID()
+	}
+	return c.MachineID
+}
+
 // EnsureMachineID returns the configured machine ID, writing a default based
 // on the hostname to config if one is not already set. Safe to call repeatedly.
 func EnsureMachineID() string {

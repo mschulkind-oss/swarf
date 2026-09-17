@@ -174,3 +174,26 @@ func TestAutoSweepConfig(t *testing.T) {
 		t.Fatalf("expected empty auto_sweep, got %v", got.AutoSweep)
 	}
 }
+
+func TestEffectiveMachineID(t *testing.T) {
+	setupTestConfig(t)
+	gc := &GlobalConfig{Backend: "rclone", Remote: "r:p", MachineID: "deliberate"}
+	if id := gc.EffectiveMachineID(); id != "deliberate" {
+		t.Fatalf("expected 'deliberate', got %q", id)
+	}
+
+	// Unset: the hostname default EnsureMachineID would have persisted,
+	// and — the point of the method — nothing written to disk.
+	gc.MachineID = ""
+	if id := gc.EffectiveMachineID(); id != DefaultMachineID() {
+		t.Fatalf("expected the hostname default %q, got %q", DefaultMachineID(), id)
+	}
+	if _, err := os.Stat(paths.GlobalConfigTOML); err == nil {
+		t.Fatal("EffectiveMachineID must not write config")
+	}
+
+	var nilConfig *GlobalConfig
+	if id := nilConfig.EffectiveMachineID(); id != DefaultMachineID() {
+		t.Fatalf("nil receiver: expected %q, got %q", DefaultMachineID(), id)
+	}
+}

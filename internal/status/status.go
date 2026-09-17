@@ -1,6 +1,7 @@
 package status
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -118,7 +119,7 @@ func remoteVerifyRows(gc *config.GlobalConfig) [][]string {
 		return verifyGitRemote()
 	}
 	if gc.Backend == "rclone" {
-		return verifyRcloneRemote(gc.Remote)
+		return verifyRcloneRemote(gc)
 	}
 	return [][]string{{"Remote sync", redStyle.Render("unknown backend: " + gc.Backend)}}
 }
@@ -144,24 +145,39 @@ func verifyGitRemote() [][]string {
 	}
 }
 
-func verifyRcloneRemote(remote string) [][]string {
+func verifyRcloneRemote(gc *config.GlobalConfig) [][]string {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		return [][]string{{"Remote sync", redStyle.Render("rclone not installed — cannot verify")}}
 	}
 
-	// Count local files (excluding .git internals).
-	localCount, localSize := countLocalStore()
+	// Size the subtree this machine owns, never the remote root. Each
+	// machine syncing to a shared remote writes only under its own
+	// machines/<id>/ (see backends.MachineRemote), so the root sums every
+	// machine's store and can never equal one machine's local count —
+	// which read as a permanent "mismatch, may still be syncing".
+	target := backends.MachineRemote(gc.Remote, gc.EffectiveMachineID())
 
-	// Count remote files.
-	cmd := exec.Command("rclone", "size", remote, "--json")
-	out, err := cmd.CombinedOutput()
+	// The whole store, .git included: rclone syncs the store directory
+	// wholesale, so its history is part of what has to land remotely.
+	localCount, localSize := countLocalStore()
+	localStr := fmt.Sprintf("%d files, %s", localCount, humanSize(localSize))
+
+	out, errMsg, err := rcloneSize(target)
 	if err != nil {
-		errMsg := strings.TrimSpace(string(out))
-		if errMsg == "" {
-			errMsg = err.Error()
+		// Two very different causes, and reporting both as an outage is
+		// what made a machine that had simply never pushed look like a
+		// broken remote. If the root lists, the remote is fine and it is
+		// our subtree that isn't there yet.
+		if remoteListable(gc.Remote) {
+			return [][]string{
+				{"Remote sync", yellowStyle.Render("this machine's store is not on the remote yet")},
+				{"", dimStyle.Render(target)},
+				{"", dimStyle.Render(fmt.Sprintf("local: %s — the daemon pushes on the next change.", localStr))},
+			}
 		}
 		return [][]string{
 			{"Remote sync", redStyle.Render("cannot reach remote")},
+			{"", dimStyle.Render(target)},
 			{"", dimStyle.Render(errMsg)},
 		}
 	}
@@ -177,24 +193,56 @@ func verifyRcloneRemote(remote string) [][]string {
 
 	if rs.Count == 0 {
 		return [][]string{
-			{"Remote sync", redStyle.Render("remote is empty — no data has been uploaded yet")},
+			{"Remote sync", redStyle.Render("this machine's remote folder is empty — nothing uploaded yet")},
+			{"", dimStyle.Render(target)},
 			{"", dimStyle.Render("Check daemon logs. The daemon may not have synced yet.")},
 		}
 	}
 
 	remoteStr := fmt.Sprintf("%d files, %s", rs.Count, humanSize(rs.Bytes))
-	localStr := fmt.Sprintf("%d files, %s", localCount, humanSize(localSize))
 
 	if localCount == rs.Count {
 		return [][]string{
 			{"Remote sync", greenStyle.Render(fmt.Sprintf("verified — %s on remote", remoteStr))},
-			{"", dimStyle.Render(fmt.Sprintf("local: %s", localStr))},
+			{"", dimStyle.Render(fmt.Sprintf("%s — local: %s", target, localStr))},
 		}
 	}
 	return [][]string{
 		{"Remote sync", yellowStyle.Render(fmt.Sprintf("mismatch — remote has %s, local has %s", remoteStr, localStr))},
+		{"", dimStyle.Render(target)},
 		{"", dimStyle.Render("The daemon may still be syncing. Check again shortly.")},
 	}
+}
+
+// rcloneSize runs `rclone size --json` on one remote path, returning raw
+// stdout plus a human-readable message for the failure case.
+//
+// Stdout is captured on its own rather than with CombinedOutput: rclone
+// writes notices to stderr — a missing rclone.conf alone produces one —
+// and folding those in front of the JSON turned every reading into
+// "remote reachable but cannot parse size".
+func rcloneSize(remotePath string) (stdout []byte, errMsg string, err error) {
+	cmd := exec.Command("rclone", "size", remotePath, "--json")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, msg, err
+	}
+	return out, "", nil
+}
+
+// remoteListable reports whether the remote root can be listed at all —
+// the cheap way to tell an unreachable remote from a reachable one we
+// have not pushed into. --dirs-only lists no files, and this only runs
+// once we already have a failure to explain.
+func remoteListable(remote string) bool {
+	cmd := exec.Command("rclone", "lsf", "--dirs-only", strings.TrimRight(remote, "/"))
+	return cmd.Run() == nil
 }
 
 // countUnpushedCommits counts local commits not yet on the remote.

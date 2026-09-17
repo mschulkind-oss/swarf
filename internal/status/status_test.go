@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
@@ -123,5 +124,118 @@ func TestGitLogRepo(t *testing.T) {
 	got := gitLog(paths.StoreDir)
 	if got == "" {
 		t.Fatal("expected non-empty git log")
+	}
+}
+
+// requireRclone skips a test that shells out to rclone when the binary
+// isn't installed. rclone treats a plain filesystem path as a remote, so
+// these fixtures need no cloud account and no rclone.conf.
+func requireRclone(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone not installed")
+	}
+}
+
+// rcloneSync pushes src into dst the way RcloneBackend.Sync does, so the
+// fixture remote holds exactly what a real push would have left there.
+func rcloneSync(t *testing.T, src, dst string) {
+	t.Helper()
+	if out, err := exec.Command("rclone", "sync", src, dst).CombinedOutput(); err != nil {
+		t.Fatalf("rclone sync %s %s: %v\n%s", src, dst, err, out)
+	}
+}
+
+func rowsText(rows [][]string) string {
+	var b strings.Builder
+	for _, r := range rows {
+		b.WriteString(strings.Join(r, " ") + "\n")
+	}
+	return b.String()
+}
+
+// TestVerifyRcloneRemoteScopedToThisMachine pins the multi-machine false
+// alarm: rclone only ever syncs the store into <remote>/machines/<id>, so
+// sizing <remote> itself sums every machine's subtree and the row claimed
+// "mismatch — the daemon may still be syncing" forever on any host whose
+// remote had a second machine in it.
+func TestVerifyRcloneRemoteScopedToThisMachine(t *testing.T) {
+	requireRclone(t)
+	testutil.InitializedSwarf(t)
+	os.WriteFile(filepath.Join(paths.StoreDir, "one.txt"), []byte("hello"), 0o644)
+
+	remote := t.TempDir()
+	gc := &config.GlobalConfig{Backend: "rclone", Remote: remote, MachineID: "thisbox"}
+	mine := filepath.Join(remote, "machines", "thisbox")
+	rcloneSync(t, paths.StoreDir, mine)
+
+	// A second machine's subtree. It shares the bucket but is not ours,
+	// and must not count toward what we pushed.
+	peer := filepath.Join(remote, "machines", "otherbox")
+	os.MkdirAll(peer, 0o755)
+	for _, name := range []string{"a", "b", "c"} {
+		os.WriteFile(filepath.Join(peer, name), []byte("peer data"), 0o644)
+	}
+
+	got := rowsText(remoteVerifyRows(gc))
+	if !strings.Contains(got, "verified") {
+		t.Fatalf("expected the machine subtree to verify, got:\n%s", got)
+	}
+	if !strings.Contains(got, mine) {
+		t.Errorf("expected the compared remote path %q in the output, got:\n%s", mine, got)
+	}
+}
+
+// TestVerifyRcloneRemoteMismatchInOwnSubtree is the other half: a real
+// shortfall inside our own subtree still has to report as one.
+func TestVerifyRcloneRemoteMismatchInOwnSubtree(t *testing.T) {
+	requireRclone(t)
+	testutil.InitializedSwarf(t)
+	remote := t.TempDir()
+	gc := &config.GlobalConfig{Backend: "rclone", Remote: remote, MachineID: "thisbox"}
+	rcloneSync(t, paths.StoreDir, filepath.Join(remote, "machines", "thisbox"))
+
+	// Written after the push: the remote is genuinely behind now.
+	os.WriteFile(filepath.Join(paths.StoreDir, "unpushed.txt"), []byte("new"), 0o644)
+
+	got := rowsText(remoteVerifyRows(gc))
+	if !strings.Contains(got, "mismatch") {
+		t.Fatalf("expected a mismatch for an unpushed file, got:\n%s", got)
+	}
+}
+
+// TestVerifyRcloneRemoteNotPushedYet distinguishes "this machine has not
+// pushed" from "the remote is unreachable". Before scoping, our subtree
+// was never the thing being sized, so this case could not arise; now a
+// reachable remote with no subtree of ours must not read as an outage.
+func TestVerifyRcloneRemoteNotPushedYet(t *testing.T) {
+	requireRclone(t)
+	testutil.InitializedSwarf(t)
+	remote := t.TempDir()
+	os.MkdirAll(filepath.Join(remote, "machines", "otherbox"), 0o755)
+	os.WriteFile(filepath.Join(remote, "machines", "otherbox", "a"), []byte("x"), 0o644)
+
+	gc := &config.GlobalConfig{Backend: "rclone", Remote: remote, MachineID: "thisbox"}
+	got := rowsText(remoteVerifyRows(gc))
+	if strings.Contains(got, "cannot reach remote") {
+		t.Fatalf("a reachable remote must not read as unreachable, got:\n%s", got)
+	}
+	if !strings.Contains(got, "not on the remote yet") {
+		t.Fatalf("expected a 'not pushed yet' report, got:\n%s", got)
+	}
+}
+
+// TestVerifyRcloneRemoteUnreachable keeps the genuine outage reporting as one.
+func TestVerifyRcloneRemoteUnreachable(t *testing.T) {
+	requireRclone(t)
+	testutil.InitializedSwarf(t)
+	gc := &config.GlobalConfig{
+		Backend:   "rclone",
+		Remote:    filepath.Join(t.TempDir(), "no-such-remote"),
+		MachineID: "thisbox",
+	}
+	got := rowsText(remoteVerifyRows(gc))
+	if !strings.Contains(got, "cannot reach remote") {
+		t.Fatalf("expected an unreachable report, got:\n%s", got)
 	}
 }
