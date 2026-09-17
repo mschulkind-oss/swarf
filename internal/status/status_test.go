@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
@@ -237,5 +238,36 @@ func TestVerifyRcloneRemoteUnreachable(t *testing.T) {
 	got := rowsText(remoteVerifyRows(gc))
 	if !strings.Contains(got, "cannot reach remote") {
 		t.Fatalf("expected an unreachable report, got:\n%s", got)
+	}
+}
+
+// TestCountPendingFilesAfterMirror is the reported symptom: "Pending 12
+// file(s) not yet committed" against a store whose git status was empty.
+// A drawer holding a symlink — the shape swarf's own sweep/link layout
+// leaves everywhere — was counted as pending on every single run.
+func TestCountPendingFilesAfterMirror(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	slug := filepath.Base(repo)
+	config.RegisterDrawer(slug, repo)
+
+	swarfDir := paths.SwarfDir(repo)
+	os.WriteFile(filepath.Join(swarfDir, "notes.md"), []byte("notes"), 0o644)
+
+	// A swept file in .links/ and the symlink that projects it, which is
+	// what a drawer actually looks like after `swarf sweep`.
+	linked := filepath.Join(paths.LinksDir(repo), "config.jsonc")
+	os.WriteFile(linked, []byte("{ // long enough to differ from the link's own size\n}\n"), 0o644)
+	os.Symlink(linked, filepath.Join(swarfDir, "config.jsonc"))
+
+	if err := mirror.TrackedDir(swarfDir, filepath.Join(paths.StoreDir, slug), paths.ProjectManifest(slug)); err != nil {
+		t.Fatalf("mirror: %v", err)
+	}
+	if got := countPendingFiles(); got != 0 {
+		t.Fatalf("expected 0 pending right after a mirror pass, got %d", got)
+	}
+
+	os.WriteFile(filepath.Join(swarfDir, "fresh.md"), []byte("not mirrored yet"), 0o644)
+	if got := countPendingFiles(); got != 1 {
+		t.Fatalf("expected the unmirrored file to be pending, got %d", got)
 	}
 }

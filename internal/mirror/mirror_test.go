@@ -179,3 +179,91 @@ func assertFile(t *testing.T, path, want string) {
 		t.Fatalf("%s: got %q, want %q", path, string(data), want)
 	}
 }
+
+// PendingFiles must answer for the copy pass, not for a lookalike walk of
+// its own. Every case below is one where a hand-rolled size/mtime compare
+// disagrees with what the mirror actually does, and each disagreement is
+// permanent: the reported file never becomes un-pending, because no copy
+// is ever coming.
+
+func TestPendingFilesZeroAfterMirror(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	external := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "m.txt")
+
+	os.WriteFile(filepath.Join(src, "plain.txt"), []byte("hello"), 0o644)
+	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
+	os.WriteFile(filepath.Join(src, "sub", "nested.txt"), []byte("nested"), 0o644)
+	// A symlink to a file outside src — the mirror copies the target's
+	// bytes, so dst holds a file far bigger than the link's own size.
+	os.WriteFile(filepath.Join(external, "real.txt"), []byte("linked content, much longer than the link"), 0o644)
+	os.Symlink(filepath.Join(external, "real.txt"), filepath.Join(src, "link.txt"))
+
+	if err := TrackedDir(src, dst, manifest); err != nil {
+		t.Fatalf("TrackedDir: %v", err)
+	}
+	if got := PendingFiles(src, dst); got != 0 {
+		t.Fatalf("nothing is pending right after a mirror pass, got %d", got)
+	}
+}
+
+func TestPendingFilesCountsUnmirroredWork(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "m.txt")
+
+	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644)
+	TrackedDir(src, dst, manifest)
+
+	os.WriteFile(filepath.Join(src, "new.txt"), []byte("brand new"), 0o644)
+	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a, now edited"), 0o644)
+
+	if got := PendingFiles(src, dst); got != 2 {
+		t.Fatalf("expected the new file and the edit to be pending, got %d", got)
+	}
+
+	TrackedDir(src, dst, manifest)
+	if got := PendingFiles(src, dst); got != 0 {
+		t.Fatalf("expected 0 pending after the mirror caught up, got %d", got)
+	}
+}
+
+func TestPendingFilesIgnoresBrokenSymlink(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "m.txt")
+
+	os.WriteFile(filepath.Join(src, "good.txt"), []byte("good"), 0o644)
+	os.Symlink(filepath.Join(src, "nonexistent"), filepath.Join(src, "broken"))
+	TrackedDir(src, dst, manifest)
+
+	// The mirror skips a broken link permanently, so pending would never
+	// clear if we counted it.
+	if got := PendingFiles(src, dst); got != 0 {
+		t.Fatalf("a broken symlink is not pending work, got %d", got)
+	}
+}
+
+func TestPendingFilesIgnoresSymlinkedDirectory(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	external := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "m.txt")
+
+	os.WriteFile(filepath.Join(external, "inner.txt"), []byte("x"), 0o644)
+	os.Symlink(external, filepath.Join(src, "dirlink"))
+	TrackedDir(src, dst, manifest)
+
+	// A link to a directory resolves to a directory, which the copy pass
+	// cannot write as a file. Not pending work either.
+	if got := PendingFiles(src, dst); got != 0 {
+		t.Fatalf("a symlinked directory is not pending work, got %d", got)
+	}
+}
+
+func TestPendingFilesMissingSource(t *testing.T) {
+	if got := PendingFiles(filepath.Join(t.TempDir(), "nope"), t.TempDir()); got != 0 {
+		t.Fatalf("a missing source has nothing pending, got %d", got)
+	}
+}

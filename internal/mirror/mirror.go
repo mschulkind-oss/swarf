@@ -70,10 +70,8 @@ func Dir(src, dst string) error {
 
 		// Skip when size + mtime match — cheap short-circuit that keeps
 		// repeated calls idempotent.
-		if dstInfo, err := os.Stat(target); err == nil {
-			if srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
-				return nil
-			}
+		if upToDate(srcInfo, target) {
+			return nil
 		}
 
 		data, err := os.ReadFile(path)
@@ -169,10 +167,8 @@ func TrackedDir(src, dst, manifestPath string) error {
 
 		newSet[rel] = struct{}{}
 
-		if dstInfo, err := os.Stat(target); err == nil {
-			if srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
-				return nil
-			}
+		if upToDate(srcInfo, target) {
+			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -212,6 +208,51 @@ func TrackedDir(src, dst, manifestPath string) error {
 		slog.Warn("mirror: writing manifest failed", "path", manifestPath, "err", err)
 	}
 	return lastErr
+}
+
+// upToDate reports whether target already holds what srcInfo describes.
+// Size plus "src is no newer" is the whole test — cheap enough to run on
+// every file of every pass, which is what keeps repeated mirrors
+// idempotent.
+//
+// srcInfo has to come from statResolvable rather than from the walk's own
+// directory entry: the walk reports a symlink as itself, and the mirror
+// copies the bytes the link points at.
+func upToDate(srcInfo os.FileInfo, target string) bool {
+	dstInfo, err := os.Stat(target)
+	if err != nil {
+		return false
+	}
+	return srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime())
+}
+
+// PendingFiles counts the files under src that a copy pass would write
+// into dst right now. It is the read-only half of the predicate Dir,
+// TrackedDir and CopyOnly copy by, exported so that code reporting sync
+// state (swarf status) cannot drift from the code doing the syncing.
+//
+// Entries the mirror will never copy are not pending: a broken symlink, a
+// link to a directory, anything unreadable. No copy is coming for those,
+// so counting them yields a number that can never reach zero — a
+// permanent false alarm. The copy pass logs them when it meets them,
+// which is the right place to surface a stuck file.
+func PendingFiles(src, dst string) int {
+	pending := 0
+	filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		srcInfo, err := statResolvable(path)
+		if err != nil || srcInfo.IsDir() {
+			return nil
+		}
+		rel, _ := filepath.Rel(src, path)
+		if !upToDate(srcInfo, filepath.Join(dst, rel)) {
+			pending++
+		}
+		return nil
+	})
+	return pending
 }
 
 // readManifest returns the set of paths previously written by
@@ -302,10 +343,8 @@ func CopyOnly(src, dst string) error {
 			slog.Debug("mirror: skipping unreadable entry", "path", path, "err", err)
 			return nil
 		}
-		if dstInfo, err := os.Stat(target); err == nil {
-			if srcInfo.Size() == dstInfo.Size() && !srcInfo.ModTime().After(dstInfo.ModTime()) {
-				return nil
-			}
+		if upToDate(srcInfo, target) {
+			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {

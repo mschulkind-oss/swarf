@@ -17,6 +17,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
+	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 )
 
@@ -286,34 +287,25 @@ func countUnpushedCommits(gc *config.GlobalConfig) int {
 	return 0
 }
 
-// countPendingFiles counts files in project swarf/ dirs that haven't been
-// mirrored to the store yet (new files or files with different size/mtime).
+// countPendingFiles counts files in project swarf/ dirs that the forward
+// mirror has not copied into the store yet.
+//
+// The count comes from mirror.PendingFiles rather than a walk of our own.
+// This used to compare size and mtime here, using the walk's own entry
+// info — which describes a symlink itself, while the mirror copies what
+// the link points at. Every symlink in a drawer therefore compared a
+// ~30-byte link against the copied file and reported as pending on every
+// run, so `swarf status` claimed files were uncommitted on a store whose
+// git status was empty, forever.
 func countPendingFiles() int {
 	drawers := config.ReadDrawers()
 	pending := 0
 	for _, d := range drawers {
 		src := paths.SwarfDir(d.Host)
-		dst := filepath.Join(paths.StoreDir, d.Slug)
 		if !paths.IsDir(src) {
 			continue
 		}
-		filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-			rel, _ := filepath.Rel(src, path)
-			target := filepath.Join(dst, rel)
-			dstInfo, dstErr := os.Stat(target)
-			if dstErr != nil {
-				// File doesn't exist in store yet.
-				pending++
-				return nil
-			}
-			if info.Size() != dstInfo.Size() || info.ModTime().After(dstInfo.ModTime()) {
-				pending++
-			}
-			return nil
-		})
+		pending += mirror.PendingFiles(src, filepath.Join(paths.StoreDir, d.Slug))
 	}
 	return pending
 }
