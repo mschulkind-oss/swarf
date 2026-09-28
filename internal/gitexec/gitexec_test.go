@@ -546,3 +546,25 @@ func TestUntrackUpstreams(t *testing.T) {
 		t.Error("untracking must not touch the local branch")
 	}
 }
+
+// After UntrackUpstreams, a push to or fetch from the remote does not
+// recreate remote-tracking branches: the clone's fetch refspec, which
+// git uses to update them opportunistically, is gone too.
+func TestUntrackUpstreamsStaysUntracked(t *testing.T) {
+	src := makeRepo(t)
+	execCmd(t, src, "git", "commit", "--allow-empty", "-m", "one")
+	clone := filepath.Join(t.TempDir(), "clone")
+	if err := Clone(src, clone); err != nil {
+		t.Fatal(err)
+	}
+	if err := UntrackUpstreams(clone, "origin"); err != nil {
+		t.Fatal(err)
+	}
+	execCmd(t, clone, "git", "push", "-q", "origin", "HEAD:refs/heads/machines/box")
+	if err := Fetch(clone, "origin"); err != nil {
+		t.Fatal(err)
+	}
+	if out, _ := runStdout(clone, "for-each-ref", "--format=%(refname)", "refs/remotes/"); strings.TrimSpace(out) != "" {
+		t.Errorf("a push or fetch recreated remote-tracking branches:\n%s", out)
+	}
+}

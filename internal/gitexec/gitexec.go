@@ -569,9 +569,14 @@ func CommitInfo(dir, commit string) (parents []string, message string, ok bool) 
 }
 
 // UntrackUpstreams stops every local branch from tracking a branch of
-// remote (it unsets each one's upstream) and deletes remote's
-// remote-tracking branches (refs/remotes/<remote>/).
+// remote (it unsets each one's upstream), removes remote's fetch
+// refspec (remote.<remote>.fetch), and deletes remote's remote-tracking
+// branches (refs/remotes/<remote>/). Without the refspec, which a clone
+// sets, a later push to or fetch from remote no longer recreates them.
 func UntrackUpstreams(dir, remote string) error {
+	if err := ConfigUnset(dir, "remote."+remote+".fetch"); err != nil {
+		return fmt.Errorf("remove the fetch refspec of %s: %w", remote, err)
+	}
 	out, err := runStdout(dir, "for-each-ref", "--format=%(refname:short) %(upstream:remotename)", "refs/heads/")
 	if err != nil {
 		return err
