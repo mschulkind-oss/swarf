@@ -66,6 +66,35 @@ func TestRetireLegacyWaitsForMachineBranch(t *testing.T) {
 	}
 }
 
+// A legacy branch that moved after the machine branch was pushed is not
+// retired while the machine branch lacks its new tip, even once the
+// store has fetched that tip: the legacy branch is still the remote's
+// only copy of the new commits.
+func TestRetireLegacyWaitsForMachineBranchToHoldNewTip(t *testing.T) {
+	f := newGitFixture(t)
+	f.legacyMain(t)
+	if res := (&GitBackend{MachineID: "box"}).Sync(context.Background(), paths.StoreDir); !res.Success {
+		t.Fatalf("sync: %s", res.Message)
+	}
+	// An older swarf pushes a new commit to main; this store fetches it
+	// (as a pull does) but has not pushed the machine branch since.
+	os.WriteFile(filepath.Join(paths.StoreDir, "later.md"), []byte("later"), 0o644)
+	git(t, paths.StoreDir, "add", "-A")
+	git(t, paths.StoreDir, "commit", "-q", "-m", "older swarf, later")
+	git(t, paths.StoreDir, "push", "-q", "origin", "HEAD:refs/heads/main")
+	tip := f.ref(t, "refs/heads/main")
+	if err := gitexec.UpdateRef(paths.StoreDir, LegacyRef("main"), tip); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := RetireLegacyBranches(context.Background(), paths.StoreDir, "box"); len(got) != 0 {
+		t.Errorf("nothing should be retired before the machine branch holds main's new tip, got %+v", got)
+	}
+	if got := f.ref(t, "refs/heads/main"); got != tip {
+		t.Errorf("remote main = %q, want it untouched at %q", got, tip)
+	}
+}
+
 // Once the machine branch holds the legacy tip, the legacy branch is
 // deleted from the remote and the store forgets it.
 func TestRetireLegacyDeletesBranch(t *testing.T) {
