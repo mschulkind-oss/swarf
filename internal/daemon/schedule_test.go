@@ -131,3 +131,38 @@ func (b *lockedBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// Stopping scheduled pulls ends the pull in progress and waits for it to
+// return, so the daemon never exits out from under a pull that is still
+// unwinding (releasing the sync lock, mirroring back what it applied).
+func TestStopScheduledPullsWaitsForPullInProgress(t *testing.T) {
+	started := make(chan struct{})
+	var finished atomic.Bool
+	stop := startScheduledPulls(context.Background(), 10*time.Millisecond, func(ctx context.Context) (*pull.Result, error) {
+		select {
+		case <-started:
+		default:
+			close(started)
+		}
+		<-ctx.Done()
+		time.Sleep(200 * time.Millisecond) // the pull unwinding
+		finished.Store(true)
+		return nil, ctx.Err()
+	})
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no scheduled pull started")
+	}
+
+	returned := make(chan struct{})
+	go func() { stop(); close(returned) }()
+	select {
+	case <-returned:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stop should end the pull in progress and return")
+	}
+	if !finished.Load() {
+		t.Fatal("stop returned before the pull in progress did")
+	}
+}

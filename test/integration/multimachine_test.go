@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1340,10 +1341,19 @@ func (m *machine) setSyncConfig(keys string) {
 	}
 }
 
-// startDaemon runs 'swarf daemon start --foreground' as this machine in
-// the background and returns a function that reads its log so far. The
-// daemon is stopped with SIGTERM when the test ends.
-func (m *machine) startDaemon() (log func() string) {
+// daemonProc is a 'swarf daemon start --foreground' running in the
+// background as one machine.
+type daemonProc struct {
+	t       *testing.T
+	cmd     *exec.Cmd
+	logPath string
+	exited  chan struct{}
+	once    sync.Once
+}
+
+// startDaemon starts this machine's daemon in the background. It is
+// stopped with SIGTERM when the test ends, if the test has not already.
+func (m *machine) startDaemon() *daemonProc {
 	m.t.Helper()
 	logPath := filepath.Join(m.t.TempDir(), "daemon.log")
 	f, err := os.Create(logPath)
@@ -1355,22 +1365,36 @@ func (m *machine) startDaemon() (log func() string) {
 	if err := cmd.Start(); err != nil {
 		m.t.Fatalf("start daemon: %v", err)
 	}
-	m.t.Cleanup(func() {
-		cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { cmd.Wait(); close(done) }()
+	d := &daemonProc{t: m.t, cmd: cmd, logPath: logPath, exited: make(chan struct{})}
+	go func() { cmd.Wait(); f.Close(); close(d.exited) }()
+	m.t.Cleanup(func() { d.stop(10 * time.Second) })
+	return d
+}
+
+// log returns the daemon's log so far.
+func (d *daemonProc) log() string {
+	data, _ := os.ReadFile(d.logPath)
+	return string(data)
+}
+
+// stop sends the daemon SIGTERM and waits up to timeout for it to exit.
+// A daemon still running then fails the test, and is killed. Returns
+// how long the daemon took to exit.
+func (d *daemonProc) stop(timeout time.Duration) time.Duration {
+	var took time.Duration
+	d.once.Do(func() {
+		start := time.Now()
+		d.cmd.Process.Signal(syscall.SIGTERM)
 		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			cmd.Process.Kill()
-			<-done
+		case <-d.exited:
+		case <-time.After(timeout):
+			d.t.Errorf("the daemon did not exit within %v of SIGTERM\n--- daemon log ---\n%s", timeout, d.log())
+			d.cmd.Process.Kill()
+			<-d.exited
 		}
-		f.Close()
+		took = time.Since(start)
 	})
-	return func() string {
-		data, _ := os.ReadFile(logPath)
-		return string(data)
-	}
+	return took
 }
 
 // With [sync] pull_interval set, the daemon pulls on its own: a file A
@@ -1390,7 +1414,7 @@ func TestMultiMachine_DaemonScheduledPull(t *testing.T) {
 	b.push()
 
 	b.setSyncConfig("backend = \"rclone\"\nremote = \"fake:store\"\ndebounce = \"1s\"\npull_interval = \"1s\"\n")
-	log := b.startDaemon()
+	d := b.startDaemon()
 
 	a.write("from-a.md", "pushed by A\n")
 	a.push()
@@ -1398,15 +1422,15 @@ func TestMultiMachine_DaemonScheduledPull(t *testing.T) {
 	deadline := time.Now().Add(30 * time.Second)
 	for !b.exists("from-a.md") {
 		if time.Now().After(deadline) {
-			t.Fatalf("B's daemon should pull A's new file on its own\n--- daemon log ---\n%s", log())
+			t.Fatalf("B's daemon should pull A's new file on its own\n--- daemon log ---\n%s", d.log())
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	if got := b.read("from-a.md"); got != "pushed by A\n" {
 		t.Errorf("B's project from-a.md = %q", got)
 	}
-	if !strings.Contains(log(), "Scheduled pull enabled") {
-		t.Errorf("the daemon should log that scheduled pull is on\n--- daemon log ---\n%s", log())
+	if !strings.Contains(d.log(), "Scheduled pull enabled") {
+		t.Errorf("the daemon should log that scheduled pull is on\n--- daemon log ---\n%s", d.log())
 	}
 }
 
@@ -1415,23 +1439,91 @@ func TestMultiMachine_DaemonScheduledPull(t *testing.T) {
 func TestMultiMachine_DaemonScheduledPullGitBackendNote(t *testing.T) {
 	m := newMachine(t, "a", t.TempDir())
 	m.setSyncConfig("backend = \"git\"\ndebounce = \"1s\"\npull_interval = \"1s\"\n")
-	log := m.startDaemon()
+	d := m.startDaemon()
 
 	const note = "not supported with the git backend"
 	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(log(), note) {
+	for !strings.Contains(d.log(), note) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the daemon should log that scheduled pull is unsupported\n--- daemon log ---\n%s", log())
+			t.Fatalf("the daemon should log that scheduled pull is unsupported\n--- daemon log ---\n%s", d.log())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	// Give a wrongly scheduled pull, or a repeated note, time to show.
 	time.Sleep(2500 * time.Millisecond)
-	out := log()
+	out := d.log()
 	if n := strings.Count(out, note); n != 1 {
 		t.Errorf("the note should be logged once, got %d\n--- daemon log ---\n%s", n, out)
 	}
 	if strings.Contains(out, "Scheduled pull enabled") || strings.Contains(out, "scheduled pull failed") {
 		t.Errorf("no pull should be scheduled with the git backend\n--- daemon log ---\n%s", out)
 	}
+}
+
+// A daemon told to stop (SIGTERM) while a scheduled pull is downloading
+// ends the download and exits promptly, leaving no rclone behind.
+func TestMultiMachine_DaemonStopsDuringScheduledPull(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.push()
+
+	// Every download from the remote stalls once its copy lands: the
+	// hook records the rclone's pid, and its own, then sleeps in place.
+	work := t.TempDir()
+	rclonePid, hookPid := filepath.Join(work, "rclone.pid"), filepath.Join(work, "hook.pid")
+	b.env = []string{fmt.Sprintf("FAKE_RCLONE_AFTER_DOWNLOAD=echo $PPID > '%s'; echo $$ > '%s'; exec sleep 60", rclonePid, hookPid)}
+	t.Cleanup(func() {
+		if pid := readPid(hookPid); pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	b.setSyncConfig("backend = \"rclone\"\nremote = \"fake:store\"\ndebounce = \"1s\"\npull_interval = \"1s\"\n")
+	d := b.startDaemon()
+
+	deadline := time.Now().Add(20 * time.Second)
+	for readPid(rclonePid) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no scheduled pull started a download\n--- daemon log ---\n%s", d.log())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if took := d.stop(5 * time.Second); took > 5*time.Second {
+		return // stop has already failed the test
+	}
+	if pid := readPid(rclonePid); processRunning(pid) {
+		t.Errorf("the scheduled pull's rclone (pid %d) is still running after the daemon exited", pid)
+	}
+}
+
+// readPid returns the pid written in file, or 0 if there is none yet.
+func readPid(file string) int {
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return 0
+	}
+	var pid int
+	fmt.Sscanf(string(data), "%d", &pid)
+	return pid
+}
+
+// processRunning reports whether pid is a live process, not a zombie
+// waiting to be reaped.
+func processRunning(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	// The state follows the parenthesized command name.
+	fields := strings.Fields(string(data[strings.LastIndexByte(string(data), ')')+1:]))
+	return len(fields) > 0 && fields[0] != "Z"
 }

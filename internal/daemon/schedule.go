@@ -30,6 +30,22 @@ func pullSchedule(gc *config.GlobalConfig) (time.Duration, string) {
 	return interval, ""
 }
 
+// startScheduledPulls runs runScheduledPulls in the background until
+// ctx ends or stop is called. stop ends the pull in progress, if any,
+// and returns once it has.
+func startScheduledPulls(ctx context.Context, interval time.Duration, pullOnce func(context.Context) (*pull.Result, error)) (stop func()) {
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runScheduledPulls(ctx, interval, pullOnce)
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
+
 // runScheduledPulls calls pullOnce every interval until ctx ends. Each
 // pull takes the sync lock itself (see pull.Run), so it never overlaps a
 // debounced sync cycle or a CLI push or pull; a slow pull delays the next

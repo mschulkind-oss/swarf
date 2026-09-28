@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -34,14 +33,6 @@ func Run(ctx context.Context) error {
 		duration = 5 * time.Second
 	}
 
-	// Scheduled pulls stop when the daemon does, however watchProjects
-	// returns. Deferred waits run last-in first-out, so cancel runs
-	// before the wait for the pull goroutine.
-	ctx, cancel := context.WithCancel(ctx)
-	var pulls sync.WaitGroup
-	defer pulls.Wait()
-	defer cancel()
-
 	backend := makeBackend(gc)
 	skip := mirror.SkipPatterns(gc.Exclude)
 	debouncer := NewDebouncer(duration, func() { syncCycle(ctx, backend, skip) })
@@ -53,13 +44,13 @@ func Run(ctx context.Context) error {
 	}
 	if interval > 0 {
 		slog.Info("Scheduled pull enabled", "every", interval)
-		pulls.Add(1)
-		go func() {
-			defer pulls.Done()
-			runScheduledPulls(ctx, interval, func(ctx context.Context) (*pull.Result, error) {
-				return pull.RunWithResult(ctx, pull.Options{})
-			})
-		}()
+		// Scheduled pulls stop when the daemon does, however
+		// watchProjects returns, and the daemon waits for a pull in
+		// progress to unwind before it exits.
+		stop := startScheduledPulls(ctx, interval, func(ctx context.Context) (*pull.Result, error) {
+			return pull.RunWithResult(ctx, pull.Options{})
+		})
+		defer stop()
 	}
 
 	return watchProjects(ctx, debouncer, skip)
