@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -213,6 +214,12 @@ func (m *machine) swarf(args ...string) (string, error) {
 
 func (m *machine) swarfIn(dir string, args ...string) (string, error) {
 	m.t.Helper()
+	out, err := m.command(dir, args...).CombinedOutput()
+	return string(out), err
+}
+
+// command is `swarf args...` run as this machine from dir, not started.
+func (m *machine) command(dir string, args ...string) *exec.Cmd {
 	cmd := exec.Command(swarfBin, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
@@ -223,8 +230,7 @@ func (m *machine) swarfIn(dir string, args ...string) (string, error) {
 		"PATH="+m.shimDir+":"+os.Getenv("PATH"),
 	)
 	cmd.Env = append(cmd.Env, m.env...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return cmd
 }
 
 // write writes content into project/swarf/<rel>. Creates parent dirs.
@@ -1257,5 +1263,111 @@ if grep -q EXIT '%[2]s'; then touch '%[3]s'; fi
 	}
 	if !strings.Contains(got, "sync lock") {
 		t.Fatalf("the push should say it is waiting for the sync lock\n--- push output ---\n%s", got)
+	}
+}
+
+// setSyncConfig replaces this machine's config.toml [sync] section keys
+// with the given ones (the [machine] id stays).
+func (m *machine) setSyncConfig(keys string) {
+	m.t.Helper()
+	body := "[sync]\n" + keys + "\n[machine]\nid = \"" + m.id + "\"\n"
+	if err := os.WriteFile(filepath.Join(m.home, ".config", "swarf", "config.toml"), []byte(body), 0o644); err != nil {
+		m.t.Fatal(err)
+	}
+}
+
+// startDaemon runs 'swarf daemon start --foreground' as this machine in
+// the background and returns a function that reads its log so far. The
+// daemon is stopped with SIGTERM when the test ends.
+func (m *machine) startDaemon() (log func() string) {
+	m.t.Helper()
+	logPath := filepath.Join(m.t.TempDir(), "daemon.log")
+	f, err := os.Create(logPath)
+	if err != nil {
+		m.t.Fatal(err)
+	}
+	cmd := m.command(m.project, "daemon", "start", "--foreground")
+	cmd.Stdout, cmd.Stderr = f, f
+	if err := cmd.Start(); err != nil {
+		m.t.Fatalf("start daemon: %v", err)
+	}
+	m.t.Cleanup(func() {
+		cmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan struct{})
+		go func() { cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			cmd.Process.Kill()
+			<-done
+		}
+		f.Close()
+	})
+	return func() string {
+		data, _ := os.ReadFile(logPath)
+		return string(data)
+	}
+}
+
+// With [sync] pull_interval set, the daemon pulls on its own: a file A
+// pushes reaches B's project with no 'swarf pull' on B.
+func TestMultiMachine_DaemonScheduledPull(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.push()
+
+	b.setSyncConfig("backend = \"rclone\"\nremote = \"fake:store\"\ndebounce = \"1s\"\npull_interval = \"1s\"\n")
+	log := b.startDaemon()
+
+	a.write("from-a.md", "pushed by A\n")
+	a.push()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for !b.exists("from-a.md") {
+		if time.Now().After(deadline) {
+			t.Fatalf("B's daemon should pull A's new file on its own\n--- daemon log ---\n%s", log())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := b.read("from-a.md"); got != "pushed by A\n" {
+		t.Errorf("B's project from-a.md = %q", got)
+	}
+	if !strings.Contains(log(), "Scheduled pull enabled") {
+		t.Errorf("the daemon should log that scheduled pull is on\n--- daemon log ---\n%s", log())
+	}
+}
+
+// With the git backend, a pull_interval is not scheduled: the daemon
+// says so once at startup.
+func TestMultiMachine_DaemonScheduledPullGitBackendNote(t *testing.T) {
+	m := newMachine(t, "a", t.TempDir())
+	m.setSyncConfig("backend = \"git\"\ndebounce = \"1s\"\npull_interval = \"1s\"\n")
+	log := m.startDaemon()
+
+	const note = "not supported with the git backend"
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(log(), note) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the daemon should log that scheduled pull is unsupported\n--- daemon log ---\n%s", log())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// Give a wrongly scheduled pull, or a repeated note, time to show.
+	time.Sleep(2500 * time.Millisecond)
+	out := log()
+	if n := strings.Count(out, note); n != 1 {
+		t.Errorf("the note should be logged once, got %d\n--- daemon log ---\n%s", n, out)
+	}
+	if strings.Contains(out, "Scheduled pull enabled") || strings.Contains(out, "scheduled pull failed") {
+		t.Errorf("no pull should be scheduled with the git backend\n--- daemon log ---\n%s", out)
 	}
 }
