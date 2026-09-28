@@ -693,7 +693,7 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 			if e.Status != "D" || isStoreMetadata(e.Path) {
 				continue
 			}
-			c, err := applyDelete(peer, lastSeen, e.Path, ts)
+			c, err := applyDelete(peer, lastSeen, peerHead, e.Path, ts)
 			if err != nil {
 				return err
 			}
@@ -732,7 +732,7 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 				// vs. "peer never had it"; skip.
 				continue
 			}
-			c, err := applyDelete(peer, effectiveOld, e.Path, ts)
+			c, err := applyDelete(peer, effectiveOld, peerHead, e.Path, ts)
 			if err != nil {
 				return err
 			}
@@ -835,23 +835,36 @@ func applyAddOrModify(peer, oldRef, seenOld, peerHead, rel, ts string) (sidecar 
 
 // peerHasVersionMatching reports whether the peer's history contains any
 // version of `rel` whose content equals `localContent`. When oldRef is
-// non-empty this boils down to a single ShowFile(oldRef); when oldRef is
-// empty (unrelated histories), we walk the peer's log for the file and
-// check each commit, so content-identical divergent histories still merge
-// cleanly.
+// non-empty that is the version at oldRef or any version the peer had
+// after it (see peerWentThrough); when oldRef is empty (unrelated
+// histories), we walk the peer's whole log for the file and check each
+// commit, so content-identical divergent histories still merge cleanly.
 func peerHasVersionMatching(oldRef, peerHead, rel string, localContent []byte) bool {
 	if oldRef != "" {
-		peerOld, err := gitexec.ShowFile(paths.StoreDir, oldRef, rel)
-		return err == nil && bytes.Equal(localContent, peerOld)
+		return peerWentThrough(oldRef, peerHead, rel, localContent)
 	}
 	// Union-mode path: walk peer history for this file.
 	return historyHasVersion(paths.StoreDir, peerHead, rel, localContent)
 }
 
-// historyHasVersion reports whether any commit reachable from head in the
-// repo at dir has `rel` with exactly `content`.
-func historyHasVersion(dir, head, rel string, content []byte) bool {
-	cmd := exec.Command("git", "-C", dir, "log", "--format=%H", head, "--", rel)
+// peerWentThrough reports whether the peer had `rel` with exactly
+// content at oldRef or at any commit after it up to peerHead. A local
+// copy that matches one of those is a state the peer moved on from, not
+// a divergent edit: most often the peer pulled this machine's edit and
+// then changed or deleted the file again, so only the later commits
+// have this machine's version.
+func peerWentThrough(oldRef, peerHead, rel string, content []byte) bool {
+	if peerOld, err := gitexec.ShowFile(paths.StoreDir, oldRef, rel); err == nil && bytes.Equal(content, peerOld) {
+		return true
+	}
+	return historyHasVersion(paths.StoreDir, oldRef+".."+peerHead, rel, content)
+}
+
+// historyHasVersion reports whether any commit in revs (a commit, whose
+// whole history is searched, or a range such as "a..b") in the repo at
+// dir has `rel` with exactly `content`.
+func historyHasVersion(dir, revs, rel string, content []byte) bool {
+	cmd := exec.Command("git", "-C", dir, "log", "--format=%H", revs, "--", rel)
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -868,11 +881,12 @@ func historyHasVersion(dir, head, rel string, content []byte) bool {
 	return false
 }
 
-// applyDelete removes a file locally if the local copy matches what the peer
-// had just before deleting it; otherwise the local content has diverged from
-// the version the peer deleted, so we keep ours and leave a sidecar with the
-// peer's pre-delete content for reference.
-func applyDelete(peer, oldRef, rel, ts string) (string, error) {
+// applyDelete removes a file locally if the local copy matches a version
+// the peer had between oldRef and deleting it at peerHead (see
+// peerWentThrough); otherwise the local content has diverged from every
+// version the peer deleted, so we keep ours and leave a sidecar with the
+// peer's content at oldRef for reference.
+func applyDelete(peer, oldRef, peerHead, rel, ts string) (string, error) {
 	localPath := filepath.Join(paths.StoreDir, rel)
 	localContent, err := os.ReadFile(localPath)
 	if err != nil {
@@ -890,7 +904,7 @@ func applyDelete(peer, oldRef, rel, ts string) (string, error) {
 		return writeConflictSidecar(rel, peer, ts, nil)
 	}
 
-	if bytes.Equal(localContent, preDelete) {
+	if peerWentThrough(oldRef, peerHead, rel, localContent) {
 		if err := os.Remove(localPath); err != nil {
 			return "", fmt.Errorf("remove %s: %w", rel, err)
 		}

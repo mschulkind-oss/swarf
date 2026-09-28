@@ -510,6 +510,71 @@ func TestMultiMachine_RoundTrip(t *testing.T) {
 	}
 }
 
+// REGRESSION: A pulls B's edit and then edits the file again. B still
+// has the version A pulled, which A's history went through after B's
+// last-seen ref, so B's pull applies A's newer edit cleanly. It used to
+// compare B's copy only with A's version at the last-seen ref and wrote
+// a spurious conflict sidecar.
+func TestMultiMachine_PeerEditOnTopOfOurEditIsClean(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("shared.md", "v1 from A\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.write("shared.md", "v2 from B\n")
+	b.push()
+
+	a.pull()
+	a.write("shared.md", "v3 from A\n")
+	a.push()
+
+	out := mustSwarf(t, b, "pull")
+	if got := b.read("shared.md"); got != "v3 from A\n" {
+		t.Errorf("B should get A's v3, got %q\n--- pull output ---\n%s", got, out)
+	}
+	if sidecars := findSidecars(t, b.project, "shared.md"); len(sidecars) != 0 {
+		t.Errorf("A's edit on top of B's is not a conflict, got sidecars %v", sidecars)
+	}
+}
+
+// The delete counterpart of TestMultiMachine_PeerEditOnTopOfOurEditIsClean:
+// A pulls B's edit and then deletes the file. B's copy is the version A
+// deleted, so B's pull deletes it too, with no sidecar.
+func TestMultiMachine_PeerDeleteOfOurEditIsClean(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("shared.md", "v1 from A\n")
+	a.write("kept.md", "stay\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.write("shared.md", "v2 from B\n")
+	b.push()
+
+	a.pull()
+	os.Remove(filepath.Join(a.project, "swarf", "shared.md"))
+	a.push()
+
+	out := mustSwarf(t, b, "pull")
+	if b.exists("shared.md") {
+		t.Errorf("A deleted the version B has, so B's pull should delete it\n--- pull output ---\n%s", out)
+	}
+	if sidecars := findSidecars(t, b.project, "shared.md"); len(sidecars) != 0 {
+		t.Errorf("A's delete of B's version is not a conflict, got sidecars %v", sidecars)
+	}
+}
+
 // Conflict: both edit shared.md without seeing each other first.
 func TestMultiMachine_ConflictingEdits(t *testing.T) {
 	fakeRemote := t.TempDir()
@@ -1792,7 +1857,14 @@ func TestMultiMachineGit_RoundTrip(t *testing.T) {
 	if got := a.read("shared.md"); got != "v2 from B\n" {
 		t.Fatalf("A after round-trip pull: got %q, want %q", got, "v2 from B\n")
 	}
-	if sidecars := findSidecars(t, a.project, "shared.md"); len(sidecars) != 0 {
+
+	a.write("shared.md", "v3 from A\n")
+	a.push()
+	b.pull()
+	if got := b.read("shared.md"); got != "v3 from A\n" {
+		t.Fatalf("B after second pull: got %q, want %q", got, "v3 from A\n")
+	}
+	if sidecars := findSidecars(t, b.project, "shared.md"); len(sidecars) != 0 {
 		t.Errorf("a clean round trip writes no sidecars, got %v", sidecars)
 	}
 }
