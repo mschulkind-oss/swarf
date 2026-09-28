@@ -60,6 +60,12 @@ using a peer tip commit, and make the per-peer function take the peer's tip
 keeps downloading the peer cache and fetching from it; only the reads move.
 The existing pull and multi-machine suites are the QA.
 
+One consequence needs care: the store keeps the last-seen commit's objects
+even after a peer rebuilds its store, where the peer cache lost them. So the
+last-seen ref is used only while it is an ancestor of the peer's tip;
+otherwise a plain pull fails that peer and a resync applies no deletes, as
+before. Tests pin both cases.
+
 ### 2. Git push to the machine branch
 
 - The git backend pushes `HEAD` to `refs/heads/machines/<machine_id>`,

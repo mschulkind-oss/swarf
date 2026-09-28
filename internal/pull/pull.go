@@ -461,10 +461,8 @@ func peerRefName(peer string) string {
 	return "refs/swarf-peers/" + peer
 }
 
-// pullFromPeer refreshes the peer's cache, computes a file delta against the
-// last-seen peer HEAD, and applies it to the local store. With resync it
-// applies the deletes the peer made since the last-seen ref, then the
-// peer's whole tree in content-union mode instead of the rest of the diff.
+// pullFromPeer refreshes the peer's cache, fetches the peer's objects from
+// it into the store, and merges the peer's tip with mergePeer.
 func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, resync bool, result *Result) error {
 	peerCache := paths.PeerCacheDir(peer)
 	if err := os.MkdirAll(peerCache, 0o755); err != nil {
@@ -478,8 +476,8 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 	result.applying = true
 
 	// Register the peer cache as a git remote so we can fetch its objects.
-	// Fetching makes ShowFile work for arbitrary commits in the peer's history
-	// (needed to recover the pre-delete content of a file the peer deleted).
+	// Fetching puts the peer's whole history in the store, which is where
+	// mergePeer reads every diff and file version from.
 	remoteName := "peer-" + peer
 	if gitexec.RemoteExists(paths.StoreDir, remoteName) {
 		if err := gitexec.SetRemoteURL(paths.StoreDir, remoteName, peerCache); err != nil {
@@ -493,8 +491,17 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 	if err := gitexec.FetchHead(paths.StoreDir, remoteName); err != nil {
 		return fmt.Errorf("fetch %s (peer-cache %s): %w", remoteName, peerCache, err)
 	}
+	return mergePeer(peer, gitexec.ReadRef(paths.StoreDir, "FETCH_HEAD"), resync, result)
+}
 
-	peerHead := gitexec.RevParseHEAD(peerCache)
+// mergePeer computes a file delta from the last-seen peer tip to peerHead
+// and applies it to the local store. peerHead and its history must already
+// be in the store's objects; every diff and file version is read from
+// there. peer names the peer in conflict sidecars, the commit message, and
+// its last-seen ref. With resync it applies the deletes the peer made
+// since the last-seen ref, then the peer's whole tree in content-union
+// mode instead of the rest of the diff.
+func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 	if peerHead == "" {
 		// Peer store exists but has no commits yet — nothing to pull.
 		return nil
@@ -503,6 +510,24 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 	lastSeen := gitexec.ReadRef(paths.StoreDir, peerRefName(peer))
 	if lastSeen == peerHead && !resync {
 		return nil
+	}
+
+	// The store keeps the objects of every peer tip it has pulled, so it
+	// can still read lastSeen after the peer rebuilt its store and dropped
+	// that commit from its history. A diff from it would then read every
+	// file the new history lacks as a peer delete, so lastSeen counts only
+	// while it is an ancestor of peerHead. A plain pull fails the peer
+	// without it; a resync unions the peer's tree and applies no deletes.
+	seenInHistory := false
+	if lastSeen != "" {
+		base, err := gitexec.MergeBase(paths.StoreDir, lastSeen, peerHead)
+		if err != nil && !resync {
+			return fmt.Errorf("merge-base: %w", err)
+		}
+		seenInHistory = err == nil && base == lastSeen
+	}
+	if lastSeen != "" && !seenInHistory && !resync {
+		return fmt.Errorf("diff peer: last-seen commit %s is not in the peer's history (the peer rebuilt its store)", lastSeen)
 	}
 
 	localHead := gitexec.RevParseHEAD(paths.StoreDir)
@@ -544,12 +569,12 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 		err     error
 	)
 	if unionMode {
-		entries, err = gitexec.DiffNameStatus(peerCache, "", peerHead)
+		entries, err = gitexec.DiffNameStatus(paths.StoreDir, "", peerHead)
 		if err != nil {
 			return fmt.Errorf("list peer tree: %w", err)
 		}
 	} else {
-		entries, err = gitexec.DiffNameStatus(peerCache, effectiveOld, peerHead)
+		entries, err = gitexec.DiffNameStatus(paths.StoreDir, effectiveOld, peerHead)
 		if err != nil {
 			return fmt.Errorf("diff peer: %w", err)
 		}
@@ -563,10 +588,8 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 	// (no ref yet, or the peer rebuilt its store) union mode falls back to
 	// searching history.
 	seenOld := ""
-	if resync && lastSeen != "" {
-		if base, err := gitexec.MergeBase(peerCache, lastSeen, peerHead); err == nil && base == lastSeen {
-			seenOld = lastSeen
-		}
+	if resync && seenInHistory {
+		seenOld = lastSeen
 	}
 
 	// A resync still owes the deletes the peer committed since lastSeen:
@@ -574,18 +597,21 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 	// no later pull would apply them. Apply them as a plain pull would —
 	// removing a file only when the local copy matches what the peer had
 	// just before deleting it.
-	if resync && lastSeen != "" && lastSeen != peerHead {
-		pending, err := gitexec.DiffNameStatus(peerCache, lastSeen, peerHead)
+	if resync && lastSeen != "" && !seenInHistory {
+		// lastSeen is not in the peer's history (its store was rebuilt),
+		// so its deletes since then cannot be known.
+		slog.Warn("pull: resync cannot list peer deletes since last pull; applying none", "peer", peer, "last_seen", lastSeen)
+	}
+	if resync && seenInHistory && lastSeen != peerHead {
+		pending, err := gitexec.DiffNameStatus(paths.StoreDir, lastSeen, peerHead)
 		if err != nil {
-			// lastSeen is not in the peer's history (its store was
-			// rebuilt), so its deletes since then cannot be known.
-			slog.Warn("pull: resync cannot list peer deletes since last pull; applying none", "peer", peer, "last_seen", lastSeen, "err", err)
+			return fmt.Errorf("diff peer deletes since last pull: %w", err)
 		}
 		for _, e := range pending {
 			if e.Status != "D" || isStoreMetadata(e.Path) {
 				continue
 			}
-			c, err := applyDelete(peer, peerCache, lastSeen, e.Path, ts)
+			c, err := applyDelete(peer, lastSeen, e.Path, ts)
 			if err != nil {
 				return err
 			}
@@ -605,7 +631,7 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 		}
 		switch e.Status {
 		case "A", "M", "T":
-			c, wrote, err := applyAddOrModify(peer, peerCache, effectiveOld, seenOld, peerHead, e.Path, ts)
+			c, wrote, err := applyAddOrModify(peer, effectiveOld, seenOld, peerHead, e.Path, ts)
 			if err != nil {
 				return err
 			}
@@ -624,7 +650,7 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 				// vs. "peer never had it"; skip.
 				continue
 			}
-			c, err := applyDelete(peer, peerCache, effectiveOld, e.Path, ts)
+			c, err := applyDelete(peer, effectiveOld, e.Path, ts)
 			if err != nil {
 				return err
 			}
@@ -667,15 +693,10 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 // change" — lastSeen or merge-base, whichever the caller resolved. In
 // union mode oldRef is empty; seenOld is then the last-seen ref when it
 // is known to be in the peer's history (a resync), or "" otherwise.
-func applyAddOrModify(peer, peerCache, oldRef, seenOld, peerHead, rel, ts string) (sidecar string, wrote bool, err error) {
-	peerContent, err := gitexec.ShowFile(peerCache, peerHead, rel)
+func applyAddOrModify(peer, oldRef, seenOld, peerHead, rel, ts string) (sidecar string, wrote bool, err error) {
+	peerContent, err := gitexec.ShowFile(paths.StoreDir, peerHead, rel)
 	if err != nil {
-		// The peer's working tree should still have this file since the diff
-		// came from peerHead; fall back to reading it directly.
-		peerContent, err = os.ReadFile(filepath.Join(peerCache, rel))
-		if err != nil {
-			return "", false, fmt.Errorf("read peer content for %s: %w", rel, err)
-		}
+		return "", false, fmt.Errorf("read peer content for %s: %w", rel, err)
 	}
 
 	localPath := filepath.Join(paths.StoreDir, rel)
@@ -698,7 +719,7 @@ func applyAddOrModify(peer, peerCache, oldRef, seenOld, peerHead, rel, ts string
 	// Three-way merge. Check whether local is at some historical state the
 	// peer has been through — if so, peer is strictly ahead and we apply
 	// their new content cleanly.
-	if peerHasVersionMatching(peerCache, oldRef, peerHead, rel, localContent) {
+	if peerHasVersionMatching(oldRef, peerHead, rel, localContent) {
 		if err := os.WriteFile(localPath, peerContent, 0o644); err != nil {
 			return "", false, fmt.Errorf("write %s: %w", rel, err)
 		}
@@ -715,7 +736,7 @@ func applyAddOrModify(peer, peerCache, oldRef, seenOld, peerHead, rel, ts string
 	// peer's current content.
 	if oldRef == "" {
 		if seenOld != "" {
-			if peerSeen, err := gitexec.ShowFile(peerCache, seenOld, rel); err == nil && bytes.Equal(peerSeen, peerContent) {
+			if peerSeen, err := gitexec.ShowFile(paths.StoreDir, seenOld, rel); err == nil && bytes.Equal(peerSeen, peerContent) {
 				return "", false, nil
 			}
 		} else if localHead := gitexec.RevParseHEAD(paths.StoreDir); localHead != "" &&
@@ -736,13 +757,13 @@ func applyAddOrModify(peer, peerCache, oldRef, seenOld, peerHead, rel, ts string
 // empty (unrelated histories), we walk the peer's log for the file and
 // check each commit, so content-identical divergent histories still merge
 // cleanly.
-func peerHasVersionMatching(peerCache, oldRef, peerHead, rel string, localContent []byte) bool {
+func peerHasVersionMatching(oldRef, peerHead, rel string, localContent []byte) bool {
 	if oldRef != "" {
-		peerOld, err := gitexec.ShowFile(peerCache, oldRef, rel)
+		peerOld, err := gitexec.ShowFile(paths.StoreDir, oldRef, rel)
 		return err == nil && bytes.Equal(localContent, peerOld)
 	}
 	// Union-mode path: walk peer history for this file.
-	return historyHasVersion(peerCache, peerHead, rel, localContent)
+	return historyHasVersion(paths.StoreDir, peerHead, rel, localContent)
 }
 
 // historyHasVersion reports whether any commit reachable from head in the
@@ -769,7 +790,7 @@ func historyHasVersion(dir, head, rel string, content []byte) bool {
 // had just before deleting it; otherwise the local content has diverged from
 // the version the peer deleted, so we keep ours and leave a sidecar with the
 // peer's pre-delete content for reference.
-func applyDelete(peer, peerCache, oldRef, rel, ts string) (string, error) {
+func applyDelete(peer, oldRef, rel, ts string) (string, error) {
 	localPath := filepath.Join(paths.StoreDir, rel)
 	localContent, err := os.ReadFile(localPath)
 	if err != nil {
@@ -781,7 +802,7 @@ func applyDelete(peer, peerCache, oldRef, rel, ts string) (string, error) {
 
 	// oldRef == "" only happens in bootstrap mode, which doesn't produce
 	// delete entries, so we always have a ref here.
-	preDelete, err := gitexec.ShowFile(peerCache, oldRef, rel)
+	preDelete, err := gitexec.ShowFile(paths.StoreDir, oldRef, rel)
 	if err != nil {
 		// Couldn't recover pre-delete content — be conservative, keep local.
 		return writeConflictSidecar(rel, peer, ts, nil)
