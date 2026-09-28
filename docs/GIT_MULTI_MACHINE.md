@@ -156,4 +156,50 @@ single-machine" statements and the git-only refusals that no longer apply.
 
 ## QA
 
-Filled in when the tasks land.
+Recorded on 2026-09-28, after tasks 1–5 landed.
+
+**Plan walk.** Every bullet of tasks 1–5 was matched to code and a test.
+Push and refusal: `internal/daemon/backends/git_test.go`
+(`TestGitSync*`), `TestPushGitTakeOver*`,
+`TestSyncCycleLogsGitMachineBranchRefusalOnce`. Status and doctor:
+`TestCountUnpushedCommitsGitMachineBranch`,
+`TestVerifyGitRemote*`, `TestCheckMachineOwnerGit*`,
+`TestCheckLegacyBranches*`. Pull, bootstrap, reinstall recovery and
+resync: `TestPullGit*` in `internal/pull`. Migration and retiring:
+`internal/daemon/backends/legacy_test.go`, `internal/pull/legacy_test.go`,
+`TestPushGitFoldsAndRetiresLegacyBranch`,
+`TestSyncCycleFoldsAndRetiresLegacyBranch`. End to end:
+`TestMultiMachineGit_*` in `test/integration/multimachine_test.go`,
+which uses a local bare repository as the remote. The documentation of
+task 5 is pinned by `TestNoTopicLimitsGitToOneMachine`.
+
+**Gate.** `go vet ./...` and `go test ./... -count=1`: every package
+passes.
+
+**Manual walk.** A script outside the repository built the binary, made
+a bare repository whose `main` held two commits of an older swarf's
+store, and set up two machines, `a` and `b`, each with its own `HOME`
+and XDG directories. Each ran `swarf init` and `swarf pull`, and both
+folded `main` in. Then `a` edited and pushed, `b` edited and pushed,
+and each pulled the other's edit. Next, both edited the same file and
+pushed, and `a`'s pull wrote a `.conflict.b.<timestamp>` sidecar while
+keeping `a`'s own version. `main` was retired on `a`'s first push.
+Finally, a third machine with `machine_id` `a` and commits of its own
+had its push refused, with `--take-over` named, and `machines/a` did
+not move. The walk ran twice, and every step passed both times:
+
+- With a bare remote whose `HEAD` names `master`, `main` was deleted.
+- With a bare remote whose `HEAD` names `main` and a pre-receive hook
+  that refuses deleting `main`, `main` became a tombstone.
+
+**Found and fixed.** A plain bare repository refuses deleting the branch
+its `HEAD` names, with no hook at all: git's `receive.denyDeleteCurrent`
+defaults to refusing. So on the usual self-hosted remote
+(`git init --bare -b main`), `main` becomes a tombstone rather than being
+deleted. swarf already handled this correctly, but no test covered it
+and the docs named only GitHub. `TestMultiMachineGit_LegacyBranchIsRemoteHEAD`
+now pins it, and README, Configuration and `swarf docs backends` name
+both cases.
+
+**Remaining gaps.** None found in the plan's scope. The items under
+"Out of scope" remain open.
