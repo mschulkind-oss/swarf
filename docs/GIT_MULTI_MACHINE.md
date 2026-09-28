@@ -6,6 +6,11 @@ manifest, peer cache, forward mirror, reverse mirror) is from
 [Sync Scenarios](SYNC_SCENARIOS.md); delete hold, resync, owner token, and
 sync lock are from [Sync Hardening](SYNC_HARDENING.md).
 
+> **Status.** Tasks 1–5 have landed. The next section describes the git
+> backend as it was before them; the user-facing description of what was
+> built is in [Configuration → Multi-machine git](CONFIGURATION.md#multi-machine-git)
+> and `swarf docs backends`.
+
 ## Why it doesn't work today
 
 - Every machine pushes the store's single branch to the same branch on the

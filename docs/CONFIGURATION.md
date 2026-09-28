@@ -39,10 +39,10 @@ backend = "git"                                      # "git" or "rclone"
 remote = "git@github.com:you/my-swarf-store.git"     # git URL or rclone remote:path
 debounce = "5s"                                      # wait after last change before syncing
 exclude = [".yolo/"]                                 # drawer paths never copied to the store
-pull_interval = "10m"                                # daemon pulls on this interval (rclone only; default off)
+pull_interval = "10m"                                # daemon pulls on this interval (default off)
 
 [machine]
-id = "laptop"                                        # stable name for this machine (rclone multi-machine)
+id = "laptop"                                        # stable name for this machine (multi-machine sync)
 
 [auto_sweep]
 paths = ["AGENTS.md", "CLAUDE.md"]                   # files to auto-sweep when they appear
@@ -65,16 +65,12 @@ The sync transport. Two options:
   too, so you get full commit history. Works with any rclone backend:
   Google Drive, Dropbox, S3, B2, SFTP, etc.
 
-Multi-machine sync needs the **rclone** backend. The git backend is
-single-machine for now: each machine pushes to its own branch on the
-remote, `machines/<machine_id>` (only that machine pushes it, and never
-with force), but `swarf pull` with the git backend is a plain `git pull`
-into the store that neither reads the other machines' branches nor copies
-anything into your projects. `pull_interval` and `swarf pull --resync`
-are rclone-only for the same reason. With git, `swarf push --take-over`
-force-pushes this machine's branch when a different store with the same
-`machine_id` pushed to it, discarding the commits only that store pushed
-there.
+Both backends sync any number of machines through one remote, with the
+same pull, conflict sidecars, `pull_interval`, `swarf pull --resync`, and
+`swarf push --take-over`. They differ in how they keep each machine's
+writes apart: rclone gives each machine its own subtree
+([Multi-machine rclone](#multi-machine-rclone)), git its own branch
+([Multi-machine git](#multi-machine-git)).
 
 #### `remote`
 
@@ -126,12 +122,14 @@ id = "desktop"
 
 Once set, **don't change it** — the machine's history lives under that
 id on the remote. If you do change it, you need to rename the folder
-manually on the remote.
+(rclone) or branch (git) manually on the remote.
 
 Every machine needs its **own** id. Two machines that share one (a
 generic hostname, or a `config.toml` copied with dotfiles) would upload
-over each other's subtree; the [owner token](#owner-token-and---take-over)
-stops the second one's upload and `swarf doctor` reports it.
+over each other's subtree or branch; the
+[owner token](#owner-token-and---take-over) (rclone) or the
+[machine branch check](#machine-branch-and---take-over) (git) stops the
+second one's upload, and `swarf doctor` reports it.
 
 ### `[sync]` section (cont.)
 
@@ -164,10 +162,6 @@ pull_interval = "10m"
 Same units as `debounce` (`ms`, `s`, `m`, `h`). Empty or `"0"` means off.
 A value that does not parse is logged in the daemon log and treated as
 off.
-
-Only the **rclone** backend pulls on a schedule. With the git backend the
-daemon logs once at startup that scheduled pull is not supported and does
-not schedule it.
 
 Each scheduled pull takes the [sync lock](#sync-lock), so it never
 overlaps a debounced sync or a `swarf push`/`swarf pull` you run by hand;
@@ -315,7 +309,11 @@ The store at `~/.local/share/swarf/` is a git repo that mirrors all projects:
 │       └── notes.md
 ├── README.md              ← auto-generated project table
 └── .git/
-    └── refs/swarf-peers/  ← one SHA per known peer (rclone backend only)
+    ├── refs/swarf-peers/       ← last commit merged in from each peer
+    ├── refs/swarf-machines/    ← git backend: the store's copy of each machine branch
+    ├── refs/swarf-pushed/      ← git backend: the commit last pushed to this machine's branch
+    ├── refs/swarf-legacy/      ← git backend: the store's copy of each legacy branch
+    └── refs/swarf-tombstones/  ← git backend: each tombstone seen on the remote
 ```
 
 Each project gets a subdirectory matching its slug. The daemon mirrors
@@ -323,14 +321,18 @@ file changes (including deletions) from project `swarf/` dirs into the
 store, then commits and pushes.
 
 The `refs/swarf-peers/<id>` namespace records the last commit this
-machine has merged in from each peer, and is only populated by the
-rclone backend's pull path. See "Multi-machine rclone" below for how
-those refs drive the file-delta pull.
+machine has merged in from each peer, for both backends. See
+"Multi-machine rclone" below for how those refs drive the file-delta
+pull. The other `refs/swarf-*` namespaces are the git backend's; see
+"Multi-machine git" below. None of them is a branch or tag, so a push
+never sends them.
 
 For rclone backends, the store is synced to the remote under
 `<remote>/machines/<machine_id>/` — working files are browseable directly
 in Google Drive (or wherever), and `.git/` is included for full commit
-history. See "Multi-machine rclone" below.
+history. See "Multi-machine rclone" below. For the git backend, the
+store is pushed to the branch `machines/<machine_id>`; that remote is an
+archive, not something meant to be browsed.
 
 ## Multi-machine rclone
 
@@ -456,6 +458,132 @@ avoid clobbering data. To migrate:
 `swarf doctor` detects the legacy layout and prints these steps whenever
 it sees `.git/` at the remote root.
 
+## Multi-machine git
+
+Two or more machines can share one git remote, the same way they share
+an rclone remote. Instead of a subtree, each machine gets a **machine
+branch**: the branch `machines/<machine_id>` on the remote (named after
+[`[machine] id`](#id)). Only the machine with that id pushes it, and
+never with force, except [`swarf push --take-over`](#machine-branch-and---take-over).
+
+```
+git@github.com:you/my-swarf-store.git
+  machines/laptop     ← only laptop pushes here
+  machines/desktop    ← only desktop pushes here
+```
+
+The remote is an archive, not something meant to be browsed. Once any
+branch from before machine branches is
+[retired](#migrating-from-a-single-branch-git-remote), the only live
+branches are machine branches, and a host's web view of the default
+branch shows at most a tombstone.
+
+**Push:** the daemon (and `swarf push`) commits the store and pushes
+`HEAD` to `machines/<own-id>`. The store records the commit it last
+pushed in `refs/swarf-pushed/<machine_id>`. `swarf status` counts
+unpushed commits against that ref without contacting the remote, and a
+sync pushes whenever `HEAD` has moved past it, so a push that failed
+(unreachable remote, bad credentials) is retried on the next cycle even
+with nothing new to commit.
+
+**Pull:** `swarf pull` fetches every machine branch into the store as
+`refs/swarf-machines/<machine_id>`, the store's copy of that branch as of
+the last fetch. These are not remote-tracking branches: `git branch -r`
+does not show them, branches gone from the remote are pruned, and no
+tags are fetched. Each machine branch other than this machine's is one
+peer, merged exactly as the rclone backend merges a peer (see
+[Multi-machine rclone](#multi-machine-rclone)): `refs/swarf-peers/<id>`
+last-seen refs, conflict sidecars, content-union for unrelated
+histories, [`--resync`](#resync-swarf-pull---resync), the reverse mirror
+into projects, and releasing a [delete hold](#delete-hold-and---allow-deletes).
+There is no peer cache: the fetch brings each peer's history straight
+into the store.
+
+**Bootstrap:** a fresh machine does not clone. `swarf pull` creates the
+store, adds `[sync] remote` as `origin`, fetches, and pulls every peer,
+so every peer file is an add. A store with no `origin` and an empty
+`[sync] remote` has nothing to pull from, and pull says so.
+
+**Reinstall recovery:** when the store has no commits and the remote
+already has this machine's own machine branch, pull starts the store
+from that branch (and records it as pushed) before it pulls the peers.
+A machine reinstalled under its old id gets its own data back, and its
+next push fast-forwards the branch instead of being refused as another
+store's. Files you saved in a project before that first pull are
+copied in after the store is started, so they are kept as local edits.
+`swarf doctor` reports a store with no commits whose machine branch is
+already on the remote, and says to run `swarf pull` before anything is
+committed.
+
+### Setting up a second git machine
+
+The same steps as for [rclone](#setting-up-a-second-machine): install
+swarf, run `swarf init` with the same git remote, run `swarf pull`, then
+`swarf init` in each project. Check that the new machine's
+`[machine] id` differs from every other machine's before its first sync.
+
+### Migrating from a single-branch git remote
+
+Before machine branches, every machine pushed its store to the one branch
+on the remote, usually `main` or `master`. Swarf now calls any branch on
+a git remote that is not under `machines/` a **legacy branch**. There are
+no manual steps: every git-backend `swarf pull`, `swarf push`, and daemon
+cycle migrates the remote.
+
+1. **Fold in.** Swarf fetches each legacy branch into the store as
+   `refs/swarf-legacy/<branch>`. If its tip is not in the store's history
+   yet, it is folded in. With no commits in the store, or `HEAD` an
+   ancestor of the tip, the store fast-forwards to the tip. Otherwise the
+   tip is applied as a peer's changes, with the same file rules and
+   conflict sidecars (named `<file>.conflict.<branch>.<timestamp>`, with
+   any `/` in the branch name turned into `-`), and committed as
+   `auto: fold in legacy branch <branch>` with the tip as a second
+   parent. Either way the tip is then an ancestor of `HEAD`, files the
+   store has that the tip lacks are kept as local edits, and the result
+   is copied into your projects. In a push or daemon cycle the fold runs
+   after that command's own forward mirror, so a project in a
+   [delete hold](#delete-hold-and---allow-deletes) stays held; only a
+   `swarf pull` restores held files.
+2. **Retire.** Once the machine branch has been pushed with the legacy
+   tip in its history, swarf **retires** the legacy branch: removes it
+   from the remote. It deletes the branch. If the remote refuses (GitHub
+   refuses deleting the default branch), it force-pushes a tombstone to
+   the branch instead. Both updates hold only while the branch still
+   points at the commit swarf folded in, so if a machine still running an
+   older swarf pushed to it in between, swarf leaves it this time and the
+   next pass folds in the new commits. A push retires right after it
+   pushes; a pull retires a legacy branch the machine branch already
+   holds.
+3. **Refused.** If the remote refuses the tombstone too, the branch
+   stays, swarf records the refusal, and the next pass tries again.
+
+A **tombstone** is a commit with no parents containing one file,
+`SWARF-BRANCHES.md`, which says the store uses per-machine branches and
+that this branch is intentionally empty. Its commit message ends with
+the trailer `Swarf-Tombstone: true`, which is how swarf recognizes it.
+Pull skips tombstones, and the store keeps each one it has seen at
+`refs/swarf-tombstones/<branch>`, so it is still recognized after
+`git gc`.
+
+The store also stops tracking `origin`: its local branch has no upstream
+and there are no remote-tracking branches. The local branch's name no
+longer matters, because a push always targets the machine branch.
+
+`swarf doctor` lists each legacy branch still waiting to be retired, and
+why: its commits are not folded into this store yet, the machine branch
+does not have them yet, it is ready to retire on the next pass, or the
+remote refused both deleting it and replacing it with a tombstone. Only
+the refusal fails the check; the others clear on the next pull or push.
+
+**Upgrade swarf on every machine that uses the remote.** A machine still
+running an older swarf keeps pushing to the legacy branch. While the
+branch is still there, the next pass on an upgraded machine folds its
+commits in. After a delete, its push creates the branch again, and the
+next upgraded pass folds it in and retires it again. After a tombstone,
+its push is rejected as a non-fast-forward and its `git pull` refuses
+the unrelated history, so nothing it writes is lost, but it stops
+syncing until it is upgraded.
+
 ## Sync safeguards
 
 Four mechanisms keep a mistake on one machine — a wiped directory, two
@@ -490,11 +618,10 @@ it appears, not every cycle; `swarf status` lists held projects under
 
 Two ways out:
 
-- **Restore the files.** With rclone, `swarf pull` copies them back from
-  the store and clears the hold (it also clears it if the files are gone
-  from the store too, because another machine deleted them). With git,
-  copy them back from `~/.local/share/swarf/<slug>/`; the next sync
-  clears the hold.
+- **Restore the files.** `swarf pull` copies them back from the store
+  and clears the hold (it also clears it if the files are gone from the
+  store too, because another machine deleted them). This works the same
+  with either backend.
 - **Confirm the deletes.** `swarf push --allow-deletes` applies the held
   deletes for that one push.
 
@@ -507,7 +634,8 @@ A plain pull applies only what each peer changed since the last pull
 files and committed the deletes, they do not come back while the peer
 stays unchanged. **Resync** — `swarf pull --resync` — ignores that
 last-seen ref and unions every file in each peer's current tree into the
-store, then advances the ref as a normal pull does. Rclone backend only.
+store, then advances the ref as a normal pull does. Both backends
+support it.
 
 - It never deletes a file because a peer lacks it. The only deletes it
   applies are those a peer made since the last pull, as a plain pull
@@ -552,7 +680,29 @@ once until it changes. Fix it one of two ways:
   copy out anything you need beforehand
   (`rclone copy <remote>/machines/<id> <dir>`).
 
-`--take-over` is rejected with the git backend, which has no owner token.
+### Machine branch and `--take-over`
+
+The git backend has no owner token. Its counterpart is the
+[machine branch](#multi-machine-git) itself: swarf never forces a push
+to it, so a push the remote rejects as not a fast-forward means the
+branch holds commits this store never had, pushed by a different store
+using the same `machine_id`. The push commits locally only and reports
+why. `swarf doctor` reports it as the same failing "machine owner" check
+(whenever the remote machine branch exists and is not an ancestor of the
+local `HEAD`), `swarf status` says the push is refused, and the daemon
+logs it once until it changes. A push that fails for any other reason
+(unreachable remote, bad credentials, a server hook) is reported as a
+failed sync and retried on the next cycle.
+
+The same two fixes apply:
+
+- **Different computers:** give this one its own `[machine] id`.
+- **This computer replaces the old one:** `swarf push --take-over`
+  force-pushes this store to the machine branch, discarding the commits
+  only the old store pushed there. `swarf pull` starts a store from the
+  machine branch only while the store has no commits, so copy out
+  anything you need beforehand
+  (`git fetch <remote> machines/<id>`).
 
 ### Sync lock
 

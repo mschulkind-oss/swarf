@@ -201,23 +201,27 @@ and want to find prior research, decisions, or patterns from other repos.
 
 ---
 
-### Remote Pull-Down (Multi-Peer — Done for Rclone)
+### Remote Pull-Down (Multi-Peer — Done)
 
 Swarf now supports multi-machine sync with a conflict-safe per-machine
-layout for the rclone backend:
+layout for both backends:
 
-- Each machine pushes to `<remote>/machines/<machine_id>/` exclusively.
-- `swarf pull` fetches every other machine's folder, runs `git fetch` +
-  `git merge --ff-only`, and falls back to a keep-both sidecar strategy
-  (`<path>.conflict.<peer>.<timestamp>`) when merges aren't fast-forward.
+- Each machine pushes exclusively to its own place on the remote: the
+  subtree `<remote>/machines/<machine_id>/` with rclone, the *machine
+  branch* (the branch `machines/<machine_id>`, which only that machine
+  pushes) with git.
+- `swarf pull` fetches every other machine's subtree or branch, applies
+  the file changes it made since the last pull, and falls back to a
+  keep-both sidecar strategy (`<path>.conflict.<peer>.<timestamp>`) when
+  both sides changed a file.
 - Histories never lose commits; working-tree conflicts are visible as
   files in the store for manual reconciliation.
 
 Addressed by [Sync Hardening](SYNC_HARDENING.md):
 
 - ~~**Automatic pull.**~~ Done: `[sync] pull_interval` (for example
-  `"10m"`) makes the daemon pull on that interval with the rclone
-  backend. Off by default.
+  `"10m"`) makes the daemon pull on that interval, with either backend.
+  Off by default.
 - ~~**Reverse-mirror to projects.**~~ Done: `swarf pull` ends by copying
   the store back into each project's `swarf/`, deleting a project file
   only when swarf synced it before and the store no longer has it.
@@ -234,15 +238,22 @@ Still open:
 - **Smarter conflict UX.** Today's keep-both sidecar is safe but
   coarse-grained. A `swarf resolve` helper that shows a unified diff
   and lets you pick hunks would be nicer for long files.
-- **Peer pruning.** When you retire a machine, its folder lingers on the
-  remote forever. `swarf peers rm <id>` would delete that folder and
-  drop the local peer cache.
+- **Peer pruning.** When you stop using a machine, its folder (rclone)
+  or machine branch (git) lingers on the remote forever.
+  `swarf peers rm <id>` would delete it and drop the local peer cache
+  and last-seen ref.
+- **Reinstall recovery for rclone.** A reinstalled git machine's first
+  pull starts its store from its own machine branch; an rclone machine
+  never pulls its own subtree back.
 
-**Git backend:** single-machine. Two machines would push their own
-histories to the one branch, so the second push fails, and a git-backend
-pull updates the store without mirroring into projects. `pull_interval`
-is rclone-only for that reason; multi-machine git is out of scope for
-now.
+**Git backend:** done in [Git Multi-Machine](GIT_MULTI_MACHINE.md). Each
+machine pushes to its own machine branch, `swarf pull` merges every other
+machine's branch with the same per-peer code as rclone, and the old
+shared branch (a *legacy branch*: any branch not under `machines/`) is
+folded into the store and removed from the remote, or replaced with a
+*tombstone* commit (holding only `SWARF-BRANCHES.md`) where the remote
+refuses the delete. The remote is an archive, not something to browse.
+Every machine sharing a remote must run the new swarf.
 
 ---
 

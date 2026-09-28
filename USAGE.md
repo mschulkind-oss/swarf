@@ -120,13 +120,13 @@ ls -la AGENTS.md
 # Should be a symlink -> .swarf/links/AGENTS.md
 ```
 
-### 3e. For git backend: push the initial branch
+### 3e. For git backend: no manual push
 
-```bash
-cd .swarf
-git push -u origin master
-cd ..
-```
+Swarf pushes the store to this machine's own branch on the remote,
+`machines/<machine_id>` (its machine branch; see
+[Configuration → Multi-machine git](docs/CONFIGURATION.md#multi-machine-git)).
+Don't push a branch by hand: any other branch on the remote is a legacy
+branch that swarf folds into the store and then removes.
 
 ### 3f. Start the daemon and test auto-sync
 
@@ -141,7 +141,8 @@ echo "New finding" >> .swarf/docs/research/notes.md
 sleep 7
 
 # For git backend — check the remote received the push
-git -C /tmp/test-swarf-remote log --oneline
+# (<machine_id> is [machine] id in ~/.config/swarf/config.toml)
+git -C /tmp/test-swarf-remote log --oneline machines/<machine_id>
 # Should show: auto: sync 1 file
 
 # For rclone backend — check files were synced
@@ -214,6 +215,6 @@ your-project/
 
 **Daemon exits immediately** — No drawers registered. Run `swarf init` in at least one project.
 
-**Push fails** — For git backend, ensure the remote branch exists: `cd .swarf && git push -u origin master`
+**Push fails** — For git backend, run `swarf doctor`: its "machine owner" check says whether another store is pushing this machine's branch, and its remote check whether the remote is reachable.
 
 **rclone sync fails** — Test your remote manually: `rclone lsd gdrive:` or `rclone ls <remote>`

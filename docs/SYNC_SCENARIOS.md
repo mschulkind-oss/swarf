@@ -17,6 +17,14 @@ to verify each scenario is handled correctly — when one isn't, the
 > (Scenario 10) and a regression test for manifest corruption
 > (Scenario 11).
 >
+> Since then, [Git Multi-Machine](GIT_MULTI_MACHINE.md) (tasks 1–4) made
+> the git backend a multi-machine backend too: each machine pushes to its
+> own machine branch, and `swarf pull` runs the same per-peer merge, so
+> every scenario below applies to both backends. The diagrams show the
+> rclone transport; with git, "remote/machines/self" is the branch
+> `machines/<machine_id>`, and there is no peer cache (the fetch brings
+> each peer's history straight into the store).
+>
 > *Earlier status (2026-05-15):* commit `70fc2ea` (manifest-tracked
 > forward mirror) closed the **first-run** failure mode — with no
 > manifest, the forward mirror does no deletes — but left the
@@ -44,6 +52,9 @@ to verify each scenario is handled correctly — when one isn't, the
   store, never watched, and never counted as pending
 - **delete hold**, **hold marker**, **resync**, **owner token**,
   **sync lock** — coined in [Sync Hardening](SYNC_HARDENING.md#terms-introduced-by-this-plan)
+  and defined there; used below in the same sense
+- **machine branch**, **legacy branch**, **retiring**, **tombstone** —
+  coined in [Git Multi-Machine](GIT_MULTI_MACHINE.md#terms-introduced-by-this-plan)
   and defined there; used below in the same sense
 
 ## The two mirror functions
@@ -552,7 +563,11 @@ right way given the post-`70fc2ea` code. Specifically:
   a machine that genuinely replaces the old one. Locked in by
   `TestMultiMachine_SharedMachineIDRefusesSecondPush`, the
   `internal/daemon/backends/owner_test.go` suite, and
-  `TestCheckMachineOwner`.
+  `TestCheckMachineOwner`. The git backend has no owner token: a push
+  to the machine branch is never forced, so the second store's push is
+  rejected as a non-fast-forward and reported the same way
+  (`TestMultiMachineGit_SharedMachineIDRefusesSecondPush`,
+  `TestCheckMachineOwnerGit`).
 - **Daemon not running on B.** Init offers the service install but a
   user on a fresh second computer who declines / hasn't been root /
   is in a non-systemd container won't have a daemon. `swarf pull`
@@ -595,9 +610,12 @@ do not assert A's subtree is untouched.
 | 9 | Cross-machine conflict | ✅ | `TestPullMultiPeerConflict`, `TestMultiMachine_ConflictingEdits` |
 | 10 | Retired peer | ⚠️ out of scope | none |
 | 11 | Manifest corruption | ✅ defensive | none — should add |
-| 12 | Second-computer bootstrap | ✅; shared `machine_id` refused | `TestMultiMachine_FreshMachineBootstrapsViaPull`, `TestMultiMachine_SharedMachineIDRefusesSecondPush` |
-| — | Store already lost files | ✅ `swarf pull --resync` | `TestMultiMachine_ResyncRestoresDivergedStore`, `TestPullResync*` |
-| — | Scheduled pull | ✅ `[sync] pull_interval` | `TestMultiMachine_DaemonScheduledPull`, `TestMultiMachine_DaemonScheduledPullGitBackendNote`, `TestPullSchedule` |
+| 12 | Second-computer bootstrap | ✅; shared `machine_id` refused | `TestMultiMachine_FreshMachineBootstrapsViaPull`, `TestMultiMachine_SharedMachineIDRefusesSecondPush`, `TestMultiMachineGit_SharedMachineIDRefusesSecondPush` |
+| — | Store already lost files | ✅ `swarf pull --resync` | `TestMultiMachine_ResyncRestoresDivergedStore`, `TestMultiMachineGit_ResyncRestoresDivergedStore`, `TestPullResync*` |
+| — | Scheduled pull | ✅ `[sync] pull_interval` | `TestMultiMachine_DaemonScheduledPull`, `TestMultiMachineGit_DaemonScheduledPull`, `TestPullSchedule` |
+| — | Git: each machine on its own branch | ✅ machine branch | `TestMultiMachineGit_EachMachinePushesItsOwnBranch`, `TestMultiMachineGit_RoundTrip`, `TestMultiMachineGit_ConflictingEdits`, `TestMultiMachineGit_DeletePropagates` |
+| — | Reinstalled machine, same `machine_id` | ✅ git (reinstall recovery); ⚠️ rclone open | `TestMultiMachineGit_ReinstallRecoversOwnBranch`, `TestMultiMachineGit_ReinstallKeepsEditMadeBeforePull` |
+| — | Git remote with one shared branch | ✅ legacy branch folded in and retired | `TestMultiMachineGit_MigrateLegacyBranch`, `TestMultiMachineGit_LegacyBranchMovedAfterFold`, `TestMultiMachineGit_LegacyBranchTombstone` |
 
 ## Proposed work, in priority order
 
@@ -627,6 +645,8 @@ Still open:
    the remote subtree.
 3. **Manifest-corruption regression tests** (Scenario 11). Pin down
    the defensive behavior.
-4. **Reinstalled machine under its old `machine_id`.** Pull skips its
-   own id, so it never pulls its old subtree back; other peers still
-   have the data.
+4. **Reinstalled machine under its old `machine_id` (rclone).** Pull
+   skips its own id, so it never pulls its old subtree back; other peers
+   still have the data. The git backend handles this case: a store with
+   no commits starts from its own machine branch
+   ([Git Multi-Machine](GIT_MULTI_MACHINE.md) task 3).

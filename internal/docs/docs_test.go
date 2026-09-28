@@ -58,6 +58,7 @@ func TestSafetyTopic(t *testing.T) {
 		"swarf pull --resync",
 		"owner token",
 		"swarf push --take-over",
+		"machine branch",
 		"sync lock",
 		"pull_interval",
 	} {
@@ -67,5 +68,57 @@ func TestSafetyTopic(t *testing.T) {
 	}
 	if !strings.Contains(ListTopics(), "safety") {
 		t.Fatal("expected 'safety' in the topic list")
+	}
+}
+
+// TestBackendsTopic pins what 'swarf docs backends' has to say about
+// multi-machine git: the machine branch each machine pushes, how a
+// remote that every machine pushed as one branch is migrated (the legacy
+// branch folded in and retired, or replaced by a tombstone), how swarf
+// recognizes a tombstone, and that every machine needs upgrading.
+func TestBackendsTopic(t *testing.T) {
+	topic := Get("backends")
+	if topic == nil {
+		t.Fatal("expected backends topic")
+	}
+	for _, want := range []string{
+		"machines/<machine_id>",
+		"machine branch",
+		"legacy branch",
+		"retire",
+		"tombstone",
+		"SWARF-BRANCHES.md",
+		"Swarf-Tombstone: true",
+		"swarf push --take-over",
+		"swarf pull --resync",
+		"pull_interval",
+		"Upgrade swarf on every machine",
+	} {
+		if !strings.Contains(topic.Content, want) {
+			t.Errorf("backends topic does not mention %q", want)
+		}
+	}
+}
+
+// TestNoTopicLimitsGitToOneMachine guards against the statements that
+// held before the git backend synced between machines: that it is
+// single-machine, and that scheduled pull, resync, or --take-over are
+// rclone-only.
+func TestNoTopicLimitsGitToOneMachine(t *testing.T) {
+	for _, topic := range Topics() {
+		flat := strings.Join(strings.Fields(topic.Content), " ")
+		for _, stale := range []string{
+			"single-machine",
+			"rclone only",
+			"rclone-only",
+			"rclone backend only",
+			"For more than one machine, use rclone",
+			"scheduled pull is not supported",
+			"With the git backend, copy the files back",
+		} {
+			if strings.Contains(flat, stale) {
+				t.Errorf("topic %s still says %q", topic.Name, stale)
+			}
+		}
 	}
 }

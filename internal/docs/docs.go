@@ -193,12 +193,13 @@ const configDoc = `
   remote = ""              # git remote URL or rclone remote:path
   debounce = "5s"          # wait time after last change before syncing
   exclude = [".yolo/"]     # drawer paths to keep out of the store entirely
-  pull_interval = "10m"    # daemon pulls on this interval (rclone only;
-                           # empty or "0" is off, the default)
+  pull_interval = "10m"    # daemon pulls on this interval (empty or
+                           # "0" is off, the default)
 
   [machine]
-  id = "laptop"            # this machine's folder on an rclone remote;
-                           # every machine needs its own
+  id = "laptop"            # this machine's folder on an rclone remote,
+                           # or its branch machines/<id> on a git
+                           # remote; every machine needs its own
 
   [auto_sweep]
   paths = ["AGENTS.md"]    # files to sweep automatically when they appear
@@ -289,7 +290,9 @@ const daemonDoc = `
     5. When the timer fires:
        a. Re-links any missing symlinks from swarf/.links/
        b. Mirrors each project's swarf/ to ~/.local/share/swarf/<project>/
-       c. Commits and pushes the central store (git or rclone)
+       c. Commits and pushes the central store (git or rclone). With
+          git, it first folds in any legacy branch still on the remote
+          and afterwards retires it (see 'swarf docs backends').
     6. New projects are picked up automatically (polled every 30s)
     7. Auto-sweep targets are checked at startup and on file creation
 
@@ -298,20 +301,18 @@ const daemonDoc = `
 
   Each sync cycle holds the sync lock, so it never runs at the same time
   as a 'swarf push' or 'swarf pull'. When a cycle finds a project in a
-  delete hold, or finds another store's owner token on its remote
-  subtree, it logs that once rather than every cycle. See
-  'swarf docs safety'.
+  delete hold, or finds its remote subtree (rclone) or machine branch
+  (git) written by another store, it logs that once rather than every
+  cycle. See 'swarf docs safety'.
 
-  Scheduled pull (rclone backend only):
+  Scheduled pull (git and rclone backends):
 
     [sync]
     pull_interval = "10m"
 
     The daemon runs a pull on that interval, under the sync lock like
-    any other pull. Off by default (empty or "0"). With the git backend
-    the daemon logs once at startup that scheduled pull is not
-    supported. Each pull's start, end, failed peers, and conflict
-    sidecars go to the daemon log.
+    any other pull. Off by default (empty or "0"). Each pull's start,
+    end, failed peers, and conflict sidecars go to the daemon log.
 
   PID file:   ~/.config/swarf/daemon.pid
   Log file:   ~/.config/swarf/daemon.log
@@ -345,14 +346,56 @@ const backendsDoc = `
     swarf pull     # creates the store and seeds it from your remote
 
   To pull updates:
-    swarf pull     # pulls latest from remote
+    swarf pull     # merges every other machine's changes
 
-  The git backend is single-machine for now. Each machine pushes to its
-  own machine branch, machines/<machine_id> on the remote, but a git
-  'swarf pull' neither reads the other machines' branches nor copies
-  anything into your projects' swarf/ directories. For more than one
-  machine, use rclone. pull_interval and 'swarf pull --resync' are
-  rclone-only.
+  Any number of machines can share one git remote. Each machine pushes
+  its store to its own machine branch, machines/<machine_id> on the
+  remote, which only that machine pushes, and never with force. 'swarf
+  pull' fetches every other machine's branch and merges it file by
+  file, exactly as with rclone (see Multi-machine rclone below):
+  conflict sidecars, 'swarf pull --resync', [sync] pull_interval, and
+  the copy back into your projects' swarf/ all work the same. A fresh
+  machine's first pull creates the store; a reinstalled one (same
+  machine id, store with no commits) starts from its own machine
+  branch, so it gets its old data back.
+
+  The remote is an archive, not something meant to be browsed.
+
+  A push refused because this machine's branch has commits the store
+  lacks means another store uses the same machine id. Give this machine
+  its own [machine] id, or, if it replaces the old one:
+
+    swarf push --take-over     # force-push; discards what only the
+                               # old store pushed to the branch
+
+  Migrating a remote from one shared branch
+  -----------------------------------------
+  Older swarf pushed every machine to one branch (main or master). A
+  legacy branch is any branch on the remote not under machines/. Every
+  git-backend pull, push, and daemon cycle migrates on its own:
+
+    1. It folds each legacy branch into the store: fast-forwards to it,
+       or merges it as it would a peer (sidecars are named
+       <file>.conflict.<branch>.<timestamp>), and copies the result
+       into your projects.
+    2. Once this machine's branch has been pushed with that content, it
+       retires the legacy branch: removes it from the remote. It deletes
+       the branch, or, when the remote refuses (GitHub refuses deleting
+       the default branch), replaces it with a tombstone. A branch that
+       moved in between is left for the next pass to fold in again.
+
+  A tombstone is a commit with no parents holding one file,
+  SWARF-BRANCHES.md, which says the store uses machine branches and this
+  branch is intentionally empty. Its commit message ends with the
+  trailer "Swarf-Tombstone: true", which is how swarf recognizes it;
+  pull skips it. 'swarf doctor' lists any legacy branch still waiting
+  to be retired, and why.
+
+  Upgrade swarf on every machine that uses the remote. An older swarf
+  still pushes to the legacy branch: a deleted branch comes back (the
+  next upgraded pass folds it in and retires it again), and a tombstone
+  rejects its push, so nothing is lost, but that machine stops syncing
+  until it is upgraded.
 
   Rclone (Google Drive, Dropbox, S3, etc.)
   -----------------------------------------
@@ -414,19 +457,21 @@ const backendsDoc = `
 
   Machine id
   ----------
-  Each machine has a stable id used for its folder on the remote. Default
-  is derived from the hostname and written on first run. Override by
-  adding to ~/.config/swarf/config.toml:
+  Each machine has a stable id used for its folder on an rclone remote
+  and its machine branch on a git remote. Default is derived from the
+  hostname and written on first run. Override by adding to
+  ~/.config/swarf/config.toml:
 
     [machine]
     id = "laptop"
 
   Do not change the id after the first sync — the remote has a folder
-  under that name.
+  or branch under that name.
 
-  Every machine needs its own id. If two share one, the owner token
-  (see 'swarf docs safety') stops the second from uploading over the
-  first's folder.
+  Every machine needs its own id. If two share one, the second one's
+  push commits locally and refuses to upload over the first's folder
+  (rclone: the owner token, see 'swarf docs safety') or branch (git:
+  the push is not a fast-forward).
 `
 
 const conflictsDoc = `
@@ -458,7 +503,9 @@ const conflictsDoc = `
                      conflict. Lives next to the original so you can
                      diff them easily.
     peer-id          Machine id of the peer whose change you're
-                     reconciling with (see 'swarf docs backends').
+                     reconciling with (see 'swarf docs backends'), or
+                     the name of the legacy git branch being folded in,
+                     with any / turned into -.
     timestamp        UTC, in 20060102T150405Z form. Lets you tell
                      multiple rounds of conflicts apart.
 
@@ -516,7 +563,7 @@ const conflictsDoc = `
   a glance that something needs human attention.
 
   Related:
-    swarf docs backends    # machine ids and the multi-machine rclone setup
+    swarf docs backends    # machine ids and the multi-machine setup
     swarf docs daemon      # how syncs are scheduled
 `
 
@@ -549,12 +596,9 @@ const safetyDoc = `
   count, a sample of paths, and when the hold started. 'swarf status'
   and 'swarf doctor' list held projects. Two ways out:
 
-    swarf pull                     # rclone: copies the files back from
-                                   # the store and clears the hold
+    swarf pull                     # copies the files back from the
+                                   # store and clears the hold
     swarf push --allow-deletes     # confirm: apply the deletes this once
-
-  With the git backend, copy the files back from
-  ~/.local/share/swarf/<slug>/ instead.
 
   Resync
   ------
@@ -563,15 +607,15 @@ const safetyDoc = `
   while the peer is unchanged. Resync ignores what was already pulled
   and copies in every file each peer has now:
 
-    swarf pull --resync            # rclone backend only
+    swarf pull --resync
 
   It never deletes a file because a peer lacks it; the only deletes it
   applies are the ones a peer made since the last pull. A local file
   that differs from every version a peer ever had keeps its content and
   gets a conflict sidecar (see 'swarf docs conflicts').
 
-  Owner token
-  -----------
+  Owner token (rclone)
+  --------------------
   An owner token is a random value each store keeps in
   ~/.local/share/swarf/.git/swarf-owner. It is uploaded with the store
   to <remote>/machines/<machine_id>/. Before uploading, swarf reads the
@@ -591,6 +635,18 @@ const safetyDoc = `
   pulls this machine's own subtree, so copy out anything you need from
   it first (rclone copy <remote>/machines/<id> <dir>).
 
+  Machine branch (git)
+  --------------------
+  The git backend has no owner token. Each machine pushes to its own
+  machine branch, machines/<machine_id>, and never forces the push, so
+  a push the remote rejects as not a fast-forward means the branch has
+  commits from a different store with the same machine_id. The push
+  commits locally only, the daemon logs it once, and 'swarf doctor'
+  reports it as the same "machine owner" check. The same two fixes
+  apply; 'swarf push --take-over' force-pushes this store to the branch
+  and discards the commits only the old store pushed there (copy them
+  out first with git fetch <remote> machines/<id>).
+
   Sync lock
   ---------
   The sync lock is an advisory lock on ~/.cache/swarf/sync.lock held for
@@ -598,6 +654,6 @@ const safetyDoc = `
   touch the store at the same time. A command that finds it held says
   so and waits; Ctrl-C ends the wait.
 
-  Scheduled pulls ([sync] pull_interval, rclone only) take the same
-  lock. See 'swarf docs daemon'.
+  Scheduled pulls ([sync] pull_interval) take the same lock. See
+  'swarf docs daemon'.
 `

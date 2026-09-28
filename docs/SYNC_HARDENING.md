@@ -6,6 +6,15 @@ which is the research stage for this work. The vocabulary there (project,
 store, manifest, peer cache, forward mirror, reverse mirror) is used here
 unchanged.
 
+> **Later change.** This plan was written for the rclone backend, with the
+> git backend single-machine. [Git Multi-Machine](GIT_MULTI_MACHINE.md)
+> has since made git a multi-machine backend that shares every safeguard
+> here: the delete hold (released by a git `swarf pull` too), resync,
+> the sync lock, scheduled pull, and `--take-over`. Its counterpart of
+> the owner token is the machine branch. The git-only refusals this plan
+> built (scheduled pull not scheduled, `--resync` and `--take-over`
+> rejected) are gone; the task text below notes each one.
+
 ## Terms introduced by this plan
 
 These are coined here. Each is defined once and used only in this sense.
@@ -72,8 +81,9 @@ The fix for Scenarios 6, 7, and 8 (emptied-directory case).
 - `swarf push --allow-deletes` applies held deletes for that one pass.
 - The daemon logs a hold once when it appears, not on every cycle.
 - `swarf status` and `swarf doctor` show each held project with the two ways
-  out: restore the files (for rclone, `swarf pull` copies them back from the
-  store), or confirm with `swarf push --allow-deletes`.
+  out: restore the files (`swarf pull` copies them back from the store; at
+  first rclone only, now both backends), or confirm with
+  `swarf push --allow-deletes`.
 
 Tests: the Scenario 6 reproduction (two machines, B pushes with a populated
 manifest, B's project is wiped, B pushes again, B's store must keep every
@@ -123,10 +133,10 @@ The fix for Scenario 5, plus the missing piece that makes sync automatic.
 - Push, pull, and the daemon cycle each hold the sync lock. A CLI command
   that finds it held waits (with a message) rather than failing.
 - New `[sync] pull_interval` (a duration such as `"10m"`; empty or `"0"`
-  means off, which is the default). When set and the backend is rclone, the
-  daemon runs a pull on that interval under the sync lock. With the git
-  backend the daemon logs once that scheduled pull is unsupported and does
-  not schedule it.
+  means off, which is the default). When set, the daemon runs a pull on
+  that interval under the sync lock. (This task scheduled it for rclone
+  only and logged that git was unsupported; Git Multi-Machine task 3
+  schedules it for git too.)
 - Fix the `swarf pull` help text, which currently claims the daemon pulls
   periodically.
 
@@ -146,7 +156,9 @@ or a `config.toml` copied with dotfiles).
   why. If the remote token cannot be read at all (as opposed to being
   absent), the upload is skipped for that pass rather than risk
   overwriting a subtree whose owner is unknown.
-- `swarf push --take-over` uploads anyway, for a machine that genuinely
+- `swarf push --take-over` uploads anyway (at first rclone only; Git
+  Multi-Machine task 2 made it force-push the git machine branch), for a
+  machine that genuinely
   replaces the old one. The message says plainly that this replaces the
   subtree and deletes from the remote anything only the old store had
   there: `swarf pull` first merges the other peers' changes, but pull skips
@@ -161,8 +173,9 @@ the second is refused without touching the first's subtree.
 ### 6. Documentation
 
 - README: say plainly that multi-machine sync is the rclone backend; the git
-  backend is single-machine (both machines push one branch, the second push
-  fails, and pull does not mirror into projects).
+  backend was single-machine then (both machines pushed one branch, the
+  second push failed, and pull did not mirror into projects). Superseded
+  by Git Multi-Machine task 5, which documents git as multi-machine.
 - Configuration: `pull_interval`, the delete hold, `--allow-deletes`,
   `--resync`, `--take-over`.
 - Built-in docs (`swarf docs`) where the same topics are covered.
@@ -171,11 +184,13 @@ the second is refused without touching the first's subtree.
 
 ## Out of scope
 
-- Multi-machine support for the git backend.
+- Multi-machine support for the git backend. (Since done:
+  [Git Multi-Machine](GIT_MULTI_MACHINE.md).)
 - Retiring a peer (Scenario 10).
 - A machine that is reinstalled under its old `machine_id` does not pull
   its own old subtree back (pull skips `self`). Other peers still have the
-  data; noted here, not fixed.
+  data; noted here, not fixed. (The git backend now does: a store with
+  no commits starts from its own machine branch. rclone still does not.)
 
 ## QA
 
@@ -203,9 +218,9 @@ sure each one exists.
 |------|-------|
 | 1. Delete hold | `internal/mirror/hold_test.go` (both thresholds, the exclude carve-out, manifest retention, marker lifecycle), `internal/deletehold`, `TestDeleteHoldLoggedOnce`, `TestCheckDeleteHolds`, `TestDeleteHoldLines`, `TestMultiMachine_WipedProjectHoldsDeletes`, `TestMultiMachine_AllowDeletesAppliesHeldDeletes`, `TestMultiMachine_HoldClearedByPeerDeleteIsNotRestored` |
 | 2. Manifest-aware reverse mirror | `internal/mirror/reverse_test.go` (`TestTrackedReverse*`) plus the existing pull and multi-machine suites |
-| 3. `--resync` | `TestMultiMachine_ResyncRestoresDivergedStore`, `TestPullResync*`, `TestPullGitResyncRejected` |
+| 3. `--resync` | `TestMultiMachine_ResyncRestoresDivergedStore`, `TestPullResync*`; the git refusal test this pass cited was replaced by `TestPullGitResync` when git gained resync |
 | 4. Sync lock and scheduled pull | `internal/synclock`, `internal/pull/synclock_test.go`, `TestSyncCycleHoldsSyncLockUntilDone`, `TestPullSchedule`, `TestRunScheduledPulls*`, `TestPullIntervalRoundTrip`, `TestMultiMachine_PushWaitsForRunningPull`, `TestMultiMachine_PullWaitsForRunningPush`, `TestMultiMachine_DaemonScheduledPull*` |
-| 5. Owner token | `internal/daemon/backends/owner_test.go` (absent, same, different, take-over, unreadable), `TestCheckMachineOwner`, `TestPushGitTakeOverRejected`, `TestSyncCycleLogsOwnerRefusalOnce`, `TestMultiMachine_SharedMachineIDRefusesSecondPush` |
+| 5. Owner token | `internal/daemon/backends/owner_test.go` (absent, same, different, take-over, unreadable), `TestCheckMachineOwner`, `TestSyncCycleLogsOwnerRefusalOnce`, `TestMultiMachine_SharedMachineIDRefusesSecondPush`; the git refusal test this pass cited was replaced by `TestPushGitTakeOver` when git gained `--take-over` |
 | 6. Documentation | README, `docs/CONFIGURATION.md`, `swarf docs safety` (`internal/docs/docs_test.go`), Sync Scenarios matrix |
 
 **Gaps found and fixed in this pass:**
@@ -234,7 +249,8 @@ applies):
 - When resync cannot place the last-seen ref in the peer's history (no
   ref, or the peer rebuilt its store), it applies no pending peer
   deletes. It falls back to the local-history test described in Task 3.
-- Out of scope, as listed above: git-backend multi-machine, retiring a
-  peer, and a reinstalled machine pulling its own old subtree. Sync
+- Out of scope, as listed above: git-backend multi-machine (since done),
+  retiring a peer, and a reinstalled machine pulling its own old subtree
+  (since done for git). Sync
   Scenarios still lists the manifest-corruption regression tests
   (Scenario 11) and an end-to-end Scenario 12 test as open.

@@ -46,7 +46,10 @@ The central store at `~/.local/share/swarf/` mirrors all projects into a
 single git repo. The daemon commits changes locally, then pushes to your
 remote. For rclone backends, the entire store is synced — both working
 files and `.git/`. This means you can browse your files directly in Google
-Drive (or whatever backend), and you get full commit history too.
+Drive (or whatever backend), and you get full commit history too. For the
+git backend, each machine pushes the store to its own branch on the
+remote; that remote is an archive for swarf to sync through, not
+something meant to be browsed.
 
 ## Install
 
@@ -234,13 +237,8 @@ creates `swarf/` in a new directory, while `doctor` only checks and repairs.
 
 ## Second machine setup
 
-Multi-machine sync means the **rclone backend**. The git backend is
-single-machine for now: each machine pushes to its own branch on the
-remote, `machines/<machine_id>`, but `swarf pull` with the git backend
-runs a plain `git pull` into the store that neither reads the other
-machines' branches nor copies anything into your projects' `swarf/`
-directories. Use the git
-backend on one machine, or switch to rclone before adding a second.
+Both backends sync any number of machines through one remote. Give
+each machine its own `[machine] id` (the hostname by default).
 
 ```bash
 brew install swarf
@@ -254,16 +252,25 @@ swarf init               # re-links the project from the store
 step. After the initial pull, run `swarf init` in each project directory
 to recreate the local `swarf/` directory and symlinks.
 
-### Multi-machine with rclone (Google Drive, Dropbox, etc.)
+### How machines stay apart
 
-Using the rclone backend from two or more machines is supported.
-Each machine writes to its own subtree on the remote
-(`<remote>/machines/<machine_id>/`), which prevents concurrent writers
-from corrupting each other's `.git/`. `swarf pull` fetches from every
-other machine's subtree, merges into your local store, and copies the
-result into each project's `swarf/`. The daemon pulls on its own only if
-you set `[sync] pull_interval` (for example `"10m"`); otherwise run
-`swarf pull` yourself.
+Each machine writes only to its own place on the remote, so two machines
+never write to the same thing at once:
+
+- **rclone** (Google Drive, Dropbox, etc.): its own subtree,
+  `<remote>/machines/<machine_id>/`, which prevents concurrent writers
+  from corrupting each other's `.git/`.
+- **git**: its own *machine branch*, the branch `machines/<machine_id>`
+  on the remote, which only that machine pushes and never with force.
+
+`swarf pull` fetches every other machine's subtree or branch, merges it
+into your local store file by file, and copies the result into each
+project's `swarf/`. The daemon pulls on its own only if you set
+`[sync] pull_interval` (for example `"10m"`); otherwise run `swarf pull`
+yourself. A reinstalled git machine's first `swarf pull` starts its store
+from its own machine branch, so it gets its old data back.
+
+### Safeguards and conflicts
 
 Several safeguards keep one machine's mistake from spreading:
 
@@ -274,11 +281,13 @@ Several safeguards keep one machine's mistake from spreading:
   (`swarf pull` copies them back) or confirm with
   `swarf push --allow-deletes`. `swarf status` and `swarf doctor` list
   held projects.
-- **Owner token.** Each store keeps a random *owner token* in its
-  `.git/`, uploaded with it. If two machines share a `machine_id`, the
-  second one's push commits locally and refuses to upload over the
-  first's subtree. Give it its own `[machine] id`, or, if it really
-  replaces the old machine, `swarf push --take-over`.
+- **Shared `machine_id` refused.** If two machines share a
+  `machine_id`, the second one's push commits locally and refuses to
+  upload over the first's subtree or branch. With rclone, it tells by
+  the *owner token*, a random value each store keeps in its `.git/` and
+  uploads with it; with git, by its push to the shared machine branch
+  not being a fast-forward. Give it its own `[machine] id`, or, if it really replaces
+  the old machine, `swarf push --take-over`.
 - **Sync lock.** Push, pull, and each daemon cycle take a *sync lock*
   (`~/.cache/swarf/sync.lock`), so they never touch the store at the same
   time. A command that finds it held waits.
@@ -294,8 +303,27 @@ main file to reconcile, `rm` the sidecar — next sync propagates your
 resolution to the other machine. Nothing is ever silently overwritten.
 Run `swarf docs conflicts` for the full resolution workflow.
 
+### Upgrading a git remote from one shared branch
+
+Older swarf pushed every machine to one branch, usually `main`. Swarf now
+calls any branch not under `machines/` a *legacy branch*, and migrates it
+on its own during any git-backend pull, push, or daemon cycle: it folds
+the branch's content into the store, then, once this machine's branch
+has been pushed with it, removes the branch from the remote. Where the
+remote refuses the delete (GitHub refuses deleting the default branch),
+swarf replaces the branch with a *tombstone*: a commit with no parents
+holding only `SWARF-BRANCHES.md`, which says the branch is intentionally
+empty, with the trailer `Swarf-Tombstone: true` in its message. `swarf
+doctor` lists any legacy branch still waiting to be removed, and why.
+
+**Upgrade swarf on every machine that shares the remote.** An older swarf
+keeps pushing to the legacy branch; once that branch is a tombstone its
+push is rejected, so nothing is lost, but that machine stops syncing
+until it is upgraded.
+
 See [Configuration → Multi-machine rclone](docs/CONFIGURATION.md#multi-machine-rclone)
-for the full flow and migration from a single-machine layout.
+and [Configuration → Multi-machine git](docs/CONFIGURATION.md#multi-machine-git)
+for the full flow and for migrating an older remote.
 
 ## Containers and jails
 

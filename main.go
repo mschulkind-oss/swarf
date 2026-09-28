@@ -239,8 +239,8 @@ Sync lock
   a time. A push that finds it held says so and waits.
 
 Owner token
-  Each store keeps a random owner token in its .git/ directory, and it
-  travels with every upload to <remote>/machines/<machine_id>/. When
+  With the rclone backend, each store keeps a random owner token in
+  its .git/ directory, and it travels with every upload to <remote>/machines/<machine_id>/. When
   the token already there belongs to a different store, two machines
   share one machine_id, and the push commits locally but refuses to
   upload. Give this machine its own [machine] id, or, if it replaces
@@ -257,7 +257,17 @@ Machine branch
   commits locally only. Give this machine its own [machine] id, or, if
   it replaces the old one, pass --take-over. That force-pushes this
   store to the branch and discards the commits only the old store
-  pushed there.`,
+  pushed there.
+
+Legacy branch
+  A legacy branch is any branch on a git remote not under machines/,
+  such as the main branch every machine pushed to before machine
+  branches. Before committing, a git-backend push folds each one into
+  the store, and once the machine branch has its content, retires it:
+  deletes it from the remote, or, when the remote refuses, replaces it
+  with a tombstone (a commit with no parents holding only
+  SWARF-BRANCHES.md, marked by the trailer "Swarf-Tombstone: true").
+  See 'swarf docs backends'.`,
 		Example: `  swarf push
   swarf push --allow-deletes
   swarf push --take-over`,
@@ -292,6 +302,16 @@ bootstraps: it creates the store and seeds it from every peer. With the
 git backend, a store with no commits starts from this machine's own
 machine branch when the remote has it, so a reinstalled machine gets
 its data back before the peers are pulled.
+
+Legacy branch
+  With the git backend, pull also folds in each legacy branch (any
+  branch on the remote not under machines/, such as the main branch
+  every machine pushed to before machine branches) as if it were a
+  peer, and retires one this machine's branch already holds: deletes it
+  from the remote, or replaces it with a tombstone (a commit with no
+  parents holding only SWARF-BRANCHES.md, marked by the trailer
+  "Swarf-Tombstone: true") when the remote refuses. Pull skips
+  tombstones. See 'swarf docs backends'.
 
 Conflicts
   When two machines edited the same file between syncs, pull keeps
