@@ -294,7 +294,7 @@ type deletePlan struct {
 func planDeletes(oldSet, newSet map[string]struct{}, dst string, skip Skip) deletePlan {
 	var p deletePlan
 	for rel := range oldSet {
-		if skips(skip, rel, false) {
+		if skipsEntry(skip, rel) {
 			p.excluded = append(p.excluded, rel)
 			continue
 		}
@@ -426,6 +426,24 @@ func SkipPatterns(patterns []string) Skip {
 // skips reports whether skip excludes rel, tolerating a nil Skip.
 func skips(skip Skip, rel string, isDir bool) bool {
 	return skip != nil && skip(rel, isDir)
+}
+
+// skipsEntry reports whether skip excludes the file rel as the walk sees
+// it: excluded itself, or beneath an excluded directory the walk prunes
+// whole. A directory pattern such as "home/ssh/*" matches the directory
+// "home/ssh/keys" but not the path of a file inside it, so checking the
+// file alone would miss it.
+func skipsEntry(skip Skip, rel string) bool {
+	if skip == nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	for i := 0; i < len(rel); i++ {
+		if rel[i] == '/' && skip(rel[:i], true) {
+			return true
+		}
+	}
+	return skip(rel, false)
 }
 
 // upToDate reports whether target already holds what srcInfo describes.

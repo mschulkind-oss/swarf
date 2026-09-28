@@ -303,3 +303,51 @@ func TestClearResolvedHold(t *testing.T) {
 		t.Error("a resolved hold loses its marker")
 	}
 }
+
+// An exclude that matches a directory — a slash glob like "home/ssh/*" or
+// a bare name like "keys" — covers everything beneath it, as the walk's
+// prune does, even though the pattern alone does not match the files'
+// own paths. Those files are excluded, not missing: no hold, and pruned.
+func TestTrackedDirDirectoryExcludeCoversNestedFiles(t *testing.T) {
+	for _, pattern := range []string{"home/ssh/*", "keys"} {
+		t.Run(pattern, func(t *testing.T) {
+			var files []string
+			for i := 0; i < 12; i++ {
+				files = append(files, fmt.Sprintf("home/ssh/keys/k%02d", i))
+			}
+			files = append(files, "notes.md")
+			f := newHoldFixture(t, files...)
+
+			skip := SkipPatterns([]string{pattern})
+			if h := f.pass(Guard{}, skip); h != nil {
+				t.Fatalf("excluding a directory is not a mass delete, got %+v", h)
+			}
+			if f.storeHas("home/ssh/keys/k00") || f.manifestHas("home/ssh/keys/k00") {
+				t.Error("the excluded files should be pruned from store and manifest")
+			}
+			assertFile(t, filepath.Join(f.dst, "notes.md"), "content of notes.md")
+		})
+	}
+}
+
+// A hold on real deletes that also sees directory-excluded files clears
+// once pull brings the real files back: the excluded files never return
+// to the project and must not keep the hold alive.
+func TestClearResolvedHoldIgnoresDirectoryExcludedFiles(t *testing.T) {
+	files := numbered(10)
+	files = append(files, "home/ssh/keys/k00", "home/ssh/keys/k01")
+	f := newHoldFixture(t, files...)
+	f.remove(numbered(10)...)
+
+	skip := SkipPatterns([]string{"home/ssh/*"})
+	h := f.pass(Guard{}, skip)
+	if h == nil || h.Count != 10 {
+		t.Fatalf("expected a hold on the ten tracked files, got %+v", h)
+	}
+	if err := Dir(f.dst, f.src, skip); err != nil {
+		t.Fatal(err)
+	}
+	if !ClearResolvedHold(f.src, f.dst, f.manifest, skip, f.marker) {
+		t.Fatal("tracked files are back: the hold is resolved")
+	}
+}
