@@ -63,8 +63,9 @@ func Run(ctx context.Context) error {
 //  4. Backend sync: commit + push
 //
 // On the git backend the cycle also migrates off a legacy branch: it
-// folds any legacy branch into the store before the forward mirror
-// (pull.FoldLegacyBranches) and retires the ones the push put on the
+// folds any legacy branch into the store after the forward mirror
+// (pull.FoldLegacyBranches), so a delete hold that mirror kept stays
+// held, and retires the ones the push put on the
 // machine branch afterwards (backends.RetireLegacyBranches).
 //
 // The CLI 'swarf push' runs the same steps via internal/push.
@@ -89,12 +90,16 @@ func syncCycle(ctx context.Context, backend backends.SyncBackend, skip mirror.Sk
 	defer release()
 	relinkAllProjects()
 	git, isGit := backend.(*backends.GitBackend)
+	var stamps map[string]mirror.Stamps
 	if isGit {
-		if err := pull.FoldLegacyBranches(ctx, skip); err != nil && ctx.Err() == nil {
+		stamps = make(map[string]mirror.Stamps)
+	}
+	mirrorAllProjects(skip, stamps)
+	if isGit {
+		if err := pull.FoldLegacyBranches(ctx, skip, stamps); err != nil && ctx.Err() == nil {
 			slog.Warn("sync: could not fold in the remote's legacy branches", "err", err)
 		}
 	}
-	mirrorAllProjects(skip)
 	initialize.WriteStoreReadme()
 	result := backend.Sync(ctx, paths.StoreDir)
 	if result.Success && result.FilesChanged > 0 {
@@ -149,12 +154,17 @@ func relinkAllProjects() {
 // store. Uses TrackedDir so the first pass after init/pull only copies
 // (no deletes against content we've never observed locally), and
 // subsequent passes correctly delete files the user removed — unless
-// they are enough to put the project in a delete hold.
-func mirrorAllProjects(skip mirror.Skip) {
+// they are enough to put the project in a delete hold. A non-nil stamps
+// receives each project's Stamps (mirror.TakeStamps), by slug, taken
+// just before its pass, for the legacy-branch fold that follows.
+func mirrorAllProjects(skip mirror.Skip, stamps map[string]mirror.Stamps) {
 	drawers := config.ReadDrawers()
 	for _, d := range drawers {
 		src := paths.SwarfDir(d.Host)
 		dst := filepath.Join(paths.StoreDir, d.Slug)
+		if stamps != nil {
+			stamps[d.Slug] = mirror.TakeStamps(src, skip)
+		}
 		if !paths.IsDir(src) {
 			continue
 		}

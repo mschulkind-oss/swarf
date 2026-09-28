@@ -168,14 +168,20 @@ func foldLegacyBranches(names []string, tips map[string]string, remote string, r
 }
 
 // FoldLegacyBranches is the migration step a git-backend push (and each
-// daemon cycle) runs before it commits: it fetches the remote's legacy
-// branches and folds into the store each one it does not have yet,
-// between a forward mirror and a reverse mirror as a pull would, so
+// daemon cycle) runs after its forward mirror and before it commits: it
+// fetches the remote's legacy branches, folds into the store each one it
+// does not have yet, and mirrors the store back into the projects, so
 // the push that follows carries the legacy content to the machine
-// branch and the projects show it. A store with no origin has nothing
-// to fold. skip is the [sync] exclude set (mirror.SkipPatterns). The
-// caller holds the sync lock.
-func FoldLegacyBranches(ctx context.Context, skip mirror.Skip) error {
+// branch and the projects show it. stamps are the projects' Stamps
+// (mirror.TakeStamps), by slug, taken just before the caller's forward
+// mirror, which protect the saves made since from the reverse mirror.
+// That mirror leaves an active delete hold as it is (see reverseMirror):
+// the caller's forward mirror already held or, with --allow-deletes,
+// applied the deletes, and only a 'swarf pull' the user chose may
+// restore held files. A store with no origin has nothing to fold. skip
+// is the [sync] exclude set (mirror.SkipPatterns). The caller holds the
+// sync lock.
+func FoldLegacyBranches(ctx context.Context, skip mirror.Skip, stamps map[string]mirror.Stamps) error {
 	if !gitexec.IsRepo(paths.StoreDir) || !gitexec.RemoteExists(paths.StoreDir, "origin") {
 		return nil
 	}
@@ -187,10 +193,9 @@ func FoldLegacyBranches(ctx context.Context, skip mirror.Skip) error {
 	if len(names) == 0 {
 		return nil
 	}
-	stamps := mirrorProjectsToStore(skip)
 	result := &Result{}
 	foldLegacyBranches(names, tips, gitexec.RemoteURL(paths.StoreDir, "origin"), result)
-	_, _, savedOver := mirrorStoreBackToProjects(skip, stamps, result.applied)
+	_, _, savedOver := reverseMirror(skip, stamps, result.applied, true)
 	conflicts := append(result.ConflictFiles, savedOver...)
 	if len(conflicts) > 0 {
 		console.Warn(fmt.Sprintf("Folding in the legacy branch left %d conflict file(s):", len(conflicts)))

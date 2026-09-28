@@ -161,13 +161,38 @@ func Dir(src, dst string, skip Skip) error {
 // every other mirror pass. Errors from individual files are logged and
 // do not abort; the last one is returned.
 func TrackedReverse(src, dst, manifestPath string, skip Skip, since Stamps) error {
+	return TrackedReverseKeeping(src, dst, manifestPath, skip, since, nil)
+}
+
+// TrackedReverseKeeping is TrackedReverse, except that it leaves each
+// path in keep alone in dst — neither copied nor deleted — and keeps it
+// in the manifest. A push that folds in a legacy branch passes the paths
+// a delete hold is holding (HeldPaths): copying them back would resolve
+// the hold by restoring the files, which only a 'swarf pull' the user
+// chose may do, and keeping them in the manifest lets the next forward
+// pass hold them again.
+func TrackedReverseKeeping(src, dst, manifestPath string, skip Skip, since Stamps, keep []string) error {
 	oldSet := readManifest(manifestPath)
+	kept := make(map[string]struct{}, len(keep))
+	for _, rel := range keep {
+		kept[rel] = struct{}{}
+	}
 	// Leave out of the copy and the deletes, but not the manifest below,
-	// each file changed since the stamps: it is still a synced file.
+	// each file changed since the stamps (it is still a synced file) and
+	// each kept path.
 	pass := skip
-	if since != nil {
+	if since != nil || len(kept) > 0 {
 		pass = func(rel string, isDir bool) bool {
-			return skips(skip, rel, isDir) || (!isDir && since.changed(dst, rel))
+			if skips(skip, rel, isDir) {
+				return true
+			}
+			if isDir {
+				return false
+			}
+			if _, ok := kept[rel]; ok {
+				return true
+			}
+			return since != nil && since.changed(dst, rel)
 		}
 	}
 	lastErr := CopyOnly(src, dst, pass)
@@ -186,7 +211,13 @@ func TrackedReverse(src, dst, manifestPath string, skip Skip, since Stamps) erro
 		}
 	}
 
-	if err := writeManifest(manifestPath, fileSet(dst, skip)); err != nil {
+	newSet := fileSet(dst, skip)
+	for rel := range kept {
+		if !skipsEntry(skip, rel) {
+			newSet[rel] = struct{}{}
+		}
+	}
+	if err := writeManifest(manifestPath, newSet); err != nil {
 		slog.Warn("mirror: writing manifest failed", "path", manifestPath, "err", err)
 	}
 	return lastErr

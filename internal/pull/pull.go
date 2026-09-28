@@ -399,6 +399,16 @@ func mirrorProjectsToStore(skip mirror.Skip) map[string]mirror.Stamps {
 // 'swarf init' them), and the conflict sidecars written for saves over a
 // peer's change.
 func mirrorStoreBackToProjects(skip mirror.Skip, stamps map[string]mirror.Stamps, applied map[string]string) (synced, unregistered, conflicts []string) {
+	return reverseMirror(skip, stamps, applied, false)
+}
+
+// reverseMirror is mirrorStoreBackToProjects. With keepHolds, it leaves
+// an active delete hold as it is instead of resolving it: the held files
+// are not copied back into the project, they stay in the manifest, and
+// the hold marker stays. A push that folds in a legacy branch mirrors
+// back this way, because only a 'swarf pull' the user chose may restore
+// held files.
+func reverseMirror(skip mirror.Skip, stamps map[string]mirror.Stamps, applied map[string]string, keepHolds bool) (synced, unregistered, conflicts []string) {
 	drawers := config.ReadDrawers()
 	registered := make(map[string]string, len(drawers)) // slug → host
 	for _, d := range drawers {
@@ -432,14 +442,20 @@ func mirrorStoreBackToProjects(skip mirror.Skip, stamps map[string]mirror.Stamps
 			held = mirror.HeldPaths(dst, src, manifest, skip)
 		}
 		conflicts = append(conflicts, sidecarSavesOverPeerChanges(slug, dst, skip, stamps[slug], applied, ts)...)
-		if err := mirror.TrackedReverse(src, dst, manifest, skip, stamps[slug]); err != nil {
+		var keep []string
+		if keepHolds {
+			keep = held
+		}
+		if err := mirror.TrackedReverseKeeping(src, dst, manifest, skip, stamps[slug], keep); err != nil {
 			slog.Warn("pull: reverse mirror failed", "project", slug, "err", err)
 			continue
 		}
 		// The reverse mirror just copied back any files a delete hold
 		// kept in the store, which is the "restore the files" way out.
-		if release, ok := mirror.ClearResolvedHold(dst, src, held, marker); ok {
-			console.Ok(holdReleaseMessage(slug, release))
+		if !keepHolds {
+			if release, ok := mirror.ClearResolvedHold(dst, src, held, marker); ok {
+				console.Ok(holdReleaseMessage(slug, release))
+			}
 		}
 		synced = append(synced, slug)
 	}

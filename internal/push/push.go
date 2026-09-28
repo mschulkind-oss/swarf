@@ -61,15 +61,8 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("ensure store: %w", err)
 	}
 
-	// Git backend: fold in any legacy branch still on the remote first,
-	// so this push carries its content to the machine branch.
 	skip := mirror.SkipPatterns(gc.Exclude)
-	if gc.Backend == "git" {
-		if err := pull.FoldLegacyBranches(ctx, skip); err != nil {
-			console.Warn(fmt.Sprintf("Could not fold in the remote's legacy branches: %v", err))
-		}
-	}
-
+	stamps := make(map[string]mirror.Stamps)
 	// Forward mirror: project/swarf/ → store/<slug>/ for every drawer.
 	// TrackedDir keeps a manifest of files we've previously observed so
 	// a never-seeded or transiently-empty project directory can't wipe
@@ -80,6 +73,9 @@ func Run(ctx context.Context, opts Options) error {
 	for _, d := range config.ReadDrawers() {
 		src := paths.SwarfDir(d.Host)
 		dst := filepath.Join(paths.StoreDir, d.Slug)
+		if gc.Backend == "git" {
+			stamps[d.Slug] = mirror.TakeStamps(src, skip)
+		}
 		if !paths.IsDir(src) {
 			continue
 		}
@@ -93,6 +89,16 @@ func Run(ctx context.Context, opts Options) error {
 			for _, line := range deletehold.WaysOut(gc.Backend, dst) {
 				console.Hint(line)
 			}
+		}
+	}
+
+	// Git backend: fold in any legacy branch still on the remote, so
+	// this push carries its content to the machine branch. It runs after
+	// the forward mirror, so the deletes that mirror held stay held and
+	// the ones --allow-deletes applied stay applied.
+	if gc.Backend == "git" {
+		if err := pull.FoldLegacyBranches(ctx, skip, stamps); err != nil {
+			console.Warn(fmt.Sprintf("Could not fold in the remote's legacy branches: %v", err))
 		}
 	}
 

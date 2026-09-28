@@ -337,3 +337,27 @@ func TestStampsChangedBySizeOrModTime(t *testing.T) {
 		t.Error("a file as stamped is not a change")
 	}
 }
+
+// TrackedReverseKeeping leaves each kept path alone — a file the project
+// deleted is not copied back from the store — and keeps it in the
+// manifest, so the next forward pass still sees the delete (and holds
+// it again); every other path is mirrored as TrackedReverse would.
+func TestTrackedReverseKeepingLeavesKeptPaths(t *testing.T) {
+	f := newReverseFixture(t, "held.md", "other.md")
+	os.Remove(filepath.Join(f.project, "held.md"))
+	os.Remove(filepath.Join(f.project, "other.md"))
+	writeFile(t, filepath.Join(f.store, "new.md"), "from a peer")
+
+	if err := TrackedReverseKeeping(f.store, f.project, f.manifest, nil, nil, []string{"held.md"}); err != nil {
+		t.Fatalf("TrackedReverseKeeping: %v", err)
+	}
+	if f.projectHas("held.md") {
+		t.Error("a kept path must not be copied back into the project")
+	}
+	if !f.projectHas("other.md") || !f.projectHas("new.md") {
+		t.Error("paths not kept should be mirrored back as TrackedReverse does")
+	}
+	if _, ok := readManifest(f.manifest)["held.md"]; !ok {
+		t.Error("a kept path should stay in the manifest")
+	}
+}

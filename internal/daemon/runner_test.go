@@ -157,7 +157,7 @@ func TestDeleteHoldLoggedOnce(t *testing.T) {
 	for _, f := range []string{"a.md", "b.md", "c.md"} {
 		os.WriteFile(filepath.Join(swarfDir, f), []byte(f), 0o644)
 	}
-	mirrorAllProjects(nil) // records all three in the manifest
+	mirrorAllProjects(nil, nil) // records all three in the manifest
 
 	var buf bytes.Buffer
 	oldLogger := slog.Default()
@@ -167,8 +167,8 @@ func TestDeleteHoldLoggedOnce(t *testing.T) {
 	for _, f := range []string{"a.md", "b.md", "c.md"} {
 		os.Remove(filepath.Join(swarfDir, f))
 	}
-	mirrorAllProjects(nil) // cycle 1: the hold appears
-	mirrorAllProjects(nil) // cycle 2: same hold, stay quiet
+	mirrorAllProjects(nil, nil) // cycle 1: the hold appears
+	mirrorAllProjects(nil, nil) // cycle 2: same hold, stay quiet
 
 	if n := strings.Count(buf.String(), "delete hold"); n != 1 {
 		t.Fatalf("expected the hold logged exactly once across two cycles, got %d\nlog:\n%s", n, buf.String())
@@ -428,5 +428,68 @@ func TestSyncCycleFoldsAndRetiresLegacyBranch(t *testing.T) {
 	}
 	if out, _ := exec.Command("git", "--git-dir", bare, "for-each-ref", "--format=%(refname)", "refs/heads/").Output(); strings.TrimSpace(string(out)) != "refs/heads/machines/box" {
 		t.Errorf("main should be retired, leaving only the machine branch:\n%s", out)
+	}
+}
+
+// A git-backend daemon cycle that folds in a legacy branch while a
+// delete hold is active leaves the hold for the user: it neither copies
+// the held files back into the project nor clears the hold, which only
+// a 'swarf pull' or 'swarf push --allow-deletes' the user chose does.
+// The hold is still logged when it appears.
+func TestSyncCycleFoldKeepsDeleteHold(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	slug := filepath.Base(repo)
+	if err := config.RegisterDrawer(slug, repo); err != nil {
+		t.Fatal(err)
+	}
+	bare := testutil.BareRemote(t)
+	if out, err := exec.Command("git", "-C", paths.StoreDir, "remote", "add", "origin", bare).CombinedOutput(); err != nil {
+		t.Fatalf("remote add: %v\n%s", err, out)
+	}
+	b := &backends.GitBackend{MachineID: "box"}
+	swarfDir := paths.SwarfDir(repo)
+	for _, f := range []string{"a.md", "b.md", "c.md"} {
+		os.WriteFile(filepath.Join(swarfDir, f), []byte(f), 0o644)
+	}
+	syncCycle(context.Background(), b, nil)
+
+	staging := t.TempDir()
+	os.MkdirAll(filepath.Join(staging, slug), 0o755)
+	os.WriteFile(filepath.Join(staging, slug, "legacy.md"), []byte("from before"), 0o644)
+	for _, args := range [][]string{
+		{"-C", staging, "init"},
+		{"-C", staging, "add", "-A"},
+		{"-C", staging, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "-m", "older swarf"},
+		{"-C", staging, "push", bare, "HEAD:refs/heads/main"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	for _, f := range []string{"a.md", "b.md", "c.md"} {
+		os.Remove(filepath.Join(swarfDir, f))
+	}
+	syncCycle(context.Background(), b, nil)
+
+	if _, err := os.Stat(filepath.Join(swarfDir, "a.md")); err == nil {
+		t.Error("the cycle restored held a.md into the project")
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, slug, "a.md")); err != nil {
+		t.Errorf("the cycle deleted held a.md from the store: %v", err)
+	}
+	if _, err := os.Stat(paths.DeleteHoldMarker(slug)); err != nil {
+		t.Errorf("the cycle should leave the hold for the user: %v", err)
+	}
+	if n := strings.Count(buf.String(), "delete hold:"); n != 1 {
+		t.Errorf("expected the new hold logged once, got %d\nlog:\n%s", n, buf.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(swarfDir, "legacy.md")); err != nil || string(got) != "from before" {
+		t.Errorf("the cycle should fold main's legacy.md into the project, got %q, %v", got, err)
 	}
 }
