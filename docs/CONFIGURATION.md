@@ -101,16 +101,20 @@ Where to push. Format depends on the backend:
 
 #### `id`
 
-A stable identifier for this machine. Used by the rclone backend to keep
-each machine's writes in its own subtree on the remote
-(`<remote>/machines/<id>/`), so two machines never write to the same file
-on the remote at the same time — the one rule that makes multi-machine
-rclone safe.
+A stable identifier for this machine. Each backend keeps each machine's
+writes apart by it: the rclone backend in its own subtree on the remote
+(`<remote>/machines/<id>/`), the git backend on its own machine branch
+(`machines/<id>`), so two machines never write to the same place on the
+remote — the one rule that makes multi-machine sync safe.
 
 If unset, a default is derived from the hostname (lowercased, with a
 trailing `.local` stripped on macOS and any non-alphanumeric characters
-replaced with `-`). `swarf doctor` writes the default the first time it
-runs on a new machine, so you usually don't have to set this by hand.
+replaced with `-`). `swarf init` writes the default to `config.toml`, and
+so does the first sync (the daemon's or `swarf push`'s) if it is still
+unset then, so a later hostname change cannot move this machine to a new
+subtree or branch. You usually don't have to set this by hand. That write
+regenerates `config.toml` from its settings, so comments and formatting
+in the file are not kept; set `id` yourself to avoid it.
 
 Override if your hostnames are unstable (e.g. containers) or if you want
 human-readable machine names on the remote:

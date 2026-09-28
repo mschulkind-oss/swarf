@@ -385,3 +385,19 @@ func TestSyncCycleLogsGitMachineBranchRefusalOnce(t *testing.T) {
 		t.Fatalf("a refusal that returns should be logged again, got %d\nlog:\n%s", n, buf.String())
 	}
 }
+
+// The git backend, like rclone, persists the hostname default machine id
+// when none is set: the machine branch is named after it, so a later
+// hostname change must not move this machine to a new branch.
+func TestMakeBackendGitPersistsMachineID(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
+	b, ok := makeBackend(config.ReadGlobalConfig()).(*backends.GitBackend)
+	if !ok {
+		t.Fatal("expected the git backend")
+	}
+	gc := config.ReadGlobalConfig()
+	if gc.MachineID == "" || gc.MachineID != b.MachineID {
+		t.Errorf("config machine id = %q, want the backend's %q persisted", gc.MachineID, b.MachineID)
+	}
+}
