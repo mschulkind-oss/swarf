@@ -558,6 +558,17 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	var conflicts []string
 
+	// A resync can still tell whether the peer changed a file since the
+	// last pull, as long as lastSeen is in the peer's history. Without it
+	// (no ref yet, or the peer rebuilt its store) union mode falls back to
+	// searching history.
+	seenOld := ""
+	if resync && lastSeen != "" {
+		if base, err := gitexec.MergeBase(peerCache, lastSeen, peerHead); err == nil && base == lastSeen {
+			seenOld = lastSeen
+		}
+	}
+
 	// A resync still owes the deletes the peer committed since lastSeen:
 	// the union below skips deletes, and the ref advances past them, so
 	// no later pull would apply them. Apply them as a plain pull would —
@@ -594,7 +605,7 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 		}
 		switch e.Status {
 		case "A", "M", "T":
-			c, wrote, err := applyAddOrModify(peer, peerCache, effectiveOld, peerHead, e.Path, ts)
+			c, wrote, err := applyAddOrModify(peer, peerCache, effectiveOld, seenOld, peerHead, e.Path, ts)
 			if err != nil {
 				return err
 			}
@@ -653,8 +664,10 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 //   - otherwise         → both sides changed the same file, conflict sidecar.
 //
 // oldRef is the ref to use for "the version the peer had before this
-// change" — lastSeen or merge-base, whichever the caller resolved.
-func applyAddOrModify(peer, peerCache, oldRef, peerHead, rel, ts string) (sidecar string, wrote bool, err error) {
+// change" — lastSeen or merge-base, whichever the caller resolved. In
+// union mode oldRef is empty; seenOld is then the last-seen ref when it
+// is known to be in the peer's history (a resync), or "" otherwise.
+func applyAddOrModify(peer, peerCache, oldRef, seenOld, peerHead, rel, ts string) (sidecar string, wrote bool, err error) {
 	peerContent, err := gitexec.ShowFile(peerCache, peerHead, rel)
 	if err != nil {
 		// The peer's working tree should still have this file since the diff
@@ -692,12 +705,20 @@ func applyAddOrModify(peer, peerCache, oldRef, peerHead, rel, ts string) (sideca
 		return "", true, nil
 	}
 
-	// In union mode (no trusted old ref), a local copy that has already
-	// moved on from the peer's current content is an ordinary local edit:
-	// the peer has nothing newer, so keep local with no sidecar, as a plain
-	// pull would for a file the peer has not touched.
+	// In union mode (no trusted old ref), a local copy edited while the
+	// peer left the file alone is an ordinary local edit: keep local with
+	// no sidecar, as a plain pull would for a file the peer has not
+	// touched. With a known last-seen ref, "left alone" means the peer's
+	// content is unchanged since that ref, so a peer that changed the file
+	// back to an older version still conflicts. Without one, the best
+	// available sign is that the local store's history already had the
+	// peer's current content.
 	if oldRef == "" {
-		if localHead := gitexec.RevParseHEAD(paths.StoreDir); localHead != "" &&
+		if seenOld != "" {
+			if peerSeen, err := gitexec.ShowFile(peerCache, seenOld, rel); err == nil && bytes.Equal(peerSeen, peerContent) {
+				return "", false, nil
+			}
+		} else if localHead := gitexec.RevParseHEAD(paths.StoreDir); localHead != "" &&
 			historyHasVersion(paths.StoreDir, localHead, rel, peerContent) {
 			return "", false, nil
 		}

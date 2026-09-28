@@ -292,9 +292,9 @@ Resync
   would. A local file that matches any version a peer ever had is
   replaced with that peer's current copy, even an older version you
   restored on purpose. A file that matches none of them keeps its local
-  content; it also gets a conflict sidecar, as above, unless the peer's
-  current copy is one this store already had and has since edited.
-  Rclone backend only.
+  content; it also gets a conflict sidecar, as above, unless the peer
+  has not changed the file since the last pull (that is a local edit,
+  kept as a plain pull would keep it). Rclone backend only.
 
 Sync lock
   Push, pull, and each daemon cycle hold the sync lock (the file

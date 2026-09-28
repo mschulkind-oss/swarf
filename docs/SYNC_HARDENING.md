@@ -105,9 +105,12 @@ restored them because nothing changed on A.
   since the last-seen ref are still applied, as a plain pull would, since
   advancing the ref past them would lose them for good. Divergent content
   follows the existing union-mode rules (conflict sidecar when local
-  differs and is not a known peer version), except that a local copy
-  edited after the store already had the peer's current content is an
-  ordinary local edit: it is kept with no sidecar, as a plain pull would.
+  differs and is not a known peer version), except that a local copy of
+  a file the peer has not changed since the last-seen ref is an ordinary
+  local edit: it is kept with no sidecar, as a plain pull would. When the
+  last-seen ref is unknown (absent, or not in a rebuilt peer's history),
+  "not changed" falls back to "the store's history already had the
+  peer's current content".
 
 Tests: integration test that creates the divergence (B's store loses files
 and commits, A unchanged), shows a plain pull does not restore them, and

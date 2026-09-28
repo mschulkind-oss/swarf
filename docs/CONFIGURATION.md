@@ -508,9 +508,13 @@ store, then advances the ref as a normal pull does. Rclone backend only.
   the peer's current copy — even an older version you restored on
   purpose.
 - A local file that matches none of them keeps its content and gets a
-  conflict sidecar, unless the peer's current copy is one this store
-  already had and has since edited; that is an ordinary local edit and
-  is kept with no sidecar.
+  conflict sidecar, unless the peer has not changed the file since the
+  last pull; that is an ordinary local edit and is kept with no sidecar.
+  A peer that changed the file back to an older version has still
+  changed it, so that case gets a sidecar, as a plain pull would give.
+  (When the last-seen ref is missing or no longer in the peer's history,
+  "not changed" falls back to "the peer's current copy is one this store
+  already had".)
 
 ### Owner token and `--take-over`
 

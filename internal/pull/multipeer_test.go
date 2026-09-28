@@ -983,6 +983,65 @@ func TestPullResyncKeepsLocalOnlyEdit(t *testing.T) {
 	}
 }
 
+// TestPullResyncPeerRevertIsAConflict: a peer that changes a file back
+// to a version the local store once had has still changed it since the
+// last pull. If the local store edited the file meanwhile, resync keeps
+// the local copy and writes one conflict sidecar, as a plain pull would;
+// finding the peer's content somewhere in the local history does not make
+// the local copy an ordinary local edit.
+func TestPullResyncPeerRevertIsAConflict(t *testing.T) {
+	for _, resync := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "resync"}[resync], func(t *testing.T) {
+			fakeRoot := t.TempDir()
+			installFakeRclone(t, fakeRoot)
+
+			peerTmp := t.TempDir()
+			peerStore := filepath.Join(peerTmp, "peer-store")
+			os.MkdirAll(peerStore, 0o755)
+			runGit(t, peerStore, "init")
+			runGit(t, peerStore, "config", "user.email", "t@t")
+			runGit(t, peerStore, "config", "user.name", "t")
+			commitPeer := func(content string) {
+				t.Helper()
+				os.WriteFile(filepath.Join(peerStore, "f.txt"), []byte(content), 0o644)
+				runGit(t, peerStore, "add", "-A")
+				runGit(t, peerStore, "commit", "-m", "f="+content)
+				mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+			}
+
+			setupStore(t, "self")
+			commitPeer("v1\n")
+			if _, err := RunWithResult(context.Background(), Options{}); err != nil {
+				t.Fatalf("pull v1: %v", err)
+			}
+			commitPeer("v2\n")
+			if _, err := RunWithResult(context.Background(), Options{}); err != nil {
+				t.Fatalf("pull v2: %v", err)
+			}
+
+			// Local store edits f.txt; the peer reverts it to v1.
+			os.WriteFile(filepath.Join(paths.StoreDir, "f.txt"), []byte("local\n"), 0o644)
+			runGit(t, paths.StoreDir, "add", "-A")
+			runGit(t, paths.StoreDir, "commit", "-m", "local edit")
+			commitPeer("v1\n")
+
+			res, err := RunWithResult(context.Background(), Options{Resync: resync})
+			if err != nil {
+				t.Fatalf("pull (resync=%v): %v", resync, err)
+			}
+			if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "f.txt")); string(got) != "local\n" {
+				t.Errorf("the local edit should be kept, got %q", got)
+			}
+			if len(res.ConflictFiles) != 1 || !strings.HasPrefix(res.ConflictFiles[0], "f.txt.conflict.peer.") {
+				t.Fatalf("the peer's revert should leave one conflict sidecar, got %v", res.ConflictFiles)
+			}
+			if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, res.ConflictFiles[0])); string(got) != "v1\n" {
+				t.Errorf("sidecar should hold the peer's reverted content, got %q", got)
+			}
+		})
+	}
+}
+
 // TestPullResyncPendingDeleteKeepsDivergedLocal: a peer delete made since
 // the last pull removes the local file only when the local copy matches the
 // peer's copy from just before the delete. A local edit made meanwhile is
