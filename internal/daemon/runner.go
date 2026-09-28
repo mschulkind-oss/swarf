@@ -168,7 +168,7 @@ func makeBackend(gc *config.GlobalConfig) backends.SyncBackend {
 			NoFastList: gc.NoFastList,
 		}
 	}
-	return &backends.GitBackend{}
+	return &backends.GitBackend{MachineID: config.EnsureMachineID()}
 }
 
 // watchProjects watches all registered project swarf/ dirs and project roots

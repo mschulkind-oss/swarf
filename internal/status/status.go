@@ -119,7 +119,7 @@ func remoteVerifyRows(gc *config.GlobalConfig) [][]string {
 	}
 
 	if gc.Backend == "git" {
-		return verifyGitRemote()
+		return verifyGitRemote(gc)
 	}
 	if gc.Backend == "rclone" {
 		return verifyRcloneRemote(gc)
@@ -127,23 +127,33 @@ func remoteVerifyRows(gc *config.GlobalConfig) [][]string {
 	return [][]string{{"Remote sync", redStyle.Render("unknown backend: " + gc.Backend)}}
 }
 
-func verifyGitRemote() [][]string {
+// verifyGitRemote compares the store's HEAD with this machine's machine
+// branch on the remote (see backends.MachineBranch), which is the only
+// branch this machine pushes.
+func verifyGitRemote(gc *config.GlobalConfig) [][]string {
 	localHEAD := gitexec.RevParseHEAD(paths.StoreDir)
 	if localHEAD == "" {
 		return [][]string{{"Remote sync", dimStyle.Render("no local commits yet")}}
 	}
 
-	remoteHEAD := gitexec.LsRemoteHEAD(paths.StoreDir, "origin")
-	if remoteHEAD == "" {
+	branch := backends.MachineBranch(gc.EffectiveMachineID())
+	remoteHEAD, ok, err := gitexec.LsRemoteRef(paths.StoreDir, "origin", "refs/heads/"+branch)
+	if err != nil {
 		return [][]string{{"Remote sync", redStyle.Render("cannot reach remote — data may not be pushed")}}
+	}
+	if !ok {
+		return [][]string{
+			{"Remote sync", yellowStyle.Render(fmt.Sprintf("this machine's branch %s is not on the remote yet", branch))},
+			{"", dimStyle.Render("The daemon pushes on the next change.")},
+		}
 	}
 
 	short := localHEAD[:8]
 	if localHEAD == remoteHEAD {
-		return [][]string{{"Remote sync", greenStyle.Render(fmt.Sprintf("verified — local and remote match (%s)", short))}}
+		return [][]string{{"Remote sync", greenStyle.Render(fmt.Sprintf("verified — local and %s match (%s)", branch, short))}}
 	}
 	return [][]string{
-		{"Remote sync", yellowStyle.Render(fmt.Sprintf("out of sync — local %s, remote %s", short, remoteHEAD[:8]))},
+		{"Remote sync", yellowStyle.Render(fmt.Sprintf("out of sync — local %s, %s %s", short, branch, remoteHEAD[:8]))},
 		{"", dimStyle.Render("Local commits haven't been pushed yet. The daemon will retry.")},
 	}
 }
@@ -251,8 +261,14 @@ func remoteListable(remote string) bool {
 // countUnpushedCommits counts local commits not yet on the remote.
 func countUnpushedCommits(gc *config.GlobalConfig) int {
 	if gc.Backend == "git" {
-		// For git: count commits ahead of origin.
-		cmd := exec.Command("git", "rev-list", "--count", "HEAD", "--not", "--remotes=origin")
+		// For git: count commits not on this machine's machine branch as
+		// of the last push (see backends.PushedRef); before the first
+		// push, every commit.
+		args := []string{"rev-list", "--count", "HEAD"}
+		if ref := backends.PushedRef(gc.EffectiveMachineID()); gitexec.ReadRef(paths.StoreDir, ref) != "" {
+			args = append(args, "--not", ref)
+		}
+		cmd := exec.Command("git", args...)
 		cmd.Dir = paths.StoreDir
 		out, err := cmd.Output()
 		if err != nil {

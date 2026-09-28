@@ -186,13 +186,18 @@ func CheckRcloneLayout() Check {
 	return Check{"rclone layout", true, "Rclone remote uses per-machine layout"}
 }
 
-// CheckMachineOwner fails when this machine's remote subtree carries an
-// owner token (see backends.OwnerTokenFile) that is not this store's: a
-// different store uses the same machine_id, and the rclone backend will
-// refuse to upload. A store with no token yet counts as different, since
-// its first push would claim a new one. An empty Msg means not applicable
-// (not rclone, no rclone, or the remote could not be read).
+// CheckMachineOwner fails when a different store uses this machine's
+// machine_id, so the backend will refuse to upload: with rclone, this
+// machine's remote subtree carries an owner token (see
+// backends.OwnerTokenFile) that is not this store's; with git, see
+// checkMachineBranch. A store with no token yet counts as different,
+// since its first push would claim a new one. An empty Msg means not
+// applicable (another backend, no rclone, no git remote, or the remote
+// could not be read).
 func CheckMachineOwner(gc *config.GlobalConfig) Check {
+	if gc != nil && gc.Backend == "git" {
+		return checkMachineBranch(gc)
+	}
 	if gc == nil || gc.Backend != "rclone" {
 		return Check{"machine owner", true, ""}
 	}
@@ -210,11 +215,43 @@ func CheckMachineOwner(gc *config.GlobalConfig) Check {
 	if local, has := backends.ReadOwnerToken(paths.StoreDir); has && local == remote {
 		return Check{"machine owner", true, fmt.Sprintf("Remote subtree %s belongs to this store", target)}
 	}
-	// Turn the ways out into Fix lines first, so the note inserted after
-	// the first line is not mistaken for one.
-	msg := strings.ReplaceAll(backends.OwnerMismatch(gc.EffectiveMachineID(), target), "\n  ", "\n    Fix: ")
-	msg = strings.Replace(msg, ".\n", ".\n    Pushes commit locally but do not upload until this is resolved.\n", 1)
-	return Check{"machine owner", false, msg}
+	return Check{"machine owner", false, mismatchMsg(backends.OwnerMismatch(gc.EffectiveMachineID(), target))}
+}
+
+// checkMachineBranch is CheckMachineOwner for the git backend: it fails
+// when this machine's machine branch (see backends.MachineBranch) exists
+// on the store's origin and is not an ancestor of the store's HEAD. The
+// branch then holds commits this store never had, which a different
+// store with the same machine_id pushed, and a push that is never forced
+// is refused.
+func checkMachineBranch(gc *config.GlobalConfig) Check {
+	if !paths.IsDir(paths.StoreDir) {
+		return Check{"machine owner", true, ""}
+	}
+	remote := gitexec.RemoteURL(paths.StoreDir, "")
+	if remote == "" {
+		return Check{"machine owner", true, ""}
+	}
+	branch := backends.MachineBranch(gc.EffectiveMachineID())
+	tip, ok, err := gitexec.LsRemoteRef(paths.StoreDir, "origin", "refs/heads/"+branch)
+	if err != nil {
+		return Check{"machine owner", true, ""}
+	}
+	if !ok {
+		return Check{"machine owner", true, fmt.Sprintf("Machine branch %s is not on the remote yet (the next push creates it)", branch)}
+	}
+	if head := gitexec.RevParseHEAD(paths.StoreDir); head != "" && gitexec.IsAncestor(paths.StoreDir, tip, head) {
+		return Check{"machine owner", true, fmt.Sprintf("Machine branch %s holds only this store's commits", branch)}
+	}
+	return Check{"machine owner", false, mismatchMsg(backends.GitBranchMismatch(gc.EffectiveMachineID(), remote))}
+}
+
+// mismatchMsg formats a backend's machine_id mismatch explanation for
+// doctor. It turns the ways out into Fix lines first, so the note
+// inserted after the first line is not mistaken for one.
+func mismatchMsg(explanation string) string {
+	msg := strings.ReplaceAll(explanation, "\n  ", "\n    Fix: ")
+	return strings.Replace(msg, ".\n", ".\n    Pushes commit locally but do not upload until this is resolved.\n", 1)
 }
 
 // CheckPeerRefs lists the refs/swarf-peers/<id> entries in the local store.

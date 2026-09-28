@@ -2,6 +2,7 @@ package gitexec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -316,4 +317,72 @@ func ShowFile(dir, ref, path string) ([]byte, error) {
 	cmd := exec.Command("git", "show", ref+":"+path)
 	cmd.Dir = dir
 	return cmd.Output()
+}
+
+// ErrPushRejected is returned by PushRef when the remote refused the
+// update as a non-fast-forward: the remote branch has commits the pushed
+// commit does not contain.
+var ErrPushRejected = errors.New("push rejected: the remote branch has commits this repository does not")
+
+// PushRef pushes HEAD to ref (e.g. "refs/heads/machines/laptop") on
+// remote. It never forces unless force is set. A non-fast-forward
+// refusal returns an error wrapping ErrPushRejected; any other failure
+// returns git's output. A cancelled ctx kills the push.
+func PushRef(ctx context.Context, dir, remote, ref string, force bool) error {
+	refspec := "HEAD:" + ref
+	if force {
+		refspec = "+" + refspec
+	}
+	out, err := runCtx(ctx, dir, "push", "--porcelain", remote, refspec)
+	if err == nil {
+		return nil
+	}
+	// --porcelain prints one line per ref; a refused update reads
+	// "!\tHEAD:<ref>\t[rejected] (non-fast-forward)" or "(fetch first)"
+	// when the remote tip is not known here. A hook's refusal is
+	// "[remote rejected]", which is a different failure.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "!") && strings.Contains(line, "[rejected]") {
+			return fmt.Errorf("%w: %s", ErrPushRejected, strings.TrimSpace(line))
+		}
+	}
+	if out != "" {
+		return fmt.Errorf("%s: %w", out, err)
+	}
+	return err
+}
+
+// LsRemoteRef returns the SHA ref points at on remote. ok is false when
+// the remote has no such ref; err is set only when the remote could not
+// be read, so the caller cannot tell either way.
+func LsRemoteRef(dir, remote, ref string) (sha string, ok bool, err error) {
+	cmd := exec.Command("git", "ls-remote", "--exit-code", remote, ref)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		// --exit-code makes a missing ref exit 2.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 2 {
+			return "", false, nil
+		}
+		msg := err.Error()
+		if exit != nil && len(exit.Stderr) > 0 {
+			msg = strings.TrimSpace(string(exit.Stderr))
+		}
+		return "", false, fmt.Errorf("git ls-remote %s %s: %s", remote, ref, msg)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[1] == ref {
+			return f[0], true, nil
+		}
+	}
+	return "", false, nil
+}
+
+// IsAncestor reports whether commit a is an ancestor of (or equal to)
+// commit b. A commit this repository does not have is not an ancestor
+// of anything in it.
+func IsAncestor(dir, a, b string) bool {
+	_, err := run(dir, "merge-base", "--is-ancestor", a, b)
+	return err == nil
 }

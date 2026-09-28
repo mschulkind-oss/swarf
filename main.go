@@ -247,13 +247,23 @@ Owner token
   the old one, pass --take-over. That replaces the remote subtree with
   this store and deletes anything only the old store had there; 'swarf
   pull' brings in the other machines' changes but never this machine's
-  own subtree, so copy out anything you need from it first.`,
+  own subtree, so copy out anything you need from it first.
+
+Machine branch
+  With the git backend, each machine pushes its store to its own
+  machine branch, machines/<machine_id> on the remote, and never
+  forces the push. A push refused because the branch has commits this
+  store lacks means a different store uses this machine_id: the push
+  commits locally only. Give this machine its own [machine] id, or, if
+  it replaces the old one, pass --take-over. That force-pushes this
+  store to the branch and discards the commits only the old store
+  pushed there.`,
 		Example: `  swarf push
   swarf push --allow-deletes
   swarf push --take-over`,
 	}
 	allowDeletes := cmd.Flags().Bool("allow-deletes", false, "Apply deletes a delete hold is keeping back, for this push only")
-	takeOver := cmd.Flags().Bool("take-over", false, "Replace this machine_id's remote subtree even though another store wrote it; files only that store had are deleted from the remote")
+	takeOver := cmd.Flags().Bool("take-over", false, "Replace this machine_id's remote subtree (rclone) or machine branch (git) even though another store wrote it; what only that store pushed is deleted from the remote")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		return push.Run(cmd.Context(), push.Options{AllowDeletes: *allowDeletes, TakeOver: *takeOver})
 	}

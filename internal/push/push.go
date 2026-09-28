@@ -25,21 +25,16 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/synclock"
 )
 
-var (
-	ErrNoConfig = errors.New("no global config found — run 'swarf init' first")
-	// ErrTakeOverNeedsRclone: owner tokens exist only for the rclone
-	// backend, so there is nothing for --take-over to override.
-	ErrTakeOverNeedsRclone = errors.New("--take-over needs the rclone backend")
-)
+var ErrNoConfig = errors.New("no global config found — run 'swarf init' first")
 
 // Options tunes one push.
 type Options struct {
 	// AllowDeletes applies deletes a delete hold would otherwise keep
 	// back, for this one pass ('swarf push --allow-deletes').
 	AllowDeletes bool
-	// TakeOver uploads even when this machine's remote subtree was
-	// written by a different store with the same machine_id
-	// ('swarf push --take-over').
+	// TakeOver uploads even when this machine's remote subtree (rclone)
+	// or machine branch (git) was written by a different store with the
+	// same machine_id ('swarf push --take-over').
 	TakeOver bool
 }
 
@@ -52,10 +47,6 @@ func Run(ctx context.Context, opts Options) error {
 	if gc == nil {
 		return ErrNoConfig
 	}
-	if opts.TakeOver && gc.Backend != "rclone" {
-		return ErrTakeOverNeedsRclone
-	}
-
 	// Hold the sync lock for the whole cycle, so a pull or a daemon
 	// cycle cannot rewrite the store or the manifests under us.
 	release, err := synclock.Acquire(ctx, func() { console.Info(synclock.WaitMessage) })
@@ -122,5 +113,5 @@ func makeBackend(gc *config.GlobalConfig, takeOver bool) backends.SyncBackend {
 			TakeOver:   takeOver,
 		}
 	}
-	return &backends.GitBackend{}
+	return &backends.GitBackend{MachineID: config.EnsureMachineID(), TakeOver: takeOver}
 }

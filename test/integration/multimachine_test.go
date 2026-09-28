@@ -245,6 +245,54 @@ id = "%s"
 	return &machine{t: t, id: id, home: home, project: project, shimDir: shimDir}
 }
 
+// newGitMachine is newMachine for the git backend: its store's remote is
+// bare, a local bare repository (see newBareRemote) standing in for a
+// hosted git remote. The rclone shim is still on PATH but unused.
+func newGitMachine(t *testing.T, id, bare string) *machine {
+	t.Helper()
+	m := newMachine(t, id, t.TempDir())
+	m.setSyncConfig(fmt.Sprintf("backend = \"git\"\nremote = %q\ndebounce = \"1s\"\n", bare))
+	return m
+}
+
+// newBareRemote creates an empty bare git repository to serve as the
+// shared git remote.
+func newBareRemote(t *testing.T) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	mustRun(t, "", "git", "init", "--bare", bare)
+	return bare
+}
+
+// bareRef returns the SHA ref points at in the bare repository, or "".
+func bareRef(bare, ref string) string {
+	out, err := exec.Command("git", "--git-dir", bare, "rev-parse", "--verify", "--quiet", ref).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// bareBranches lists the bare repository's branches, one per line.
+func bareBranches(t *testing.T, bare string) string {
+	t.Helper()
+	out, err := exec.Command("git", "--git-dir", bare, "for-each-ref", "--format=%(refname)", "refs/heads/").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// storeHEAD returns the commit this machine's store is at.
+func (m *machine) storeHEAD() string {
+	m.t.Helper()
+	out, err := exec.Command("git", "-C", filepath.Join(m.home, ".local", "share", "swarf"), "rev-parse", "HEAD").Output()
+	if err != nil {
+		m.t.Fatalf("store HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // swarf runs `swarf args...` as this machine. The project dir is the cwd.
 func (m *machine) swarf(args ...string) (string, error) {
 	m.t.Helper()
@@ -1614,6 +1662,101 @@ func TestMultiMachine_SharedMachineIDRefusesSecondPush(t *testing.T) {
 	if out, err := b.swarf("push"); err != nil {
 		t.Errorf("after taking over, B pushes normally: %v\n%s", err, out)
 	}
+	if out, err := a.swarf("push"); err == nil {
+		t.Errorf("after B took over, A is the one refused:\n%s", out)
+	}
+}
+
+// With the git backend, each machine pushes its store to its own machine
+// branch, machines/<machine_id>, so two machines sharing one remote both
+// push without either being rejected, and neither writes any other
+// branch.
+func TestMultiMachineGit_EachMachinePushesItsOwnBranch(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("a.md", "from A\n")
+	a.push()
+
+	b := newGitMachine(t, "b", bare)
+	b.init()
+	b.write("b.md", "from B\n")
+	b.push()
+
+	if got := bareRef(bare, "refs/heads/machines/a"); got != a.storeHEAD() {
+		t.Errorf("machines/a = %q, want A's store HEAD %q", got, a.storeHEAD())
+	}
+	if got := bareRef(bare, "refs/heads/machines/b"); got != b.storeHEAD() {
+		t.Errorf("machines/b = %q, want B's store HEAD %q", got, b.storeHEAD())
+	}
+	if got, want := bareBranches(t, bare), "refs/heads/machines/a\nrefs/heads/machines/b"; got != want {
+		t.Errorf("the remote should hold only the machine branches:\n%s", got)
+	}
+
+	st := mustSwarf(t, a, "status")
+	for _, want := range []string{"all synced to remote", "verified"} {
+		if !strings.Contains(st, want) {
+			t.Errorf("A's status should say %q after its push:\n%s", want, st)
+		}
+	}
+}
+
+// Two machines configured with the same machine_id must not take turns
+// overwriting one machine branch. The second push is refused as a
+// non-fast-forward (never forced) and commits locally only, until the
+// machine moves to its own id or takes over with --take-over; 'swarf
+// doctor' reports the mismatch meanwhile. The git counterpart of
+// TestMultiMachine_SharedMachineIDRefusesSecondPush.
+func TestMultiMachineGit_SharedMachineIDRefusesSecondPush(t *testing.T) {
+	bare := newBareRemote(t)
+	const branch = "refs/heads/machines/same"
+
+	a := newGitMachine(t, "same", bare)
+	a.init()
+	a.write("a.md", "from A\n")
+	a.push()
+	before := bareRef(bare, branch)
+	if before == "" || before != a.storeHEAD() {
+		t.Fatalf("A's push should land its store on machines/same, got %q", before)
+	}
+
+	// Same id, so the same project slug too.
+	b := newGitMachine(t, "same", bare)
+	b.init()
+	b.write("b.md", "from B\n")
+	out, err := b.swarf("push")
+	if err == nil {
+		t.Fatalf("B's push onto A's machine branch should be refused:\n%s", out)
+	}
+	for _, want := range []string{"machine_id", "--take-over", "discards"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refusal should mention %q:\n%s", want, out)
+		}
+	}
+	if got := bareRef(bare, branch); got != before {
+		t.Errorf("machines/same moved under a refused push: %q, want %q", got, before)
+	}
+	if !b.storeHas(a.slug(), "b.md") {
+		t.Error("the refused push should still mirror and commit into B's store")
+	}
+
+	doc, _ := b.swarf("doctor")
+	if !strings.Contains(doc, "different store") || !strings.Contains(doc, "--take-over") {
+		t.Errorf("doctor should report the machine branch mismatch:\n%s", doc)
+	}
+	if st := mustSwarf(t, b, "status"); !strings.Contains(st, "not yet pushed") {
+		t.Errorf("B's status should count its refused commit as not pushed:\n%s", st)
+	}
+
+	// Taking over force-pushes B's store to the machine branch.
+	mustSwarf(t, b, "push", "--take-over")
+	if got := bareRef(bare, branch); got != b.storeHEAD() {
+		t.Errorf("--take-over should push B's store HEAD %q, machines/same = %q", b.storeHEAD(), got)
+	}
+	if out, err := b.swarf("push"); err != nil {
+		t.Errorf("after taking over, B pushes normally: %v\n%s", err, out)
+	}
+	a.write("a2.md", "more from A\n")
 	if out, err := a.swarf("push"); err == nil {
 		t.Errorf("after B took over, A is the one refused:\n%s", out)
 	}

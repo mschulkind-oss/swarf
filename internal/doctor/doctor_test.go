@@ -427,3 +427,48 @@ func TestCheckMachineOwner(t *testing.T) {
 		t.Errorf("git backend should skip the check, got %+v", c)
 	}
 }
+
+// With the git backend, swarf doctor reports this machine's machine
+// branch when it exists and is not an ancestor of the store's HEAD: a
+// different store with the same machine_id pushed it, and pushes are
+// refused. An absent branch, or one this store pushed, passes.
+func TestCheckMachineOwnerGit(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	bare := testutil.BareRemote(t)
+	gitC := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitC(paths.StoreDir, "remote", "add", "origin", bare)
+	gitC(paths.StoreDir, "commit", "--allow-empty", "-m", "mine")
+	gc := &config.GlobalConfig{Backend: "git", Remote: bare, MachineID: "box"}
+
+	if c := doctor.CheckMachineOwner(gc); !c.OK || !strings.Contains(c.Msg, "machines/box") {
+		t.Errorf("an absent machine branch should pass and name it: %+v", c)
+	}
+
+	gitC(paths.StoreDir, "push", "origin", "HEAD:refs/heads/machines/box")
+	gitC(paths.StoreDir, "commit", "--allow-empty", "-m", "not pushed yet")
+	if c := doctor.CheckMachineOwner(gc); !c.OK {
+		t.Errorf("a machine branch behind HEAD should pass: %+v", c)
+	}
+
+	other := t.TempDir()
+	gitC(other, "init")
+	gitC(other, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "--allow-empty", "-m", "other store")
+	gitC(other, "push", "--force", bare, "HEAD:refs/heads/machines/box")
+	c := doctor.CheckMachineOwner(gc)
+	if c.OK {
+		t.Fatalf("a machine branch that is not an ancestor of HEAD should fail: %+v", c)
+	}
+	for _, want := range []string{"machines/box", "different store", "--take-over", "discards", "[machine] id"} {
+		if !strings.Contains(c.Msg, want) {
+			t.Errorf("doctor message missing %q:\n%s", want, c.Msg)
+		}
+	}
+	if n := strings.Count(c.Msg, "Fix: "); n != 2 {
+		t.Errorf("doctor message should list exactly two fixes, got %d:\n%s", n, c.Msg)
+	}
+}

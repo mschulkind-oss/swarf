@@ -1,6 +1,8 @@
 package gitexec
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -317,5 +319,65 @@ func TestPush(t *testing.T) {
 
 	if err := Push(repo, "origin"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// PushRef pushes HEAD to the named ref only, reports a non-fast-forward
+// refusal as ErrPushRejected, and replaces the ref when forced.
+func TestPushRef(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	execCmd(t, "", "git", "init", "--bare", bare)
+	ctx := context.Background()
+	const ref = "refs/heads/machines/box"
+
+	repo := makeRepo(t)
+	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "mine")
+	AddRemote(repo, "origin", bare)
+	if err := PushRef(ctx, repo, "origin", ref, false); err != nil {
+		t.Fatalf("PushRef: %v", err)
+	}
+	if sha, ok, err := LsRemoteRef(repo, "origin", ref); err != nil || !ok || sha != RevParseHEAD(repo) {
+		t.Fatalf("LsRemoteRef = %q, %v, %v; want HEAD %q", sha, ok, err, RevParseHEAD(repo))
+	}
+	if _, ok, err := LsRemoteRef(repo, "origin", "refs/heads/nope"); ok || err != nil {
+		t.Errorf("a missing ref should be ok=false with no error, got ok=%v err=%v", ok, err)
+	}
+	if _, _, err := LsRemoteRef(repo, filepath.Join(t.TempDir(), "missing.git"), ref); err == nil {
+		t.Error("an unreadable remote should be an error")
+	}
+
+	other := makeRepo(t)
+	execCmd(t, other, "git", "commit", "--allow-empty", "-m", "theirs")
+	AddRemote(other, "origin", bare)
+	err := PushRef(ctx, other, "origin", ref, false)
+	if !errors.Is(err, ErrPushRejected) {
+		t.Fatalf("pushing unrelated history should be ErrPushRejected, got %v", err)
+	}
+	if err := PushRef(ctx, other, "origin", ref, true); err != nil {
+		t.Fatalf("forced PushRef: %v", err)
+	}
+	if sha, _, _ := LsRemoteRef(other, "origin", ref); sha != RevParseHEAD(other) {
+		t.Errorf("after a forced push the ref = %q, want %q", sha, RevParseHEAD(other))
+	}
+
+	if err := PushRef(ctx, repo, filepath.Join(t.TempDir(), "missing.git"), ref, false); err == nil || errors.Is(err, ErrPushRejected) {
+		t.Errorf("an unreachable remote should be a plain error, got %v", err)
+	}
+}
+
+func TestIsAncestor(t *testing.T) {
+	repo := makeRepo(t)
+	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "one")
+	first := RevParseHEAD(repo)
+	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "two")
+	second := RevParseHEAD(repo)
+	if !IsAncestor(repo, first, second) || !IsAncestor(repo, second, second) {
+		t.Error("a commit and its parent should both be ancestors of it")
+	}
+	if IsAncestor(repo, second, first) {
+		t.Error("a child is not an ancestor of its parent")
+	}
+	if IsAncestor(repo, "0123456789abcdef0123456789abcdef01234567", second) {
+		t.Error("a commit this repository does not have is not an ancestor")
 	}
 }

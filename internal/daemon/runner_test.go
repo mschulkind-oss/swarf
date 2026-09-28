@@ -334,3 +334,36 @@ func TestSyncCycleLogsOwnerRefusalOnce(t *testing.T) {
 		t.Fatalf("a refusal that returns should be logged again, got %d\nlog:\n%s", n, buf.String())
 	}
 }
+
+// The git backend's refusal of a machine branch another store wrote
+// repeats on every cycle until the user acts, so, like the rclone owner
+// check's refusal, it is logged when it first appears and not again.
+func TestSyncCycleLogsGitMachineBranchRefusalOnce(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	bare := testutil.BareRemote(t)
+	other := t.TempDir()
+	for _, args := range [][]string{
+		{"-C", paths.StoreDir, "remote", "add", "origin", bare},
+		{"-C", other, "init"},
+		{"-C", other, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "--allow-empty", "-m", "other store"},
+		{"-C", other, "push", bare, "HEAD:refs/heads/machines/box"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	os.WriteFile(filepath.Join(paths.StoreDir, "note.md"), []byte("mine"), 0o644)
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	b := &backends.GitBackend{MachineID: "box"}
+	syncCycle(context.Background(), b, nil) // refusal appears: logged
+	os.WriteFile(filepath.Join(paths.StoreDir, "note.md"), []byte("edited"), 0o644)
+	syncCycle(context.Background(), b, nil) // same refusal: quiet
+	if n := strings.Count(buf.String(), "different store"); n != 1 {
+		t.Fatalf("expected the refusal logged once across two cycles, got %d\nlog:\n%s", n, buf.String())
+	}
+}

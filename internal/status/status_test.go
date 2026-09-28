@@ -1,6 +1,7 @@
 package status
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
@@ -302,5 +304,85 @@ func TestDeleteHoldLines(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("hold lines missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// gitStoreWithMachineBranch is a store whose origin is an empty bare
+// repository, configured for the git backend as machine "box".
+func gitStoreWithMachineBranch(t *testing.T) *config.GlobalConfig {
+	t.Helper()
+	testutil.InitializedSwarf(t)
+	bare := testutil.BareRemote(t)
+	if out, err := exec.Command("git", "-C", paths.StoreDir, "remote", "add", "origin", bare).CombinedOutput(); err != nil {
+		t.Fatalf("remote add: %v\n%s", err, out)
+	}
+	gc := &config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s", MachineID: "box"}
+	config.WriteGlobalConfig(gc)
+	return gc
+}
+
+func commitStore(t *testing.T, name string) {
+	t.Helper()
+	os.WriteFile(filepath.Join(paths.StoreDir, name), []byte(name), 0o644)
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "-m", name}} {
+		if out, err := exec.Command("git", append([]string{"-C", paths.StoreDir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+// With the git backend, unpushed commits are counted against this
+// machine's machine branch, not against whatever other branches of the
+// remote the store has seen.
+func TestCountUnpushedCommitsGitMachineBranch(t *testing.T) {
+	gc := gitStoreWithMachineBranch(t)
+	commitStore(t, "one.md")
+	commitStore(t, "two.md")
+	if n := countUnpushedCommits(gc); n != 2 {
+		t.Fatalf("before any push, unpushed = %d, want 2", n)
+	}
+
+	if res := (&backends.GitBackend{MachineID: "box"}).Sync(context.Background(), paths.StoreDir); !res.Success {
+		t.Fatalf("sync: %s", res.Message)
+	}
+	if n := countUnpushedCommits(gc); n != 0 {
+		t.Fatalf("right after a push, unpushed = %d, want 0", n)
+	}
+
+	// A commit some other branch of the remote has (a legacy main the
+	// store fetched) is still unpushed to the machine branch.
+	commitStore(t, "three.md")
+	if out, err := exec.Command("git", "-C", paths.StoreDir, "update-ref", "refs/remotes/origin/main", "HEAD").CombinedOutput(); err != nil {
+		t.Fatalf("update-ref: %v\n%s", err, out)
+	}
+	if n := countUnpushedCommits(gc); n != 1 {
+		t.Errorf("a commit only another branch has, unpushed = %d, want 1", n)
+	}
+}
+
+// The remote check compares HEAD with this machine's machine branch, not
+// with the remote's HEAD.
+func TestVerifyGitRemoteUsesMachineBranch(t *testing.T) {
+	gc := gitStoreWithMachineBranch(t)
+	commitStore(t, "one.md")
+	rows := func() string {
+		var out []string
+		for _, r := range remoteVerifyRows(gc) {
+			out = append(out, strings.Join(r, " "))
+		}
+		return strings.Join(out, "\n")
+	}
+	if got := rows(); !strings.Contains(got, "machines/box") || !strings.Contains(got, "not on the remote yet") {
+		t.Errorf("before the first push, the check should say the machine branch is not there yet:\n%s", got)
+	}
+	if res := (&backends.GitBackend{MachineID: "box"}).Sync(context.Background(), paths.StoreDir); !res.Success {
+		t.Fatalf("sync: %s", res.Message)
+	}
+	if got := rows(); !strings.Contains(got, "verified") {
+		t.Errorf("after a push, the check should verify the machine branch:\n%s", got)
+	}
+	commitStore(t, "two.md")
+	if got := rows(); strings.Contains(got, "verified") || !strings.Contains(got, "out of sync") {
+		t.Errorf("with a commit not pushed yet, the check should say out of sync:\n%s", got)
 	}
 }
