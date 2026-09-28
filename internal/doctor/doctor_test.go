@@ -345,3 +345,24 @@ func TestCheckDeleteHolds(t *testing.T) {
 		}
 	}
 }
+
+// swarf doctor lists each held project among its system checks.
+func TestRunChecksReportsDeleteHold(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	slug := filepath.Base(repo)
+	config.RegisterDrawer(slug, repo)
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "test", Debounce: "5s"})
+	if err := deletehold.Write(paths.DeleteHoldMarker(slug), &deletehold.Hold{Count: 3, Sample: []string{"x.md"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range doctor.RunChecks(repo).System {
+		if c.Name == "delete hold" {
+			if c.OK || !strings.Contains(c.Msg, slug) {
+				t.Fatalf("expected a failing delete hold check naming %s, got %+v", slug, c)
+			}
+			return
+		}
+	}
+	t.Fatal("RunChecks should include the delete hold check")
+}
