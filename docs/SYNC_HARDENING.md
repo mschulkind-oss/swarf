@@ -23,8 +23,9 @@ These are coined here. Each is defined once and used only in this sense.
   Scenario 4) and instead unions every file in the peer's current tree into
   the store. It never deletes a file because the peer's tree lacks it; the
   only deletes it applies are those the peer committed since the last-seen
-  ref, exactly as a plain pull would. This is the same "content-union" mode pull
-  already uses for peers whose history shares no commit with ours.
+  ref, exactly as a plain pull would. This is the same "content-union"
+  mode pull already uses for peers whose history shares no commit with
+  ours.
 - **owner token** — a random value generated once per local store and kept
   in the store's `.git/` directory, so it travels to
   `<remote>/machines/<machine_id>/` with every sync. It is how a machine
