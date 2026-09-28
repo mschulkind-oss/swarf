@@ -179,4 +179,62 @@ the second is refused without touching the first's subtree.
 
 ## QA
 
-Filled in when the tasks land.
+Final pass on 2026-09-28, after all six tasks landed on `main`.
+
+**Method.** Each bullet of each task above was traced to the code that
+implements it and to a test that pins it. The tests cited in
+[Sync Scenarios](SYNC_SCENARIOS.md) and the README were checked to make
+sure each one exists.
+
+**Commands and results** (all passed):
+
+- `just check`: `go vet ./...`, then the unit packages, then
+  `go test -count=1 ./test/integration/...`.
+- `go test ./... -count=1`: every package `ok`.
+- `go test ./test/integration -run TestMultiMachine_WipedProjectHoldsDeletes -count=1`:
+  the Scenario 6 reproduction, which is a permanent integration test.
+  It passes. B's store and remote subtree keep every file, the hold
+  marker and the status output appear, and `swarf pull` restores the
+  files and clears the hold.
+
+**Where each task is pinned:**
+
+| Task | Tests |
+|------|-------|
+| 1. Delete hold | `internal/mirror/hold_test.go` (both thresholds, the exclude carve-out, manifest retention, marker lifecycle), `internal/deletehold`, `TestDeleteHoldLoggedOnce`, `TestCheckDeleteHolds`, `TestDeleteHoldLines`, `TestMultiMachine_WipedProjectHoldsDeletes`, `TestMultiMachine_AllowDeletesAppliesHeldDeletes`, `TestMultiMachine_HoldClearedByPeerDeleteIsNotRestored` |
+| 2. Manifest-aware reverse mirror | `internal/mirror/reverse_test.go` (`TestTrackedReverse*`) plus the existing pull and multi-machine suites |
+| 3. `--resync` | `TestMultiMachine_ResyncRestoresDivergedStore`, `TestPullResync*`, `TestPullGitResyncRejected` |
+| 4. Sync lock and scheduled pull | `internal/synclock`, `internal/pull/synclock_test.go`, `TestSyncCycleHoldsSyncLockUntilDone`, `TestPullSchedule`, `TestRunScheduledPulls*`, `TestPullIntervalRoundTrip`, `TestMultiMachine_PushWaitsForRunningPull`, `TestMultiMachine_PullWaitsForRunningPush`, `TestMultiMachine_DaemonScheduledPull*` |
+| 5. Owner token | `internal/daemon/backends/owner_test.go` (absent, same, different, take-over, unreadable), `TestCheckMachineOwner`, `TestPushGitTakeOverRejected`, `TestSyncCycleLogsOwnerRefusalOnce`, `TestMultiMachine_SharedMachineIDRefusesSecondPush` |
+| 6. Documentation | README, `docs/CONFIGURATION.md`, `swarf docs safety` (`internal/docs/docs_test.go`), Sync Scenarios matrix |
+
+**Gaps found and fixed in this pass:**
+
+- Resync kept a locally edited file with no conflict sidecar whenever
+  the local store's history had ever held the peer's current content.
+  So a peer that changed a file back to an older version lost that
+  change without any sign. When the last-seen ref is in the peer's
+  history, a local edit now stays with no sidecar only if the peer has
+  not changed the file since that ref. Pinned by
+  `TestPullResyncPeerRevertIsAConflict`, which failed before the fix.
+  The Task 3 text, `swarf pull --help`, and `docs/CONFIGURATION.md` now
+  describe this rule.
+- Sync Scenarios cited `TestPushDoesNotWipeStoreOnFirstRun` for
+  Scenario 3, but that test never existed. Replaced by
+  `TestTrackedDirWithoutManifestDeletesNothing`.
+
+**Remaining gaps, not fixed here** (each is documented where it
+applies):
+
+- A file the user deletes while a pull is downloading is not protected
+  by the reverse mirror's stamps, so the store's copy comes back.
+- When a peer deletes a file that the user saved during a pull, the save
+  is kept and uploaded again with no conflict sidecar recording the
+  peer's delete.
+- When resync cannot place the last-seen ref in the peer's history (no
+  ref, or the peer rebuilt its store), it applies no pending peer
+  deletes. It falls back to the local-history test described in Task 3.
+- Out of scope, as listed above: git-backend multi-machine, retiring a
+  peer, and a reinstalled machine pulling its own old subtree. Sync
+  Scenarios still lists the manifest-corruption regression tests
+  (Scenario 11) and an end-to-end Scenario 12 test as open.
