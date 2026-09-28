@@ -11,8 +11,12 @@ check: lint test
 lint:
     go vet ./...
 
+# The integration tests build the swarf binary at run time, and Go's test
+# cache cannot see that binary's sources, so a cached pass there could be
+# stale. They always run uncached; everything else keeps the cache.
 test *ARGS:
-    go test ./... {{ ARGS }}
+    go test $(go list ./... | grep -v /test/integration) {{ ARGS }}
+    go test -count=1 ./test/integration/... {{ ARGS }}
 
 test-fast *ARGS:
     go test ./... -count=1 -short {{ ARGS }}
