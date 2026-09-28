@@ -119,6 +119,14 @@ func TestSyncRefusesSubtreeOwnedByAnotherStore(t *testing.T) {
 			t.Errorf("refusal should mention %q:\n%s", want, res.Message)
 		}
 	}
+	// --take-over replaces the subtree, and pull never fetches it (pull
+	// skips this machine's own id), so the refusal must not suggest that
+	// pulling first keeps the old store's files.
+	for _, want := range []string{"deletes from the remote", "not this one", "rclone copy"} {
+		if !strings.Contains(res.Message, want) {
+			t.Errorf("refusal should warn that --take-over loses the old subtree (%q):\n%s", want, res.Message)
+		}
+	}
 	if data, _ := os.ReadFile(filepath.Join(f.target, "note.md")); string(data) != "theirs" {
 		t.Errorf("remote note.md = %q; the refused sync must not touch it", data)
 	}

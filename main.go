@@ -244,13 +244,16 @@ Owner token
   the token already there belongs to a different store, two machines
   share one machine_id, and the push commits locally but refuses to
   upload. Give this machine its own [machine] id, or, if it replaces
-  the old one, run 'swarf pull' and then 'swarf push --take-over'.`,
+  the old one, pass --take-over. That replaces the remote subtree with
+  this store and deletes anything only the old store had there; 'swarf
+  pull' brings in the other machines' changes but never this machine's
+  own subtree, so copy out anything you need from it first.`,
 		Example: `  swarf push
   swarf push --allow-deletes
   swarf push --take-over`,
 	}
 	allowDeletes := cmd.Flags().Bool("allow-deletes", false, "Apply deletes a delete hold is keeping back, for this push only")
-	takeOver := cmd.Flags().Bool("take-over", false, "Upload even though another store with this machine_id wrote the remote subtree (run 'swarf pull' first)")
+	takeOver := cmd.Flags().Bool("take-over", false, "Replace this machine_id's remote subtree even though another store wrote it; files only that store had are deleted from the remote")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		return push.Run(cmd.Context(), push.Options{AllowDeletes: *allowDeletes, TakeOver: *takeOver})
 	}

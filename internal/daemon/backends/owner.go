@@ -85,9 +85,14 @@ func RemoteOwnerToken(ctx context.Context, target string) (tok string, ok bool, 
 
 // OwnerMismatch is the explanation, with the ways out, for a machine
 // subtree whose owner token belongs to a different store.
+//
+// The take-over advice is explicit about what is lost: 'swarf push
+// --take-over' replaces the subtree with a destructive rclone sync, and
+// 'swarf pull' skips this machine's own id, so pulling first brings in
+// the other machines' changes but never the subtree being replaced.
 func OwnerMismatch(machineID, target string) string {
 	return fmt.Sprintf("%s was written by a different store that also uses machine_id %q.\n"+
 		"  If this is a different computer: give it its own id under [machine] id in %s.\n"+
-		"  If this computer replaces that one: run 'swarf pull', then 'swarf push --take-over'.",
-		target, machineID, paths.GlobalConfigTOML)
+		"  If this computer replaces that one: 'swarf push --take-over' replaces that subtree with this store and deletes from the remote anything only the old store had there; 'swarf pull' first merges the other machines' subtrees, not this one, so copy out anything you need beforehand (rclone copy %s <dir>).",
+		target, machineID, paths.GlobalConfigTOML, target)
 }

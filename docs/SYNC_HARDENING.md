@@ -144,7 +144,11 @@ or a `config.toml` copied with dotfiles).
   absent), the upload is skipped for that pass rather than risk
   overwriting a subtree whose owner is unknown.
 - `swarf push --take-over` uploads anyway, for a machine that genuinely
-  replaces the old one; the message tells the user to `swarf pull` first.
+  replaces the old one. The message says plainly that this replaces the
+  subtree and deletes from the remote anything only the old store had
+  there: `swarf pull` first merges the other peers' changes, but pull skips
+  this machine's own id (see Out of scope), so it never saves the subtree
+  being replaced.
 - `swarf doctor` reports the mismatch.
 
 Tests: backend unit tests for absent/same/different/take-over; an
