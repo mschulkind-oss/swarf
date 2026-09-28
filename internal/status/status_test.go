@@ -386,3 +386,35 @@ func TestVerifyGitRemoteUsesMachineBranch(t *testing.T) {
 		t.Errorf("with a commit not pushed yet, the check should say out of sync:\n%s", got)
 	}
 }
+
+// When the machine branch holds commits this store does not have (a
+// different store with the same machine_id pushed it), the daemon's push
+// is refused until the user acts, so the remote check says so and points
+// at 'swarf doctor' instead of promising a retry.
+func TestVerifyGitRemoteReportsMachineBranchOfAnotherStore(t *testing.T) {
+	gc := gitStoreWithMachineBranch(t)
+	commitStore(t, "one.md")
+	other := t.TempDir()
+	for _, args := range [][]string{
+		{"-C", other, "init"},
+		{"-C", other, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "--allow-empty", "-m", "other store"},
+		{"-C", other, "push", gc.Remote, "HEAD:refs/heads/machines/box"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	var lines []string
+	for _, r := range remoteVerifyRows(gc) {
+		lines = append(lines, strings.Join(r, " "))
+	}
+	got := strings.Join(lines, "\n")
+	for _, want := range []string{"different store", "swarf doctor"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("remote check should mention %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "will retry") {
+		t.Errorf("a refused push is not retried to success; the check must not say so:\n%s", got)
+	}
+}

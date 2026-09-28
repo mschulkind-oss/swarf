@@ -144,13 +144,22 @@ func verifyGitRemote(gc *config.GlobalConfig) [][]string {
 	if !ok {
 		return [][]string{
 			{"Remote sync", yellowStyle.Render(fmt.Sprintf("this machine's branch %s is not on the remote yet", branch))},
-			{"", dimStyle.Render("The daemon pushes on the next change.")},
+			{"", dimStyle.Render("The daemon pushes it on its next sync (after the next change, or when it starts), or run 'swarf push'.")},
 		}
 	}
 
 	short := localHEAD[:8]
 	if localHEAD == remoteHEAD {
 		return [][]string{{"Remote sync", greenStyle.Render(fmt.Sprintf("verified — local and %s match (%s)", branch, short))}}
+	}
+	if !gitexec.IsAncestor(paths.StoreDir, remoteHEAD, localHEAD) {
+		// The branch has commits this store does not have: a different
+		// store with the same machine_id pushed it, and every push is
+		// refused until the user acts (see backends.GitBranchMismatch).
+		return [][]string{
+			{"Remote sync", redStyle.Render(fmt.Sprintf("push refused — %s on the remote has commits from a different store (%s)", branch, remoteHEAD[:8]))},
+			{"", dimStyle.Render("Pushes commit locally only until this is resolved. Run 'swarf doctor' for the ways out.")},
+		}
 	}
 	return [][]string{
 		{"Remote sync", yellowStyle.Render(fmt.Sprintf("out of sync — local %s, %s %s", short, branch, remoteHEAD[:8]))},
