@@ -1324,6 +1324,62 @@ func TestPullResyncAfterPeerAmendDeletesNothing(t *testing.T) {
 	}
 }
 
+// mergePeer reads everything from the store's objects: with the peer's
+// objects fetched into the store and no peer cache on disk, it still
+// applies the peer's adds, deletes, and conflict sidecars and advances
+// the last-seen ref.
+func TestMergePeerWithoutPeerCache(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	peerStore := pulledPeerStore(t, fakeRoot)
+	os.WriteFile(filepath.Join(peerStore, "shared.txt"), []byte("base\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "add shared")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
+		t.Fatalf("pull shared.txt: %v", err)
+	}
+
+	// Peer adds, deletes, and modifies; local modifies the same file.
+	os.WriteFile(filepath.Join(peerStore, "add.txt"), []byte("added\n"), 0o644)
+	runGit(t, peerStore, "rm", "-q", "seed.txt")
+	os.WriteFile(filepath.Join(peerStore, "shared.txt"), []byte("peer\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "peer changes")
+	os.WriteFile(filepath.Join(paths.StoreDir, "shared.txt"), []byte("local\n"), 0o644)
+	runGit(t, paths.StoreDir, "commit", "-qam", "local edit")
+
+	runGit(t, paths.StoreDir, "fetch", "-q", peerStore)
+	peerHead := gitexec.ReadRef(paths.StoreDir, "FETCH_HEAD")
+	if err := os.RemoveAll(paths.PeerCacheDir("peer")); err != nil {
+		t.Fatal(err)
+	}
+
+	var res Result
+	if err := mergePeer("peer", peerHead, false, &res); err != nil {
+		t.Fatalf("mergePeer: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "add.txt")); string(got) != "added\n" {
+		t.Errorf("add.txt should be added, got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "seed.txt")); !os.IsNotExist(err) {
+		t.Errorf("seed.txt should be deleted, stat err=%v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "shared.txt")); string(got) != "local\n" {
+		t.Errorf("shared.txt should keep the local edit, got %q", got)
+	}
+	sidecars := findSidecarsIn(t, paths.StoreDir, "shared.txt")
+	if len(sidecars) != 1 || len(res.ConflictFiles) != 1 {
+		t.Fatalf("want one shared.txt sidecar, got files=%v conflicts=%v", sidecars, res.ConflictFiles)
+	}
+	if got, _ := os.ReadFile(sidecars[0]); string(got) != "peer\n" {
+		t.Errorf("the sidecar should hold the peer's version, got %q", got)
+	}
+	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != peerHead {
+		t.Errorf("the last-seen ref should advance to %s, got %s", peerHead, got)
+	}
+}
+
 // A pull whose context ends mid-download (a daemon shutting down during a
 // scheduled pull) kills the rclone child and returns promptly instead of
 // waiting for the transfer.
