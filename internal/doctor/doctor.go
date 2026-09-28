@@ -266,7 +266,8 @@ func checkMachineBranch(gc *config.GlobalConfig) Check {
 // pushed with them, or the remote refused both deleting the branch and
 // replacing it with a tombstone. Only the refusal fails the check; the
 // others clear on the next pull or push. A tombstone counts as retired,
-// as long as the store has seen it (a pull or push fetches it). An empty
+// as long as the store has seen it (a pull or push fetches it and keeps
+// it at backends.TombstoneRef, so it survives garbage collection). An empty
 // Msg means not applicable (another backend, no store or git remote, or
 // the remote could not be read).
 func CheckLegacyBranches(gc *config.GlobalConfig) Check {

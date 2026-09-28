@@ -123,6 +123,11 @@ func TestRetireLegacyTombstonesWhenDeleteRefused(t *testing.T) {
 	f := newGitFixture(t)
 	f.legacyMain(t)
 	f.refuseMainHook(t, false)
+	// As a pull or push leaves it: nothing tracks origin, so no
+	// remote-tracking branch keeps the tombstone reachable.
+	if err := gitexec.UntrackUpstreams(paths.StoreDir, "origin"); err != nil {
+		t.Fatal(err)
+	}
 	if res := (&GitBackend{MachineID: "box"}).Sync(context.Background(), paths.StoreDir); !res.Success {
 		t.Fatalf("sync: %s", res.Message)
 	}
@@ -151,6 +156,13 @@ func TestRetireLegacyTombstonesWhenDeleteRefused(t *testing.T) {
 	}
 	if RetireRefusal(paths.StoreDir, "main") != "" {
 		t.Error("a tombstoned branch has no retirement refusal")
+	}
+	// The store keeps a ref to the tombstone it wrote, so it still
+	// recognizes it after garbage collection.
+	git(t, paths.StoreDir, "reflog", "expire", "--expire=now", "--all")
+	git(t, paths.StoreDir, "gc", "-q", "--prune=now")
+	if !IsTombstone(paths.StoreDir, tomb) {
+		t.Error("the store should still recognize its tombstone after gc")
 	}
 }
 

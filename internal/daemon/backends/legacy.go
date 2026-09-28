@@ -29,6 +29,21 @@ func LegacyRef(branch string) string {
 	return LegacyRefPrefix + branch
 }
 
+// TombstoneRefPrefix is the store-local namespace where a git-backend
+// pull, push, or retirement keeps each tombstone the store has
+// recognized or written: refs/swarf-tombstones/<branch> is the tombstone
+// last seen on <branch>. The ref keeps the tombstone's commit reachable,
+// so the store (and 'swarf doctor') still recognizes it (IsTombstone)
+// after garbage collection. It is removed once <branch> leaves the
+// remote or stops being a tombstone.
+const TombstoneRefPrefix = "refs/swarf-tombstones/"
+
+// TombstoneRef is the store's ref to the tombstone on the legacy branch
+// branch.
+func TombstoneRef(branch string) string {
+	return TombstoneRefPrefix + branch
+}
+
 // TombstoneFile is the one file in a tombstone: a commit with no
 // parents that replaces a legacy branch the remote refused to delete,
 // saying the store now uses machine branches and that this branch is
@@ -181,6 +196,9 @@ func retireOne(ctx context.Context, storePath, branch, tip string) Retirement {
 	err = gitexec.PushLease(ctx, storePath, "origin", tomb, ref, tip)
 	switch {
 	case err == nil:
+		if err := gitexec.UpdateRef(storePath, TombstoneRef(branch), tomb); err != nil {
+			slog.Warn("retire: could not keep a ref to the tombstone", "branch", branch, "err", err)
+		}
 		return Retirement{Branch: branch, Tombstoned: true}
 	case errors.Is(err, gitexec.ErrStaleLease):
 		return Retirement{Branch: branch, Moved: true}

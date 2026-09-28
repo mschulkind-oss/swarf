@@ -14,6 +14,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/doctor"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/paths"
+	"github.com/mschulkind-oss/swarf/internal/pull"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
 
@@ -593,5 +594,39 @@ func TestCheckLegacyBranches(t *testing.T) {
 	gitC(paths.StoreDir, "fetch", bare, "main")
 	if c := doctor.CheckLegacyBranches(gc); !c.OK || strings.Contains(c.Msg, "not folded") {
 		t.Errorf("a tombstone is not a legacy branch waiting to be retired: %+v", c)
+	}
+}
+
+// A tombstone another machine wrote still counts as retired after the
+// store garbage-collects: the pull that recognized it keeps a ref to it,
+// so doctor does not report it as a legacy branch with commits not
+// folded in.
+func TestCheckLegacyBranchesTombstoneSurvivesGC(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	bare := testutil.BareRemote(t)
+	gitC := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitC(paths.StoreDir, "remote", "add", "origin", bare)
+	gc := &config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s", MachineID: "box"}
+	config.WriteGlobalConfig(gc)
+
+	tomb := t.TempDir()
+	gitC(tomb, "init")
+	os.WriteFile(filepath.Join(tomb, backends.TombstoneFile), []byte("empty\n"), 0o644)
+	gitC(tomb, "add", "-A")
+	gitC(tomb, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "-m", "retire\n\n"+backends.TombstoneTrailer)
+	gitC(tomb, "push", bare, "HEAD:refs/heads/main")
+
+	if err := pull.Run(context.Background(), pull.Options{}); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	gitC(paths.StoreDir, "reflog", "expire", "--expire=now", "--all")
+	gitC(paths.StoreDir, "gc", "-q", "--prune=now")
+	if c := doctor.CheckLegacyBranches(gc); !c.OK || strings.Contains(c.Msg, "not folded") {
+		t.Errorf("a tombstone the store recognized should still count as retired after gc: %+v", c)
 	}
 }

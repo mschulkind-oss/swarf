@@ -25,7 +25,9 @@ import (
 // fetchLegacyBranches lists the legacy branches on origin that are not
 // tombstones, fetches each into the store at backends.LegacyRef, and
 // returns their tips by branch name. The store's copy of a branch that
-// left the remote or became a tombstone is removed. It also stops the
+// left the remote or became a tombstone is removed. Each tombstone it
+// recognizes is kept at backends.TombstoneRef, and the ref to one no
+// longer on the remote is removed. It also stops the
 // store's local branches from tracking origin: a store cloned before
 // machine branches tracked the legacy branch, and push now always
 // targets the machine branch, so the local branch name no longer
@@ -42,6 +44,7 @@ func fetchLegacyBranches(ctx context.Context) (map[string]string, error) {
 		return nil, fmt.Errorf("list legacy branches: %w", err)
 	}
 	wanted := make(map[string]bool)
+	tombstones := make(map[string]string)
 	var refspecs []string
 	for name, sha := range heads {
 		if strings.HasPrefix(name, backends.MachineSuffix+"/") {
@@ -50,6 +53,7 @@ func fetchLegacyBranches(ctx context.Context) (map[string]string, error) {
 		// A tombstone this store already has (it wrote it, or fetched it
 		// before) needs no fetch to be recognized.
 		if backends.IsTombstone(paths.StoreDir, sha) {
+			tombstones[name] = sha
 			continue
 		}
 		wanted[name] = true
@@ -64,29 +68,54 @@ func fetchLegacyBranches(ctx context.Context) (map[string]string, error) {
 			gitexec.DeleteRef(paths.StoreDir, backends.LegacyRef(name))
 		}
 	}
-	if len(refspecs) == 0 {
-		return nil, nil
-	}
-	sort.Strings(refspecs)
-	if err := gitexec.FetchRefspec(ctx, paths.StoreDir, "origin", refspecs...); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("fetch legacy branches: %w", err)
-	}
 	tips := make(map[string]string)
-	for name := range wanted {
-		tip := gitexec.ReadRef(paths.StoreDir, backends.LegacyRef(name))
-		if tip == "" {
-			continue
+	if len(refspecs) > 0 {
+		sort.Strings(refspecs)
+		if err := gitexec.FetchRefspec(ctx, paths.StoreDir, "origin", refspecs...); err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, fmt.Errorf("fetch legacy branches: %w", err)
 		}
-		if backends.IsTombstone(paths.StoreDir, tip) {
-			gitexec.DeleteRef(paths.StoreDir, backends.LegacyRef(name))
-			continue
+		for name := range wanted {
+			tip := gitexec.ReadRef(paths.StoreDir, backends.LegacyRef(name))
+			if tip == "" {
+				continue
+			}
+			if backends.IsTombstone(paths.StoreDir, tip) {
+				tombstones[name] = tip
+				gitexec.DeleteRef(paths.StoreDir, backends.LegacyRef(name))
+				continue
+			}
+			tips[name] = tip
 		}
-		tips[name] = tip
 	}
+	keepTombstones(tombstones)
 	return tips, nil
+}
+
+// keepTombstones points backends.TombstoneRef of each branch in
+// tombstones at its tombstone, and removes the store's other tombstone
+// refs: their branches left the remote or stopped being tombstones.
+func keepTombstones(tombstones map[string]string) {
+	known, err := gitexec.ListRefs(paths.StoreDir, backends.TombstoneRefPrefix)
+	if err != nil {
+		slog.Warn("legacy: could not list tombstone refs", "err", err)
+		return
+	}
+	for name, sha := range tombstones {
+		if known[name] == sha {
+			continue
+		}
+		if err := gitexec.UpdateRef(paths.StoreDir, backends.TombstoneRef(name), sha); err != nil {
+			slog.Warn("legacy: could not keep a ref to the tombstone", "branch", name, "err", err)
+		}
+	}
+	for name := range known {
+		if _, ok := tombstones[name]; !ok {
+			gitexec.DeleteRef(paths.StoreDir, backends.TombstoneRef(name))
+		}
+	}
 }
 
 // unfolded returns the names, sorted, of the legacy branches in tips
