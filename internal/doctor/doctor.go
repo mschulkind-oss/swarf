@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -256,6 +257,64 @@ func checkMachineBranch(gc *config.GlobalConfig) Check {
 		return Check{"machine owner", true, fmt.Sprintf("Machine branch %s holds only this store's commits", branch)}
 	}
 	return Check{"machine owner", false, mismatchMsg(backends.GitBranchMismatch(gc.EffectiveMachineID(), remote))}
+}
+
+// CheckLegacyBranches reports each legacy branch (a branch on the git
+// remote not under machines/; see backends.LegacyRefPrefix) that is still
+// waiting to be retired, and why: its commits are not folded into the
+// store yet, or they are but this machine's machine branch has not been
+// pushed with them, or the remote refused both deleting the branch and
+// replacing it with a tombstone. Only the refusal fails the check; the
+// others clear on the next pull or push. A tombstone counts as retired,
+// as long as the store has seen it (a pull or push fetches it). An empty
+// Msg means not applicable (another backend, no store or git remote, or
+// the remote could not be read).
+func CheckLegacyBranches(gc *config.GlobalConfig) Check {
+	const name = "legacy branch"
+	if gc == nil || gc.Backend != "git" || !paths.IsDir(paths.StoreDir) || gitexec.RemoteURL(paths.StoreDir, "") == "" {
+		return Check{name, true, ""}
+	}
+	heads, err := gitexec.LsRemoteHeads(context.Background(), paths.StoreDir, "origin")
+	if err != nil {
+		return Check{name, true, ""}
+	}
+	machine := backends.MachineBranch(gc.EffectiveMachineID())
+	head := gitexec.RevParseHEAD(paths.StoreDir)
+	pushed := gitexec.ReadRef(paths.StoreDir, backends.PushedRef(gc.EffectiveMachineID()))
+	names := make([]string, 0, len(heads))
+	for b := range heads {
+		names = append(names, b)
+	}
+	sort.Strings(names)
+	var waiting []string
+	ok := true
+	for _, b := range names {
+		tip := heads[b]
+		if strings.HasPrefix(b, backends.MachineSuffix+"/") || backends.IsTombstone(paths.StoreDir, tip) {
+			continue
+		}
+		switch refusal := backends.RetireRefusal(paths.StoreDir, b); {
+		case head == "" || !gitexec.IsAncestor(paths.StoreDir, tip, head):
+			waiting = append(waiting, fmt.Sprintf("Legacy branch %s has commits not folded into this store yet\n"+
+				"    Fix: run 'swarf pull' (or 'swarf push'): it folds them in, and %s is retired once %s has them.", b, b, machine))
+		case pushed == "" || !gitexec.IsAncestor(paths.StoreDir, tip, pushed):
+			waiting = append(waiting, fmt.Sprintf("Legacy branch %s is folded into this store, but %s does not have it yet\n"+
+				"    Fix: run 'swarf push': once %s holds it, the push retires %s.", b, machine, machine, b))
+		case refusal != "":
+			ok = false
+			waiting = append(waiting, fmt.Sprintf("Legacy branch %s is on %s, but the remote refused to retire it: %s\n"+
+				"    Its content is safe on %s; the branch stays until the remote lets swarf delete it or force-push a tombstone to it.\n"+
+				"    Fix: allow deleting or force-pushing %s on the remote (a protected-branch rule or a hook refuses it), then run 'swarf push'.",
+				b, machine, refusal, machine, b))
+		default:
+			waiting = append(waiting, fmt.Sprintf("Legacy branch %s is on %s and ready to retire\n"+
+				"    Fix: run 'swarf push' or 'swarf pull': either retires it.", b, machine))
+		}
+	}
+	if len(waiting) == 0 {
+		return Check{name, true, "No legacy branches waiting to be retired on the remote"}
+	}
+	return Check{name, ok, strings.Join(waiting, "\n")}
 }
 
 // mismatchMsg formats a backend's machine_id mismatch explanation for
@@ -704,6 +763,9 @@ func RunChecks(cwd string) Result {
 	}
 	if owner := CheckMachineOwner(gc); owner.Msg != "" {
 		r.System = append(r.System, owner)
+	}
+	if legacy := CheckLegacyBranches(gc); legacy.Msg != "" {
+		r.System = append(r.System, legacy)
 	}
 	if peers := CheckPeerRefs(); peers.Msg != "" {
 		r.System = append(r.System, peers)

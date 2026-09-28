@@ -1,6 +1,7 @@
 package doctor_test
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -525,5 +526,72 @@ func TestCheckMachineOwnerGitNoCommitsSaysPull(t *testing.T) {
 		if strings.Contains(c.Msg, unwanted) {
 			t.Errorf("doctor message should not contain %q:\n%s", unwanted, c.Msg)
 		}
+	}
+}
+
+// swarf doctor reports each legacy branch still on the git remote and
+// why it is not retired yet: not folded into the store, folded but not
+// yet on the machine branch, or refused by the remote. A tombstone is
+// not waiting for anything.
+func TestCheckLegacyBranches(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	bare := testutil.BareRemote(t)
+	gitC := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitC(paths.StoreDir, "remote", "add", "origin", bare)
+	gc := &config.GlobalConfig{Backend: "git", Remote: bare, MachineID: "box"}
+	if c := doctor.CheckLegacyBranches(gc); !c.OK || strings.Contains(c.Msg, "main") {
+		t.Errorf("a remote with no legacy branch should pass: %+v", c)
+	}
+
+	older := t.TempDir()
+	gitC(older, "init")
+	gitC(older, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "--allow-empty", "-m", "older swarf")
+	gitC(older, "push", bare, "HEAD:refs/heads/main")
+	c := doctor.CheckLegacyBranches(gc)
+	for _, want := range []string{"main", "not folded", "swarf pull"} {
+		if !strings.Contains(c.Msg, want) {
+			t.Errorf("an unfolded legacy branch should be reported with %q: %+v", want, c)
+		}
+	}
+
+	gitC(paths.StoreDir, "fetch", bare, "main")
+	gitC(paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	c = doctor.CheckLegacyBranches(gc)
+	for _, want := range []string{"main", "machines/box", "swarf push"} {
+		if !strings.Contains(c.Msg, want) {
+			t.Errorf("a folded but unpushed legacy branch should be reported with %q: %+v", want, c)
+		}
+	}
+
+	hook := "#!/bin/sh\necho 'main is protected' >&2\nexit 1\n"
+	os.WriteFile(filepath.Join(bare, "hooks", "pre-receive"), []byte(hook), 0o755)
+	gitC(paths.StoreDir, "update-ref", backends.PushedRef("box"), "HEAD")
+	gitC(paths.StoreDir, "update-ref", backends.LegacyRef("main"), "HEAD")
+	backends.RetireLegacyBranches(context.Background(), paths.StoreDir, "box")
+	c = doctor.CheckLegacyBranches(gc)
+	if c.OK {
+		t.Fatalf("a legacy branch the remote refused to retire should fail: %+v", c)
+	}
+	for _, want := range []string{"main", "main is protected", "Fix: "} {
+		if !strings.Contains(c.Msg, want) {
+			t.Errorf("the refusal should be reported with %q:\n%s", want, c.Msg)
+		}
+	}
+
+	os.Remove(filepath.Join(bare, "hooks", "pre-receive"))
+	tomb := t.TempDir()
+	gitC(tomb, "init")
+	os.WriteFile(filepath.Join(tomb, backends.TombstoneFile), []byte("empty\n"), 0o644)
+	gitC(tomb, "add", "-A")
+	gitC(tomb, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "-m", "retire\n\n"+backends.TombstoneTrailer)
+	gitC(tomb, "push", "--force", bare, "HEAD:refs/heads/main")
+	gitC(paths.StoreDir, "fetch", bare, "main")
+	if c := doctor.CheckLegacyBranches(gc); !c.OK || strings.Contains(c.Msg, "not folded") {
+		t.Errorf("a tombstone is not a legacy branch waiting to be retired: %+v", c)
 	}
 }
