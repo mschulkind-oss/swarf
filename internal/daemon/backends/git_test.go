@@ -2,6 +2,7 @@ package backends
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,12 +31,22 @@ func newGitFixture(t *testing.T) gitFixture {
 	return gitFixture{bare: bare}
 }
 
-// ref returns the SHA ref points at in the bare remote, or "".
+// ref returns the SHA ref points at in the bare remote, or "" when the
+// remote has no such ref. Any other failure to read it fails the test,
+// so a broken read is not mistaken for a missing ref.
 func (f gitFixture) ref(t *testing.T, ref string) string {
 	t.Helper()
-	out, err := exec.Command("git", "--git-dir", f.bare, "rev-parse", "--verify", "--quiet", ref).Output()
+	cmd := exec.Command("git", "--git-dir", f.bare, "rev-parse", "--verify", "--quiet", ref)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return ""
+		// --verify --quiet exits 1 with no output for a missing ref.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && stderr.Len() == 0 {
+			return ""
+		}
+		t.Fatalf("read %s in %s: %v\n%s", ref, f.bare, err, stderr.String())
 	}
 	return strings.TrimSpace(string(out))
 }
