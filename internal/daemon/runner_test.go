@@ -337,7 +337,8 @@ func TestSyncCycleLogsOwnerRefusalOnce(t *testing.T) {
 
 // The git backend's refusal of a machine branch another store wrote
 // repeats on every cycle until the user acts, so, like the rclone owner
-// check's refusal, it is logged when it first appears and not again.
+// check's refusal, it is logged when it first appears and not again
+// until it has cleared.
 func TestSyncCycleLogsGitMachineBranchRefusalOnce(t *testing.T) {
 	testutil.InitializedSwarf(t)
 	bare := testutil.BareRemote(t)
@@ -365,5 +366,22 @@ func TestSyncCycleLogsGitMachineBranchRefusalOnce(t *testing.T) {
 	syncCycle(context.Background(), b, nil) // same refusal: quiet
 	if n := strings.Count(buf.String(), "different store"); n != 1 {
 		t.Fatalf("expected the refusal logged once across two cycles, got %d\nlog:\n%s", n, buf.String())
+	}
+
+	// It clears: the other store's branch is gone, so a push succeeds.
+	if out, err := exec.Command("git", "--git-dir", bare, "update-ref", "-d", "refs/heads/machines/box").CombinedOutput(); err != nil {
+		t.Fatalf("delete branch: %v\n%s", err, out)
+	}
+	os.WriteFile(filepath.Join(paths.StoreDir, "note.md"), []byte("edited again"), 0o644)
+	syncCycle(context.Background(), b, nil)
+
+	// It comes back: logged afresh.
+	if out, err := exec.Command("git", "-C", other, "push", "--force", bare, "HEAD:refs/heads/machines/box").CombinedOutput(); err != nil {
+		t.Fatalf("reclaim: %v\n%s", err, out)
+	}
+	os.WriteFile(filepath.Join(paths.StoreDir, "note.md"), []byte("edited once more"), 0o644)
+	syncCycle(context.Background(), b, nil)
+	if n := strings.Count(buf.String(), "different store"); n != 2 {
+		t.Fatalf("a refusal that returns should be logged again, got %d\nlog:\n%s", n, buf.String())
 	}
 }
