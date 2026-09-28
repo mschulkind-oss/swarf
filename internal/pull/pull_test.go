@@ -347,8 +347,81 @@ func TestPullGitBootstrapsFromOwnMachineBranch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(paths.StoreDir, "later.txt")); err != nil {
 		t.Fatalf("expected the machine branch's later.txt in the store, got: %v", err)
 	}
+	// The recovered tip is already on the branch, so it counts as pushed:
+	// 'swarf status' does not report the recovered commits as unpushed.
+	if got, want := gitexec.ReadRef(paths.StoreDir, backends.PushedRef("box")), gitexec.ReadRef(paths.StoreDir, machineRefName("box")); got == "" || got != want {
+		t.Errorf("%s = %q, want the recovered tip %q", backends.PushedRef("box"), got, want)
+	}
 	os.WriteFile(filepath.Join(paths.StoreDir, "new.txt"), []byte("new"), 0o644)
 	if res := (&backends.GitBackend{MachineID: "box"}).Sync(context.Background(), paths.StoreDir); !res.Success {
 		t.Fatalf("the reinstalled machine's push should fast-forward its machine branch: %s", res.Message)
+	}
+}
+
+// Pull merges every machine branch except this machine's own. When a
+// different store also writes this machine_id, merging machines/<self>
+// as a peer would silently bring that store's files into this one.
+func TestPullGitSkipsOwnMachineBranch(t *testing.T) {
+	testutil.GitRepo(t)
+	bare := testutil.BareRemote(t)
+	pushBranch(t, bare, "machines/self", map[string]string{"proj/other-store.txt": "not ours"})
+	pushBranch(t, bare, "machines/peer", map[string]string{"proj/peer.txt": "peer"})
+
+	// A store that already has commits, so reinstall recovery does not
+	// start it from machines/self.
+	paths.StoreDir = filepath.Join(t.TempDir(), "store")
+	runGit(t, "", "init", "-q", paths.StoreDir)
+	runGit(t, paths.StoreDir, "config", "user.email", "t@t")
+	runGit(t, paths.StoreDir, "config", "user.name", "t")
+	runGit(t, paths.StoreDir, "commit", "-q", "--allow-empty", "-m", "local")
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s", MachineID: "self"})
+
+	res, err := RunWithResult(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "proj", "peer.txt")); err != nil {
+		t.Fatalf("setup: the peer's file should be pulled: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "proj", "other-store.txt")); err == nil {
+		t.Error("this machine's own machine branch was merged as a peer")
+	}
+	if gitexec.ReadRef(paths.StoreDir, peerRefName("self")) != "" {
+		t.Error("this machine's own machine branch got a last-seen ref")
+	}
+	if res.PeersMerged != 1 {
+		t.Errorf("PeersMerged = %d, want 1", res.PeersMerged)
+	}
+}
+
+// Ending ctx before the fetch finishes (the daemon stopping during a
+// scheduled pull) ends the git pull with ctx.Err() and leaves the store
+// as it was: nothing fetched, nothing merged.
+func TestPullGitCanceledLeavesStoreAlone(t *testing.T) {
+	testutil.GitRepo(t)
+	bare := testutil.BareRemote(t)
+	pushBranch(t, bare, "machines/peer", map[string]string{"proj/peer.txt": "peer"})
+
+	paths.StoreDir = filepath.Join(t.TempDir(), "store")
+	runGit(t, "", "init", "-q", paths.StoreDir)
+	runGit(t, paths.StoreDir, "config", "user.email", "t@t")
+	runGit(t, paths.StoreDir, "config", "user.name", "t")
+	runGit(t, paths.StoreDir, "commit", "-q", "--allow-empty", "-m", "local")
+	head := gitexec.RevParseHEAD(paths.StoreDir)
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s", MachineID: "self"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := RunWithResult(ctx, Options{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a canceled pull should return context.Canceled, got %v", err)
+	}
+	if got := gitexec.RevParseHEAD(paths.StoreDir); got != head {
+		t.Errorf("a canceled pull moved HEAD from %s to %s", head, got)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "proj", "peer.txt")); err == nil {
+		t.Error("a canceled pull applied the peer's file")
+	}
+	if gitexec.ReadRef(paths.StoreDir, machineRefName("peer")) != "" {
+		t.Error("a canceled pull fetched the peer's machine branch")
 	}
 }
