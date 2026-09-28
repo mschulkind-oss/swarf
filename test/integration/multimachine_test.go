@@ -135,10 +135,29 @@ case "$cmd" in
     fi
 
     if [ "$cmd" = "sync" ]; then
-      rm -rf "$dst"
-      mkdir -p "$dst"
+      case "$dst_ref" in
+        fake:*)
+          # An upload copies into a staging tree beside the remote and
+          # swaps it into place, so a machine pulling this subtree
+          # meanwhile never copies a half-written peer.
+          stage="$FAKE_ROOT/.staging"
+          mkdir -p "$stage"
+          tmp=$(mktemp -d "$stage/new.XXXXXX")
+          cp -a "$src/." "$tmp/"
+          old=$(mktemp -d "$stage/old.XXXXXX")
+          mv "$dst" "$old/tree"
+          mv "$tmp" "$dst"
+          rm -rf "$old"
+          ;;
+        *)
+          rm -rf "$dst"
+          mkdir -p "$dst"
+          cp -a "$src/." "$dst/"
+          ;;
+      esac
+    else
+      cp -a "$src/." "$dst/"
     fi
-    cp -a "$src/." "$dst/"
     # Test hook: a command to run once a download from the remote lands,
     # standing in for whatever the user does while a slow pull is still
     # fetching peers.
