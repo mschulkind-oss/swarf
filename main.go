@@ -268,11 +268,11 @@ Resync
   come back while the peer stays unchanged. --resync ignores what was
   already pulled and copies in every file each peer has now; it never
   deletes. A file whose local content differs from every version the
-  peer had gets a conflict sidecar, as above.`,
+  peer had gets a conflict sidecar, as above. Rclone backend only.`,
 		Example: `  swarf pull
   swarf pull --resync`,
 	}
-	resync := cmd.Flags().Bool("resync", false, "Union every file each peer has into the store, ignoring what was already pulled; never deletes")
+	resync := cmd.Flags().Bool("resync", false, "Union every file each peer has into the store, ignoring what was already pulled; never deletes (rclone backend only)")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		return pull.Run(pull.Options{Resync: *resync})
 	}

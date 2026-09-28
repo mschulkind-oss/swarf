@@ -219,3 +219,13 @@ func runGit(t *testing.T, dir string, args ...string) {
 		t.Fatalf("git %v failed: %s\n%s", args, err, out)
 	}
 }
+
+// TestPullGitResyncRejected: resync is a rclone-backend operation; with
+// the git backend it is refused rather than silently running a plain pull.
+func TestPullGitResyncRejected(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
+	if err := Run(Options{Resync: true}); !errors.Is(err, ErrResyncNeedsRclone) {
+		t.Fatalf("expected ErrResyncNeedsRclone, got %v", err)
+	}
+}

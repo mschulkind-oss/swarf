@@ -26,9 +26,10 @@ import (
 )
 
 var (
-	ErrNoConfig       = errors.New("no global config found — run 'swarf init' first")
-	ErrNotGitRepo     = errors.New("store is not a git repository")
-	ErrUnknownBackend = errors.New("unknown backend")
+	ErrNoConfig          = errors.New("no global config found — run 'swarf init' first")
+	ErrNotGitRepo        = errors.New("store is not a git repository")
+	ErrUnknownBackend    = errors.New("unknown backend")
+	ErrResyncNeedsRclone = errors.New("--resync needs the rclone backend")
 )
 
 // Result summarizes what happened during a pull.
@@ -42,7 +43,7 @@ type Result struct {
 type Options struct {
 	// Resync ignores each peer's last-seen ref and unions every file in
 	// the peer's current tree into the store, deleting nothing
-	// ('swarf pull --resync').
+	// ('swarf pull --resync'). Rclone backend only.
 	Resync bool
 }
 
@@ -59,6 +60,9 @@ func RunWithResult(opts Options) (*Result, error) {
 
 	switch gc.Backend {
 	case "git":
+		if opts.Resync {
+			return nil, ErrResyncNeedsRclone
+		}
 		return nil, pullGit(gc)
 	case "rclone":
 		return pullRclone(gc, opts)
