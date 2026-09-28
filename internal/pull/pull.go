@@ -39,10 +39,22 @@ type Result struct {
 	PeersSeen     int
 	PeersMerged   int
 	ConflictFiles []string
+	// PeerFailures lists the peers the pull could not merge, each with
+	// its error. The pull goes on to the other peers and still succeeds.
+	PeerFailures []PeerFailure
+	// Unregistered lists the store's projects that have no drawer on
+	// this machine, so the pull could not mirror them into a project.
+	Unregistered []string
 
 	// applying is set once a peer's download finishes and pull starts
 	// changing the store for it, even if that peer then fails.
 	applying bool
+}
+
+// PeerFailure is one peer a pull could not merge, and why.
+type PeerFailure struct {
+	Peer string
+	Err  error
 }
 
 // Options tunes one pull.
@@ -175,6 +187,7 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 		}
 		if err := pullFromPeer(ctx, gc, peer, opts.Resync, result); err != nil {
 			console.Warn(fmt.Sprintf("peer %s: %v", peer, err))
+			result.PeerFailures = append(result.PeerFailures, PeerFailure{Peer: peer, Err: err})
 			continue
 		}
 		result.PeersMerged++
@@ -192,6 +205,7 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 	// project's swarf/ keeps showing stale files until the daemon's next
 	// forward mirror accidentally undoes our pull.
 	synced, unregistered := mirrorStoreBackToProjects(mirror.SkipPatterns(gc.Exclude), stamps)
+	result.Unregistered = unregistered
 
 	// An interrupted pull still mirrors back what it applied — skipping
 	// that would leave the store ahead of the projects, and the next

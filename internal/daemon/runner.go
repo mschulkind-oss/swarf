@@ -56,8 +56,8 @@ func Run(ctx context.Context) error {
 		pulls.Add(1)
 		go func() {
 			defer pulls.Done()
-			runScheduledPulls(ctx, interval, func(ctx context.Context) error {
-				return pull.Run(ctx, pull.Options{})
+			runScheduledPulls(ctx, interval, func(ctx context.Context) (*pull.Result, error) {
+				return pull.RunWithResult(ctx, pull.Options{})
 			})
 		}()
 	}

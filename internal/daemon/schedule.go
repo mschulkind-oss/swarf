@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/pull"
 )
 
 // pullSchedule decides whether the daemon runs scheduled pulls, from
@@ -33,7 +34,12 @@ func pullSchedule(gc *config.GlobalConfig) (time.Duration, string) {
 // pull takes the sync lock itself (see pull.Run), so it never overlaps a
 // debounced sync cycle or a CLI push or pull; a slow pull delays the next
 // tick rather than stacking up behind it.
-func runScheduledPulls(ctx context.Context, interval time.Duration, pullOnce func(context.Context) error) {
+//
+// Each pull's outcome goes to the daemon log: pull reports failed peers,
+// conflict sidecars, and unregistered projects on the console, which a
+// daemon started without a supervisor sends to /dev/null, and a pull
+// whose every peer failed still returns no error.
+func runScheduledPulls(ctx context.Context, interval time.Duration, pullOnce func(context.Context) (*pull.Result, error)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -41,9 +47,35 @@ func runScheduledPulls(ctx context.Context, interval time.Duration, pullOnce fun
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := pullOnce(ctx); err != nil && ctx.Err() == nil {
-				slog.Warn("scheduled pull failed", "err", err)
+			slog.Info("scheduled pull: starting")
+			result, err := pullOnce(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Warn("scheduled pull failed", "err", err)
+				}
+				continue
 			}
+			logPullResult(result)
 		}
+	}
+}
+
+// logPullResult writes one finished scheduled pull's outcome to the
+// daemon log.
+func logPullResult(r *pull.Result) {
+	if r == nil {
+		slog.Info("scheduled pull: done")
+		return
+	}
+	slog.Info("scheduled pull: done", "peers_seen", r.PeersSeen, "peers_merged", r.PeersMerged,
+		"conflicts", len(r.ConflictFiles))
+	for _, f := range r.PeerFailures {
+		slog.Warn("scheduled pull: peer failed", "peer", f.Peer, "err", f.Err)
+	}
+	if len(r.ConflictFiles) > 0 {
+		slog.Warn("scheduled pull: wrote conflict sidecars; see 'swarf docs conflicts'", "files", r.ConflictFiles)
+	}
+	if len(r.Unregistered) > 0 {
+		slog.Warn("scheduled pull: store projects not registered on this machine; run 'swarf init' in each", "projects", r.Unregistered)
 	}
 }

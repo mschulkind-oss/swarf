@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1345,5 +1346,34 @@ func TestListPeersCancelled(t *testing.T) {
 
 	if _, err := listPeers(ctx, "fake:store"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected the context's error, got %v", err)
+	}
+}
+
+// A peer that fails is recorded in the Result, with its error, beside
+// the peers that merged, so a caller with no terminal (the daemon's
+// scheduled pull) can report it; so is a store project this machine has
+// not registered.
+func TestPullResultRecordsPeerFailuresAndUnregistered(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	setupStore(t, "self")
+	newUnrelatedPeer(t, fakeRoot, "good")
+	// A peer folder with no store in it: fetching its history fails.
+	broken := filepath.Join(fakeRoot, "store", "machines", "broken")
+	os.MkdirAll(broken, 0o755)
+	os.WriteFile(filepath.Join(broken, "stray.txt"), []byte("not a store\n"), 0o644)
+
+	res, err := RunWithResult(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if res.PeersMerged != 1 {
+		t.Errorf("PeersMerged = %d, want 1", res.PeersMerged)
+	}
+	if len(res.PeerFailures) != 1 || res.PeerFailures[0].Peer != "broken" || res.PeerFailures[0].Err == nil {
+		t.Fatalf("expected one failure for peer broken, got %+v", res.PeerFailures)
+	}
+	if !slices.Contains(res.Unregistered, "forms") {
+		t.Errorf("forms has no drawer here and should be listed as unregistered, got %v", res.Unregistered)
 	}
 }
