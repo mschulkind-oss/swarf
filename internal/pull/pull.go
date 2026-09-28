@@ -340,6 +340,9 @@ func listPeers(ctx context.Context, remote string) ([]string, error) {
 	cmd := exec.CommandContext(ctx, "rclone", "lsf", "--dirs-only", machinesPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		msg := strings.ToLower(strings.TrimSpace(string(out)))
 		if strings.Contains(msg, "directory not found") || strings.Contains(msg, "not found") || strings.Contains(msg, "doesn't exist") {
 			return nil, nil

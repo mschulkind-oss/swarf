@@ -1333,3 +1333,17 @@ func TestPullCancelledBeforeApplyingSkipsReverseMirror(t *testing.T) {
 		t.Errorf("a pull cancelled before applying anything should not mirror the store back; stat err = %v", err)
 	}
 }
+
+// Listing peers under a context that has ended reports the context's
+// error, not an empty rclone failure.
+func TestListPeersCancelled(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	os.MkdirAll(filepath.Join(fakeRoot, "store", "machines", "peer"), 0o755)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := listPeers(ctx, "fake:store"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the context's error, got %v", err)
+	}
+}
