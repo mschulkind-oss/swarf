@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/daemon"
+	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/deletehold"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
@@ -182,6 +184,36 @@ func CheckRcloneLayout() Check {
 		return Check{"rclone layout", false, msg}
 	}
 	return Check{"rclone layout", true, "Rclone remote uses per-machine layout"}
+}
+
+// CheckMachineOwner fails when this machine's remote subtree carries an
+// owner token (see backends.OwnerTokenFile) that is not this store's: a
+// different store uses the same machine_id, and the rclone backend will
+// refuse to upload. A store with no token yet counts as different, since
+// its first push would claim a new one. An empty Msg means not applicable
+// (not rclone, no rclone, or the remote could not be read).
+func CheckMachineOwner(gc *config.GlobalConfig) Check {
+	if gc == nil || gc.Backend != "rclone" {
+		return Check{"machine owner", true, ""}
+	}
+	if _, err := exec.LookPath("rclone"); err != nil {
+		return Check{"machine owner", true, ""}
+	}
+	target := backends.MachineRemote(gc.Remote, gc.EffectiveMachineID())
+	remote, ok, err := backends.RemoteOwnerToken(context.Background(), target)
+	if err != nil {
+		return Check{"machine owner", true, ""}
+	}
+	if !ok {
+		return Check{"machine owner", true, fmt.Sprintf("Remote subtree %s is not claimed yet (the next push claims it)", target)}
+	}
+	if local, has := backends.ReadOwnerToken(paths.StoreDir); has && local == remote {
+		return Check{"machine owner", true, fmt.Sprintf("Remote subtree %s belongs to this store", target)}
+	}
+	msg := strings.Replace(backends.OwnerMismatch(gc.EffectiveMachineID(), target),
+		".\n", ".\n    Pushes commit locally but do not upload until this is resolved.\n", 1)
+	msg = strings.ReplaceAll(msg, "\n  ", "\n    Fix: ")
+	return Check{"machine owner", false, msg}
 }
 
 // CheckPeerRefs lists the refs/swarf-peers/<id> entries in the local store.
@@ -619,6 +651,9 @@ func RunChecks(cwd string) Result {
 	r.System = append(r.System, CheckDeleteHolds(gc)...)
 	if layout := CheckRcloneLayout(); layout.Msg != "" {
 		r.System = append(r.System, layout)
+	}
+	if owner := CheckMachineOwner(gc); owner.Msg != "" {
+		r.System = append(r.System, owner)
 	}
 	if peers := CheckPeerRefs(); peers.Msg != "" {
 		r.System = append(r.System, peers)

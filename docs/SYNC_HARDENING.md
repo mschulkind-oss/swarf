@@ -140,7 +140,9 @@ or a `config.toml` copied with dotfiles).
 - Before uploading, the rclone backend reads the owner token already on the
   remote for this machine's subtree. Absent: proceed (the upload claims it).
   Same: proceed. Different: refuse to upload, commit locally only, and report
-  why.
+  why. If the remote token cannot be read at all (as opposed to being
+  absent), the upload is skipped for that pass rather than risk
+  overwriting a subtree whose owner is unknown.
 - `swarf push --take-over` uploads anyway, for a machine that genuinely
   replaces the old one; the message tells the user to `swarf pull` first.
 - `swarf doctor` reports the mismatch.

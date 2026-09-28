@@ -13,9 +13,12 @@ import (
 )
 
 type RcloneBackend struct {
-	Remote      string
-	MachineID   string
-	NoFastList  bool
+	Remote     string
+	MachineID  string
+	NoFastList bool
+	// TakeOver uploads even when the machine subtree's owner token
+	// belongs to a different store ('swarf push --take-over').
+	TakeOver    bool
 	remoteMkdir bool // true after we've confirmed/created our machine dir
 }
 
@@ -103,6 +106,15 @@ func (r *RcloneBackend) Sync(ctx context.Context, storePath string) SyncResult {
 		return SyncResult{Success: false, Message: msg, FilesChanged: nFiles}
 	}
 
+	// Refuse to overwrite a machine subtree another store wrote: two
+	// machines sharing a machine_id would otherwise take turns wiping each
+	// other's upload. The store's owner token (see OwnerTokenFile) rides
+	// along with the upload, so an unclaimed subtree becomes ours.
+	if msg := r.checkOwner(ctx, storePath, target); msg != "" {
+		slog.Warn("sync: refusing to push", "remote", target, "reason", msg)
+		return SyncResult{Success: false, Message: msg, FilesChanged: nFiles}
+	}
+
 	// Create our machine's remote directory on first sync only.
 	if !r.remoteMkdir {
 		slog.Info("sync: ensuring remote directory exists (first sync)", "remote", target)
@@ -129,6 +141,29 @@ func (r *RcloneBackend) Sync(ctx context.Context, storePath string) SyncResult {
 	slog.Info("sync: rclone sync completed successfully", "remote", target, "files", nFiles, "output", strings.TrimSpace(string(out)))
 
 	return SyncResult{Success: true, Message: fmt.Sprintf("Synced %d files via rclone", nFiles), FilesChanged: nFiles}
+}
+
+// checkOwner compares this store's owner token with the one already in
+// the machine subtree target and returns why the upload must not go ahead,
+// or "" when it may: the subtree is unclaimed, already ours, or TakeOver
+// is set.
+func (r *RcloneBackend) checkOwner(ctx context.Context, storePath, target string) string {
+	local, err := EnsureOwnerToken(storePath)
+	if err != nil {
+		return fmt.Sprintf("owner token: %v", err)
+	}
+	if r.TakeOver {
+		slog.Info("sync: taking over the machine subtree", "remote", target)
+		return ""
+	}
+	remote, ok, err := RemoteOwnerToken(ctx, target)
+	if err != nil {
+		return fmt.Sprintf("could not read the remote owner token, not uploading: %v", err)
+	}
+	if ok && remote != local {
+		return "refusing to upload (committed locally only): " + OwnerMismatch(r.MachineID, target)
+	}
+	return ""
 }
 
 func (r *RcloneBackend) HasChanges(_ string) bool {

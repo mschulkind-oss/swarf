@@ -32,6 +32,10 @@ type Options struct {
 	// AllowDeletes applies deletes a delete hold would otherwise keep
 	// back, for this one pass ('swarf push --allow-deletes').
 	AllowDeletes bool
+	// TakeOver uploads even when this machine's remote subtree was
+	// written by a different store with the same machine_id
+	// ('swarf push --take-over').
+	TakeOver bool
 }
 
 // Run executes one full push cycle. The context governs the wait for the
@@ -88,7 +92,7 @@ func Run(ctx context.Context, opts Options) error {
 	initialize.WriteStoreReadme()
 
 	// Backend commits and pushes.
-	backend := makeBackend(gc)
+	backend := makeBackend(gc, opts.TakeOver)
 	result := backend.Sync(ctx, paths.StoreDir)
 	if !result.Success {
 		return fmt.Errorf("sync failed: %s", result.Message)
@@ -101,12 +105,13 @@ func Run(ctx context.Context, opts Options) error {
 	return nil
 }
 
-func makeBackend(gc *config.GlobalConfig) backends.SyncBackend {
+func makeBackend(gc *config.GlobalConfig, takeOver bool) backends.SyncBackend {
 	if gc.Backend == "rclone" {
 		return &backends.RcloneBackend{
 			Remote:     gc.Remote,
 			MachineID:  config.EnsureMachineID(),
 			NoFastList: gc.NoFastList,
+			TakeOver:   takeOver,
 		}
 	}
 	return &backends.GitBackend{}

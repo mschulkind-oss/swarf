@@ -22,8 +22,8 @@ import (
 // that's the state space users actually hit.
 
 // fakeRemoteShim writes an rclone stand-in into dir, pointing at
-// fakeRemoteRoot. The shim implements lsf / mkdir / sync / copy / about /
-// size / lsd with filesystem paths. Remote refs of the form fake:<path>
+// fakeRemoteRoot. The shim implements lsf / mkdir / sync / copy / cat /
+// about / size / lsd with filesystem paths. Remote refs of the form fake:<path>
 // resolve to fakeRemoteRoot/<path>. When FAKE_RCLONE_AFTER_DOWNLOAD is set,
 // sync/copy runs it with bash after every copy from a fake: source, and
 // FAKE_RCLONE_AFTER_UPLOAD likewise after every copy to a fake: destination.
@@ -168,6 +168,19 @@ case "$cmd" in
     case "$dst_ref" in
       fake:*) [ -n "${FAKE_RCLONE_AFTER_UPLOAD:-}" ] && bash -c "$FAKE_RCLONE_AFTER_UPLOAD" ;;
     esac
+    exit 0
+    ;;
+  cat)
+    path=""
+    for a in "$@"; do
+      case "$a" in -*) ;; *) path="$a" ;; esac
+    done
+    real=$(resolve "$path")
+    if [ ! -f "$real" ]; then
+      echo "directory not found" >&2
+      exit 3
+    fi
+    cat "$real"
     exit 0
     ;;
   about|size)
@@ -1545,4 +1558,63 @@ func processRunning(pid int) bool {
 	// The state follows the parenthesized command name.
 	fields := strings.Fields(string(data[strings.LastIndexByte(string(data), ')')+1:]))
 	return len(fields) > 0 && fields[0] != "Z"
+}
+
+// Two machines configured with the same machine_id (a shared hostname,
+// or a config.toml copied with dotfiles) must not take turns overwriting
+// one remote subtree. The second one to push is refused and commits
+// locally only, until it moves to its own id or takes over with
+// --take-over; 'swarf doctor' reports the mismatch meanwhile.
+func TestMultiMachine_SharedMachineIDRefusesSecondPush(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+	subtree := filepath.Join(fakeRemote, "store", "machines", "same")
+
+	a := newMachine(t, "same", fakeRemote)
+	a.init()
+	a.write("a.md", "from A\n")
+	a.push()
+	before := listTree(subtree)
+	if !strings.Contains(before, "a.md") {
+		t.Fatalf("A's push should land a.md in its subtree:\n%s", before)
+	}
+
+	b := newMachineWithSlug(t, "same", fakeRemote, a.slug())
+	b.init()
+	b.write("b.md", "from B\n")
+	out, err := b.swarf("push")
+	if err == nil {
+		t.Fatalf("B's push into A's subtree should be refused:\n%s", out)
+	}
+	for _, want := range []string{"machine_id", "--take-over", "swarf pull"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("refusal should mention %q:\n%s", want, out)
+		}
+	}
+	if got := listTree(subtree); got != before {
+		t.Errorf("A's subtree changed under a refused push:\nbefore:\n%s\nafter:\n%s", before, got)
+	}
+	if data, _ := os.ReadFile(filepath.Join(subtree, a.slug(), "a.md")); string(data) != "from A\n" {
+		t.Errorf("A's a.md on the remote = %q", data)
+	}
+	if !b.storeHas(a.slug(), "b.md") {
+		t.Error("the refused push should still mirror and commit into B's store")
+	}
+
+	doc, _ := b.swarf("doctor")
+	if !strings.Contains(doc, "different store") || !strings.Contains(doc, "--take-over") {
+		t.Errorf("doctor should report the owner token mismatch:\n%s", doc)
+	}
+
+	// Taking over replaces the subtree with B's store.
+	mustSwarf(t, b, "push", "--take-over")
+	if _, err := os.Stat(filepath.Join(subtree, a.slug(), "b.md")); err != nil {
+		t.Errorf("--take-over should upload B's store: %v", err)
+	}
+	if out, err := b.swarf("push"); err != nil {
+		t.Errorf("after taking over, B pushes normally: %v\n%s", err, out)
+	}
+	if out, err := a.swarf("push"); err == nil {
+		t.Errorf("after B took over, A is the one refused:\n%s", out)
+	}
 }

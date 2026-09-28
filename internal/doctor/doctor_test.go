@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/deletehold"
 	"github.com/mschulkind-oss/swarf/internal/doctor"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
@@ -365,4 +366,56 @@ func TestRunChecksReportsDeleteHold(t *testing.T) {
 		}
 	}
 	t.Fatal("RunChecks should include the delete hold check")
+}
+
+// swarf doctor reports a machine subtree whose owner token belongs to a
+// different store, and passes when the subtree is unclaimed or ours.
+func TestCheckMachineOwner(t *testing.T) {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone not installed")
+	}
+	testutil.InitializedSwarf(t)
+	remote := t.TempDir()
+	gc := &config.GlobalConfig{Backend: "rclone", Remote: remote, MachineID: "box"}
+	subtreeGit := filepath.Join(remote, backends.MachineSuffix, "box", ".git")
+
+	if c := doctor.CheckMachineOwner(gc); !c.OK {
+		t.Errorf("unclaimed subtree should pass: %+v", c)
+	}
+
+	// A store that has never pushed would claim a fresh token, so a
+	// subtree someone else already claimed is a mismatch too.
+	os.MkdirAll(subtreeGit, 0o755)
+	os.WriteFile(filepath.Join(subtreeGit, backends.OwnerTokenFile), []byte("other\n"), 0o644)
+	if c := doctor.CheckMachineOwner(gc); c.OK {
+		t.Errorf("a claimed subtree should fail for a store with no token yet: %+v", c)
+	}
+	if _, ok := backends.ReadOwnerToken(paths.StoreDir); ok {
+		t.Error("doctor must not create the owner token")
+	}
+
+	tok, err := backends.EnsureOwnerToken(paths.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(subtreeGit, 0o755)
+	os.WriteFile(filepath.Join(subtreeGit, backends.OwnerTokenFile), []byte(tok+"\n"), 0o644)
+	if c := doctor.CheckMachineOwner(gc); !c.OK {
+		t.Errorf("our own subtree should pass: %+v", c)
+	}
+
+	os.WriteFile(filepath.Join(subtreeGit, backends.OwnerTokenFile), []byte("other\n"), 0o644)
+	c := doctor.CheckMachineOwner(gc)
+	if c.OK {
+		t.Fatalf("a subtree another store owns should fail: %+v", c)
+	}
+	for _, want := range []string{"box", "different store", "--take-over", "[machine] id"} {
+		if !strings.Contains(c.Msg, want) {
+			t.Errorf("doctor message missing %q:\n%s", want, c.Msg)
+		}
+	}
+
+	if c := doctor.CheckMachineOwner(&config.GlobalConfig{Backend: "git", Remote: remote}); !c.OK || c.Msg != "" {
+		t.Errorf("git backend should skip the check, got %+v", c)
+	}
 }
