@@ -2000,6 +2000,30 @@ func TestMultiMachineGit_ReinstallRecoversOwnBranch(t *testing.T) {
 	}
 }
 
+// A reinstalled machine that runs 'swarf init' and edits a file before
+// its first pull keeps the edit, even though its old machine branch has
+// the same file: reinstall recovery replaces the store's working tree
+// first, and only then does the forward mirror flush the edit into it.
+func TestMultiMachineGit_ReinstallKeepsEditMadeBeforePull(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("mine.md", "A's own\n")
+	a.push()
+
+	a2 := newGitMachineWithSlug(t, "a", bare, a.slug())
+	a2.init()
+	a2.write("mine.md", "edited after reinstall\n")
+	out := mustSwarf(t, a2, "pull")
+	if got := a2.read("mine.md"); got != "edited after reinstall\n" {
+		t.Errorf("project mine.md = %q, want the edit made before the pull\n--- pull output ---\n%s", got, out)
+	}
+	stored, err := os.ReadFile(filepath.Join(a2.storeRoot(a.slug()), "mine.md"))
+	if err != nil || string(stored) != "edited after reinstall\n" {
+		t.Errorf("store mine.md = %q (%v), want the edit made before the pull\n--- pull output ---\n%s", stored, err, out)
+	}
+}
+
 // isAncestorIn reports whether commit a is an ancestor of commit b in
 // the bare repository.
 func isAncestorIn(bare, a, b string) bool {
