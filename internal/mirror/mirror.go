@@ -20,6 +20,9 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/mschulkind-oss/swarf/internal/deletehold"
 )
 
 // Dir mirrors src into dst destructively: files in src are copied/updated
@@ -132,6 +135,17 @@ func Dir(src, dst string, skip Skip) error {
 	return lastErr
 }
 
+// Guard configures the delete hold for one TrackedDir pass. The zero
+// Guard still holds; it just records no hold marker.
+type Guard struct {
+	// Marker is the hold marker path (paths.DeleteHoldMarker). Empty
+	// means a hold is returned but not recorded.
+	Marker string
+	// AllowDeletes applies the deletes even when they would hold: the
+	// user confirmed them with 'swarf push --allow-deletes'.
+	AllowDeletes bool
+}
+
 // TrackedDir mirrors src into dst, propagating only the deletions that
 // we have first-hand evidence of. Uses a per-source manifest at
 // manifestPath that records the file set seen on the previous pass.
@@ -144,11 +158,22 @@ func Dir(src, dst string, skip Skip) error {
 // only copies. Subsequent runs get delete-propagation right without
 // the "empty project wipes the store" failure mode.
 //
-// Returns the last fatal error encountered (or nil). Per-file errors
-// are logged and do not abort.
-func TrackedDir(src, dst, manifestPath string, skip Skip) error {
+// A manifest can also be stale: it lists files that something other
+// than the user removed from src between passes (Sync Scenarios,
+// Scenario 6). When the deletes would remove a suspiciously large share
+// of the tracked files (deletehold.Triggered), the pass enters a delete
+// hold: it applies none of those deletes, still copies adds and edits,
+// keeps the held paths in the manifest, writes the hold marker, and
+// returns the hold. Any pass that does not hold removes the marker.
+// Paths matched by skip are pruned from dst as always and never count
+// toward a hold — dropping them is deliberate.
+//
+// Returns the hold (nil when the pass did not hold) and the last fatal
+// error encountered (or nil). Per-file errors are logged and do not
+// abort.
+func TrackedDir(src, dst, manifestPath string, skip Skip, guard Guard) (*deletehold.Hold, error) {
 	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dst, err)
+		return nil, fmt.Errorf("mkdir %s: %w", dst, err)
 	}
 
 	oldSet := readManifest(manifestPath)
@@ -210,14 +235,19 @@ func TrackedDir(src, dst, manifestPath string, skip Skip) error {
 		return nil
 	})
 
+	plan := planDeletes(oldSet, newSet, dst, skip)
+	holding := plan.holds() && !guard.AllowDeletes
+
 	// Delete from dst anything the manifest says we used to have in src
 	// but we don't anymore. We only touch files we have first-hand
 	// evidence of, never files that appeared in dst from some other
-	// source (e.g. peer content we just pulled).
-	for rel := range oldSet {
-		if _, stillPresent := newSet[rel]; stillPresent {
-			continue
-		}
+	// source (e.g. peer content we just pulled). Excluded paths go
+	// even during a hold; the tracked deletes wait for the user.
+	deletes := plan.excluded
+	if !holding {
+		deletes = append(deletes, plan.atStake...)
+	}
+	for _, rel := range deletes {
 		target := filepath.Join(dst, rel)
 		if err := os.Remove(target); err == nil {
 			slog.Debug("mirror: deleted tracked file", "path", rel)
@@ -226,10 +256,104 @@ func TrackedDir(src, dst, manifestPath string, skip Skip) error {
 		}
 	}
 
+	var hold *deletehold.Hold
+	if holding {
+		// Keep the held paths in the manifest so the next pass sees the
+		// same deletes, and holds again, until the files come back or
+		// the user confirms.
+		for _, rel := range plan.atStake {
+			newSet[rel] = struct{}{}
+		}
+		hold = deletehold.NewHold(guard.Marker, plan.atStake, time.Now())
+		if guard.Marker != "" {
+			if err := deletehold.Write(guard.Marker, hold); err != nil {
+				slog.Warn("mirror: writing hold marker failed", "path", guard.Marker, "err", err)
+			}
+		}
+	} else if guard.Marker != "" {
+		if err := deletehold.Remove(guard.Marker); err != nil {
+			slog.Warn("mirror: removing hold marker failed", "path", guard.Marker, "err", err)
+		}
+	}
+
 	if err := writeManifest(manifestPath, newSet); err != nil {
 		slog.Warn("mirror: writing manifest failed", "path", manifestPath, "err", err)
 	}
-	return lastErr
+	return hold, lastErr
+}
+
+// deletePlan sorts the manifest entries missing from src into what a
+// forward pass may delete from dst.
+type deletePlan struct {
+	tracked  int      // manifest entries not matched by a sync exclude
+	missing  int      // tracked entries gone from src
+	atStake  []string // missing entries that still exist in dst
+	excluded []string // manifest entries matched by a sync exclude
+}
+
+func planDeletes(oldSet, newSet map[string]struct{}, dst string, skip Skip) deletePlan {
+	var p deletePlan
+	for rel := range oldSet {
+		if skips(skip, rel, false) {
+			p.excluded = append(p.excluded, rel)
+			continue
+		}
+		p.tracked++
+		if _, stillPresent := newSet[rel]; stillPresent {
+			continue
+		}
+		p.missing++
+		if _, err := os.Lstat(filepath.Join(dst, rel)); err == nil {
+			p.atStake = append(p.atStake, rel)
+		}
+	}
+	return p
+}
+
+func (p deletePlan) holds() bool {
+	return deletehold.Triggered(p.tracked, p.missing, len(p.atStake))
+}
+
+// ClearResolvedHold removes the hold marker at marker when src no longer
+// has deletes that would hold — the files came back, as they do when
+// pull's reverse mirror copies them in from the store. Read-only apart
+// from the marker: nothing is copied or deleted and the manifest is left
+// as is. Reports whether a marker was removed.
+func ClearResolvedHold(src, dst, manifestPath string, skip Skip, marker string) bool {
+	if _, ok := deletehold.Read(marker); !ok {
+		return false
+	}
+	current := make(map[string]struct{})
+	filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(src, path)
+		if rel == "." {
+			return nil
+		}
+		if skips(skip, rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if _, err := statResolvable(path); err == nil {
+			current[rel] = struct{}{}
+		}
+		return nil
+	})
+	if planDeletes(readManifest(manifestPath), current, dst, skip).holds() {
+		return false
+	}
+	if err := deletehold.Remove(marker); err != nil {
+		slog.Warn("mirror: removing hold marker failed", "path", marker, "err", err)
+		return false
+	}
+	return true
 }
 
 // Skip decides whether one entry is outside the mirror's remit. rel is

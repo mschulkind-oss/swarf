@@ -58,10 +58,14 @@ The fix for Scenarios 6, 7, and 8 (emptied-directory case).
   - the project would lose every tracked file and at least 2 are at stake, or
   - at least 10 files would be deleted and they are at least half the
     manifest.
-- On hold: apply no deletes at all, still copy adds and modifications, keep
-  the held paths in the manifest, and write the hold marker (count, a sample
-  of paths, first-seen time).
-- On any pass that does not hold, remove the hold marker.
+- On hold: apply none of the counted deletes, still copy adds and
+  modifications, keep the held paths in the manifest, and write the hold
+  marker (count, a sample of paths, first-seen time). Excluded paths are
+  still pruned from the store during a hold: they are not part of it.
+- On any pass that does not hold, remove the hold marker. Pull also removes
+  it after its reverse mirror when the project no longer has deletes that
+  would hold, so restoring the files with `swarf pull` ends the hold at
+  once rather than on the next forward pass.
 - `swarf push --allow-deletes` applies held deletes for that one pass.
 - The daemon logs a hold once when it appears, not on every cycle.
 - `swarf status` and `swarf doctor` show each held project with the two ways

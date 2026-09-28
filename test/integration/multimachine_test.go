@@ -908,3 +908,124 @@ func TestMultiMachine_StablePushPullLoop(t *testing.T) {
 		t.Fatal("B's x.md drifted in idle loop")
 	}
 }
+
+// wipeProject empties project/swarf/ of the given files while leaving
+// the directory itself in place: the Scenario 6 shape, where something
+// outside swarf removed the files between passes.
+func (m *machine) wipeProject(rels ...string) {
+	m.t.Helper()
+	for _, rel := range rels {
+		if err := os.RemoveAll(filepath.Join(m.project, "swarf", rel)); err != nil {
+			m.t.Fatal(err)
+		}
+	}
+}
+
+// holdMarker returns the path of this machine's hold marker for slug.
+func (m *machine) holdMarker(slug string) string {
+	return filepath.Join(m.home, ".cache", "swarf", "delete-holds", slug+".json")
+}
+
+// Scenario 6 (Sync Scenarios): B's manifest already lists every file,
+// then the files vanish from B's project between passes. The forward
+// mirror used to read that as "the user deleted all of them" and pruned
+// the store, which the next upload carried to the remote. With the
+// delete hold the store keeps every file, the hold is visible in
+// status, and a pull puts the files back.
+func TestMultiMachine_WipedProjectHoldsDeletes(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	files := []string{"README.md", "docs/design.md", "src/mod/notes.md"}
+	for _, f := range files {
+		a.write(f, "A's "+f+"\n")
+	}
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	// This push records every file in B's manifest: the populated
+	// manifest the earlier empty-project test never reached.
+	b.push()
+
+	b.wipeProject("README.md", "docs", "src")
+	out := mustSwarf(t, b, "push")
+
+	for _, f := range files {
+		if !b.storeHas(a.slug(), f) {
+			t.Errorf("store lost %s after a push from a wiped project\n--- push output ---\n%s", f, out)
+		}
+		remote := filepath.Join(fakeRemote, "store", "machines", "b", a.slug(), f)
+		if _, err := os.Stat(remote); err != nil {
+			t.Errorf("B's remote subtree lost %s", f)
+		}
+	}
+	if !strings.Contains(out, "--allow-deletes") {
+		t.Errorf("push should explain the hold and how to confirm it, got:\n%s", out)
+	}
+	if _, err := os.Stat(b.holdMarker(a.slug())); err != nil {
+		t.Fatalf("expected a hold marker after the held push: %v", err)
+	}
+
+	status := mustSwarf(t, b, "status")
+	if !strings.Contains(status, "delete hold") || !strings.Contains(status, "swarf pull") {
+		t.Errorf("status should show the hold and the ways out, got:\n%s", status)
+	}
+
+	// The first way out: pull copies the files back from the store, and
+	// the hold is gone because nothing is missing any more.
+	b.pull()
+	for _, f := range files {
+		if !b.exists(f) {
+			t.Errorf("pull should have restored %s into the project", f)
+		}
+	}
+	if _, err := os.Stat(b.holdMarker(a.slug())); !os.IsNotExist(err) {
+		t.Errorf("hold marker should be removed once the files are back (err=%v)", err)
+	}
+	b.push()
+	if _, err := os.Stat(b.holdMarker(a.slug())); !os.IsNotExist(err) {
+		t.Errorf("a push after the restore must not hold again (err=%v)", err)
+	}
+}
+
+// The second way out of a delete hold: the user really did mean to
+// delete everything, and says so with --allow-deletes.
+func TestMultiMachine_AllowDeletesAppliesHeldDeletes(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("one.md", "1\n")
+	a.write("two.md", "2\n")
+	a.push()
+	a.push() // second pass: the manifest now lists both files
+
+	a.wipeProject("one.md", "two.md")
+	a.push()
+	if !a.storeHas(a.slug(), "one.md") || !a.storeHas(a.slug(), "two.md") {
+		t.Fatal("setup: a plain push should have held the deletes")
+	}
+
+	mustSwarf(t, a, "push", "--allow-deletes")
+	if a.storeHas(a.slug(), "one.md") || a.storeHas(a.slug(), "two.md") {
+		t.Error("--allow-deletes should apply the held deletes to the store")
+	}
+	if _, err := os.Stat(a.holdMarker(a.slug())); !os.IsNotExist(err) {
+		t.Errorf("hold marker should be removed after the confirmed pass (err=%v)", err)
+	}
+	remote := filepath.Join(fakeRemote, "store", "machines", "a", a.slug(), "one.md")
+	if _, err := os.Stat(remote); !os.IsNotExist(err) {
+		t.Error("the confirmed delete should reach the remote")
+	}
+
+	// And the hold does not come back: the manifest no longer lists them.
+	out := mustSwarf(t, a, "push")
+	if strings.Contains(out, "--allow-deletes") {
+		t.Errorf("no hold expected after confirming, got:\n%s", out)
+	}
+}

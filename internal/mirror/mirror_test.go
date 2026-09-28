@@ -149,7 +149,7 @@ func TestTrackedDirReplacesFileWithDirectory(t *testing.T) {
 
 	os.WriteFile(filepath.Join(dst, "conflict"), []byte("stale"), 0o644)
 
-	if err := TrackedDir(src, dst, manifest, nil); err != nil {
+	if _, err := TrackedDir(src, dst, manifest, nil, Guard{}); err != nil {
 		t.Fatalf("TrackedDir should recover from file-where-dir-wanted: %v", err)
 	}
 	assertFile(t, filepath.Join(dst, "conflict", "inner.txt"), "v")
@@ -163,7 +163,7 @@ func TestTrackedDirHandlesBrokenSymlink(t *testing.T) {
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644)
 	os.Symlink(filepath.Join(src, "nope"), filepath.Join(src, "broken"))
 
-	if err := TrackedDir(src, dst, manifest, nil); err != nil {
+	if _, err := TrackedDir(src, dst, manifest, nil, Guard{}); err != nil {
 		t.Fatalf("TrackedDir: %v", err)
 	}
 	assertFile(t, filepath.Join(dst, "a.txt"), "a")
@@ -200,7 +200,7 @@ func TestPendingFilesZeroAfterMirror(t *testing.T) {
 	os.WriteFile(filepath.Join(external, "real.txt"), []byte("linked content, much longer than the link"), 0o644)
 	os.Symlink(filepath.Join(external, "real.txt"), filepath.Join(src, "link.txt"))
 
-	if err := TrackedDir(src, dst, manifest, nil); err != nil {
+	if _, err := TrackedDir(src, dst, manifest, nil, Guard{}); err != nil {
 		t.Fatalf("TrackedDir: %v", err)
 	}
 	if got := PendingFiles(src, dst, nil); got != 0 {
@@ -214,7 +214,7 @@ func TestPendingFilesCountsUnmirroredWork(t *testing.T) {
 	manifest := filepath.Join(t.TempDir(), "m.txt")
 
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o644)
-	TrackedDir(src, dst, manifest, nil)
+	TrackedDir(src, dst, manifest, nil, Guard{})
 
 	os.WriteFile(filepath.Join(src, "new.txt"), []byte("brand new"), 0o644)
 	os.WriteFile(filepath.Join(src, "a.txt"), []byte("a, now edited"), 0o644)
@@ -223,7 +223,7 @@ func TestPendingFilesCountsUnmirroredWork(t *testing.T) {
 		t.Fatalf("expected the new file and the edit to be pending, got %d", got)
 	}
 
-	TrackedDir(src, dst, manifest, nil)
+	TrackedDir(src, dst, manifest, nil, Guard{})
 	if got := PendingFiles(src, dst, nil); got != 0 {
 		t.Fatalf("expected 0 pending after the mirror caught up, got %d", got)
 	}
@@ -236,7 +236,7 @@ func TestPendingFilesIgnoresBrokenSymlink(t *testing.T) {
 
 	os.WriteFile(filepath.Join(src, "good.txt"), []byte("good"), 0o644)
 	os.Symlink(filepath.Join(src, "nonexistent"), filepath.Join(src, "broken"))
-	TrackedDir(src, dst, manifest, nil)
+	TrackedDir(src, dst, manifest, nil, Guard{})
 
 	// The mirror skips a broken link permanently, so pending would never
 	// clear if we counted it.
@@ -253,7 +253,7 @@ func TestPendingFilesIgnoresSymlinkedDirectory(t *testing.T) {
 
 	os.WriteFile(filepath.Join(external, "inner.txt"), []byte("x"), 0o644)
 	os.Symlink(external, filepath.Join(src, "dirlink"))
-	TrackedDir(src, dst, manifest, nil)
+	TrackedDir(src, dst, manifest, nil, Guard{})
 
 	// A link to a directory resolves to a directory, which the copy pass
 	// cannot write as a file. Not pending work either.
@@ -315,14 +315,14 @@ func TestTrackedDirPrunesNewlyExcludedContent(t *testing.T) {
 	os.WriteFile(filepath.Join(src, ".yolo", "home", "bash_history"), []byte("secrets"), 0o644)
 
 	// Synced before anyone thought to exclude it.
-	if err := TrackedDir(src, dst, manifest, nil); err != nil {
+	if _, err := TrackedDir(src, dst, manifest, nil, Guard{}); err != nil {
 		t.Fatalf("TrackedDir: %v", err)
 	}
 	assertFile(t, filepath.Join(dst, ".yolo", "home", "bash_history"), "secrets")
 
 	// Now excluded.
 	skip := SkipPatterns([]string{".yolo/"})
-	if err := TrackedDir(src, dst, manifest, skip); err != nil {
+	if _, err := TrackedDir(src, dst, manifest, skip, Guard{}); err != nil {
 		t.Fatalf("TrackedDir with skip: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dst, ".yolo", "home", "bash_history")); !os.IsNotExist(err) {

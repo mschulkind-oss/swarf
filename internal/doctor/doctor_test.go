@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/deletehold"
 	"github.com/mschulkind-oss/swarf/internal/doctor"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/paths"
@@ -316,5 +317,31 @@ func TestRunChecksJailMode(t *testing.T) {
 	}
 	if len(result.System) != 0 {
 		t.Fatal("expected no system checks in jail mode")
+	}
+}
+
+func TestCheckDeleteHolds(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	slug := filepath.Base(repo)
+	config.RegisterDrawer(slug, repo)
+	gc := &config.GlobalConfig{Backend: "git"}
+
+	checks := doctor.CheckDeleteHolds(gc)
+	if len(checks) != 1 || !checks[0].OK {
+		t.Fatalf("no hold should be one passing check, got %+v", checks)
+	}
+
+	if err := deletehold.Write(paths.DeleteHoldMarker(slug), &deletehold.Hold{Count: 3, Sample: []string{"x.md"}}); err != nil {
+		t.Fatal(err)
+	}
+	checks = doctor.CheckDeleteHolds(gc)
+	if len(checks) != 1 || checks[0].OK {
+		t.Fatalf("a held project should fail its check, got %+v", checks)
+	}
+	msg := checks[0].Msg
+	for _, want := range []string{slug, "3 tracked file(s)", "--allow-deletes", filepath.Join(paths.StoreDir, slug)} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("doctor message missing %q:\n%s", want, msg)
+		}
 	}
 }

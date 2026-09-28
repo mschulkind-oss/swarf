@@ -41,6 +41,14 @@ func ProjectManifest(slug string) string {
 	return filepath.Join(CacheDir, "manifests", slug+".txt")
 }
 
+// DeleteHoldMarker returns the path of the hold marker for slug: the
+// file that records a delete hold, written by mirror.TrackedDir when the
+// forward mirror holds its deletes and removed by the next pass that
+// does not. See package deletehold.
+func DeleteHoldMarker(slug string) string {
+	return filepath.Join(CacheDir, "delete-holds", slug+".json")
+}
+
 func ProjectSlug(hostRoot string) string {
 	resolved, err := filepath.EvalSymlinks(hostRoot)
 	if err != nil {

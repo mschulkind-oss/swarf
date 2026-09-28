@@ -99,7 +99,8 @@ func relinkAllProjects() {
 // mirrorAllProjects copies each project's swarf/ content into the central
 // store. Uses TrackedDir so the first pass after init/pull only copies
 // (no deletes against content we've never observed locally), and
-// subsequent passes correctly delete files the user removed.
+// subsequent passes correctly delete files the user removed — unless
+// they are enough to put the project in a delete hold.
 func mirrorAllProjects(skip mirror.Skip) {
 	drawers := config.ReadDrawers()
 	for _, d := range drawers {
@@ -108,8 +109,18 @@ func mirrorAllProjects(skip mirror.Skip) {
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip); err != nil {
+		hold, err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip,
+			mirror.Guard{Marker: paths.DeleteHoldMarker(d.Slug)})
+		if err != nil {
 			slog.Warn("mirror failed", "project", d.Slug, "err", err)
+		}
+		// A delete hold persists across cycles until the user acts, so
+		// log it once when it appears — the hold marker's absence before
+		// this pass is what makes it new — not on every debounce.
+		if hold != nil && hold.New {
+			slog.Warn("delete hold: deletes not applied to the store",
+				"project", d.Slug, "files", hold.Count, "sample", hold.Sample,
+				"fix", "restore the files (swarf pull, for rclone) or run 'swarf push --allow-deletes'")
 		}
 	}
 }

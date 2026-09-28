@@ -18,6 +18,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
+	"github.com/mschulkind-oss/swarf/internal/deletehold"
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
@@ -25,10 +26,17 @@ import (
 
 var ErrNoConfig = errors.New("no global config found — run 'swarf init' first")
 
+// Options tunes one push.
+type Options struct {
+	// AllowDeletes applies deletes a delete hold would otherwise keep
+	// back, for this one pass ('swarf push --allow-deletes').
+	AllowDeletes bool
+}
+
 // Run executes one full push cycle. The context governs the network portion
 // of the backend sync, so an interrupted `swarf push` (Ctrl-C) aborts the
 // in-flight rclone/git-push rather than blocking.
-func Run(ctx context.Context) error {
+func Run(ctx context.Context, opts Options) error {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
 		return ErrNoConfig
@@ -43,7 +51,9 @@ func Run(ctx context.Context) error {
 	// TrackedDir keeps a manifest of files we've previously observed so
 	// a never-seeded or transiently-empty project directory can't wipe
 	// the store, while intentional user deletes still propagate on the
-	// next push.
+	// next push. A pass that would delete a suspiciously large share of
+	// a project's tracked files holds those deletes instead (see package
+	// deletehold) unless the user passed --allow-deletes.
 	skip := mirror.SkipPatterns(gc.Exclude)
 	for _, d := range config.ReadDrawers() {
 		src := paths.SwarfDir(d.Host)
@@ -51,8 +61,16 @@ func Run(ctx context.Context) error {
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip); err != nil {
+		guard := mirror.Guard{Marker: paths.DeleteHoldMarker(d.Slug), AllowDeletes: opts.AllowDeletes}
+		hold, err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip, guard)
+		if err != nil {
 			slog.Warn("push: mirror failed", "project", d.Slug, "err", err)
+		}
+		if hold != nil {
+			console.Warn(hold.Summary(d.Slug))
+			for _, line := range deletehold.WaysOut(gc.Backend, dst) {
+				console.Hint(line)
+			}
 		}
 	}
 

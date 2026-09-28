@@ -10,6 +10,7 @@ import (
 
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/daemon"
+	"github.com/mschulkind-oss/swarf/internal/deletehold"
 	"github.com/mschulkind-oss/swarf/internal/exclude"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
 	"github.com/mschulkind-oss/swarf/internal/link"
@@ -116,6 +117,28 @@ func CheckMachineID() Check {
 	return Check{"machine id", true, fmt.Sprintf(
 		"Machine id: %s (default from hostname; set [machine].id in %s to override)",
 		fallback, paths.GlobalConfigTOML)}
+}
+
+// CheckDeleteHolds reports each registered project in a delete hold, one
+// failing check per project, with the ways out as the fix. A single
+// passing check when nothing is held.
+func CheckDeleteHolds(gc *config.GlobalConfig) []Check {
+	var checks []Check
+	for _, d := range config.ReadDrawers() {
+		h, ok := deletehold.Read(paths.DeleteHoldMarker(d.Slug))
+		if !ok {
+			continue
+		}
+		msg := h.Summary(d.Slug)
+		for _, w := range deletehold.WaysOut(gc.Backend, filepath.Join(paths.StoreDir, d.Slug)) {
+			msg += "\n    Fix: " + w
+		}
+		checks = append(checks, Check{"delete hold", false, msg})
+	}
+	if len(checks) == 0 {
+		return []Check{{"delete hold", true, "No projects in a delete hold"}}
+	}
+	return checks
 }
 
 // CheckRcloneLayout warns when the rclone remote is in the legacy flat layout
@@ -593,6 +616,7 @@ func RunChecks(cwd string) Result {
 	r.System = append(r.System, CheckStore(gc))
 	r.System = append(r.System, CheckStoreRemote())
 	r.System = append(r.System, CheckRemoteReachable())
+	r.System = append(r.System, CheckDeleteHolds(gc)...)
 	if layout := CheckRcloneLayout(); layout.Msg != "" {
 		r.System = append(r.System, layout)
 	}

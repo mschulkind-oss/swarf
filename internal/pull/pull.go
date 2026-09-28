@@ -186,7 +186,10 @@ func mirrorProjectsToStore(skip mirror.Skip) {
 		if !paths.IsDir(src) {
 			continue
 		}
-		if err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip); err != nil {
+		// A delete hold here is left for the reverse mirror to resolve:
+		// the held files are still in the store, so it copies them back.
+		guard := mirror.Guard{Marker: paths.DeleteHoldMarker(d.Slug)}
+		if _, err := mirror.TrackedDir(src, dst, paths.ProjectManifest(d.Slug), skip, guard); err != nil {
 			slog.Warn("pull: forward mirror failed", "project", d.Slug, "err", err)
 		}
 	}
@@ -231,6 +234,11 @@ func mirrorStoreBackToProjects(skip mirror.Skip) (synced, unregistered []string)
 		if err := mirror.Dir(src, dst, skip); err != nil {
 			slog.Warn("pull: reverse mirror failed", "project", slug, "err", err)
 			continue
+		}
+		// The reverse mirror just copied back any files a delete hold
+		// kept in the store, which is the "restore the files" way out.
+		if mirror.ClearResolvedHold(dst, src, paths.ProjectManifest(slug), skip, paths.DeleteHoldMarker(slug)) {
+			console.Ok(fmt.Sprintf("%s: restored the files a delete hold kept in the store; hold cleared.", slug))
 		}
 		synced = append(synced, slug)
 	}

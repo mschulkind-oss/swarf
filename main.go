@@ -215,7 +215,7 @@ Run 'swarf status' to see registered project slugs.`,
 // --- Sync & Remote ---
 
 func pushCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "push",
 		Short:   "Push pending local changes to the remote immediately",
 		GroupID: groupSync,
@@ -224,10 +224,22 @@ func pushCmd() *cobra.Command {
 central store, commits, and pushes to the configured remote — the
 same work the background daemon does on each debounce, run on
 demand. Handy when you're about to 'swarf pull' on another machine
-and don't want to wait for the daemon cycle.`,
-		Example: `  swarf push`,
-		RunE:    func(cmd *cobra.Command, args []string) error { return push.Run(cmd.Context()) },
+and don't want to wait for the daemon cycle.
+
+Delete hold
+  When the files swarf last synced from a project go missing in bulk
+  (every tracked file, or at least 10 that are half or more of them),
+  the push copies adds and edits but deletes nothing from the store:
+  the project is in a delete hold, and 'swarf status' shows it. Restore
+  the files, or pass --allow-deletes to apply the deletes this once.`,
+		Example: `  swarf push
+  swarf push --allow-deletes`,
 	}
+	allowDeletes := cmd.Flags().Bool("allow-deletes", false, "Apply deletes a delete hold is keeping back, for this push only")
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return push.Run(cmd.Context(), push.Options{AllowDeletes: *allowDeletes})
+	}
+	return cmd
 }
 
 func pullCmd() *cobra.Command {

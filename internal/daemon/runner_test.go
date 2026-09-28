@@ -141,3 +141,36 @@ func waitForCycles(t *testing.T, cycles *atomic.Int32, want int32) {
 	}
 	t.Fatalf("expected at least %d sync cycle(s), got %d", want, cycles.Load())
 }
+
+// A delete hold persists across cycles until the user acts; the daemon
+// must announce it once, not on every debounce.
+func TestDeleteHoldLoggedOnce(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	slug := filepath.Base(repo)
+	if err := config.RegisterDrawer(slug, repo); err != nil {
+		t.Fatal(err)
+	}
+	swarfDir := paths.SwarfDir(repo)
+	for _, f := range []string{"a.md", "b.md", "c.md"} {
+		os.WriteFile(filepath.Join(swarfDir, f), []byte(f), 0o644)
+	}
+	mirrorAllProjects(nil) // records all three in the manifest
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	for _, f := range []string{"a.md", "b.md", "c.md"} {
+		os.Remove(filepath.Join(swarfDir, f))
+	}
+	mirrorAllProjects(nil) // cycle 1: the hold appears
+	mirrorAllProjects(nil) // cycle 2: same hold, stay quiet
+
+	if n := strings.Count(buf.String(), "delete hold"); n != 1 {
+		t.Fatalf("expected the hold logged exactly once across two cycles, got %d\nlog:\n%s", n, buf.String())
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, slug, "a.md")); err != nil {
+		t.Error("the daemon's held pass must not delete from the store")
+	}
+}

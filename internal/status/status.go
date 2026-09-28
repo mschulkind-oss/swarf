@@ -16,6 +16,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
+	"github.com/mschulkind-oss/swarf/internal/deletehold"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
@@ -39,6 +40,7 @@ func Run() {
 
 	printStoreInfo(gc)
 	printProjects()
+	printDeleteHolds(gc)
 	printDaemonStatus()
 }
 
@@ -384,6 +386,41 @@ func printProjects() {
 			return s
 		})
 	fmt.Println(t)
+}
+
+// printDeleteHolds lists every registered project in a delete hold (its
+// hold marker exists), with the two ways out. Prints nothing otherwise.
+func printDeleteHolds(gc *config.GlobalConfig) {
+	lines := deleteHoldLines(gc)
+	if len(lines) == 0 {
+		return
+	}
+	fmt.Println()
+	console.Header("Delete holds")
+	for _, l := range lines {
+		fmt.Println(l)
+	}
+}
+
+func deleteHoldLines(gc *config.GlobalConfig) []string {
+	var lines []string
+	for _, d := range config.ReadDrawers() {
+		h, ok := deletehold.Read(paths.DeleteHoldMarker(d.Slug))
+		if !ok {
+			continue
+		}
+		lines = append(lines, yellowStyle.Render("! "+h.Summary(d.Slug)))
+		for _, p := range h.Sample {
+			lines = append(lines, dimStyle.Render("    "+p))
+		}
+		if h.Count > len(h.Sample) {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("    … and %d more", h.Count-len(h.Sample))))
+		}
+		for _, w := range deletehold.WaysOut(gc.Backend, filepath.Join(paths.StoreDir, d.Slug)) {
+			lines = append(lines, "  "+w)
+		}
+	}
+	return lines
 }
 
 func printDaemonStatus() {

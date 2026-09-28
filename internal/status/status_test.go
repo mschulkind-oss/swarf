@@ -259,7 +259,7 @@ func TestCountPendingFilesAfterMirror(t *testing.T) {
 	os.WriteFile(linked, []byte("{ // long enough to differ from the link's own size\n}\n"), 0o644)
 	os.Symlink(linked, filepath.Join(swarfDir, "config.jsonc"))
 
-	if err := mirror.TrackedDir(swarfDir, filepath.Join(paths.StoreDir, slug), paths.ProjectManifest(slug), nil); err != nil {
+	if _, err := mirror.TrackedDir(swarfDir, filepath.Join(paths.StoreDir, slug), paths.ProjectManifest(slug), nil, mirror.Guard{}); err != nil {
 		t.Fatalf("mirror: %v", err)
 	}
 	if got := countPendingFiles(&config.GlobalConfig{}); got != 0 {
@@ -269,5 +269,38 @@ func TestCountPendingFilesAfterMirror(t *testing.T) {
 	os.WriteFile(filepath.Join(swarfDir, "fresh.md"), []byte("not mirrored yet"), 0o644)
 	if got := countPendingFiles(&config.GlobalConfig{}); got != 1 {
 		t.Fatalf("expected the unmirrored file to be pending, got %d", got)
+	}
+}
+
+// A project in a delete hold is listed with its held paths and both
+// ways out; a project without a hold marker is not listed at all.
+func TestDeleteHoldLines(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	slug := filepath.Base(repo)
+	config.RegisterDrawer(slug, repo)
+	gc := &config.GlobalConfig{Backend: "rclone"}
+
+	if got := deleteHoldLines(gc); len(got) != 0 {
+		t.Fatalf("no marker, no lines; got %v", got)
+	}
+
+	swarfDir := paths.SwarfDir(repo)
+	store := filepath.Join(paths.StoreDir, slug)
+	for _, f := range []string{"a.md", "b.md"} {
+		os.WriteFile(filepath.Join(swarfDir, f), []byte(f), 0o644)
+	}
+	guard := mirror.Guard{Marker: paths.DeleteHoldMarker(slug)}
+	mirror.TrackedDir(swarfDir, store, paths.ProjectManifest(slug), nil, guard)
+	os.Remove(filepath.Join(swarfDir, "a.md"))
+	os.Remove(filepath.Join(swarfDir, "b.md"))
+	if h, _ := mirror.TrackedDir(swarfDir, store, paths.ProjectManifest(slug), nil, guard); h == nil {
+		t.Fatal("setup: expected a delete hold")
+	}
+
+	got := strings.Join(deleteHoldLines(gc), "\n")
+	for _, want := range []string{slug, "delete hold", "a.md", "b.md", "swarf pull", "swarf push --allow-deletes"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hold lines missing %q:\n%s", want, got)
+		}
 	}
 }
