@@ -931,3 +931,111 @@ func TestPullResyncKeepsLocalOnlyEdit(t *testing.T) {
 		t.Errorf("no conflict sidecar should be committed, ls-files:\n%s", out)
 	}
 }
+
+// TestPullResyncPendingDeleteKeepsDivergedLocal: a peer delete made since
+// the last pull removes the local file only when the local copy matches the
+// peer's copy from just before the delete. A local edit made meanwhile is
+// kept, with one conflict sidecar holding the peer's pre-delete content.
+func TestPullResyncPendingDeleteKeepsDivergedLocal(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerTmp := t.TempDir()
+	peerStore := filepath.Join(peerTmp, "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "seed.txt"), []byte("seed\n"), 0o644)
+	os.WriteFile(filepath.Join(peerStore, "gone.txt"), []byte("gone\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "seed")
+
+	setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(Options{}); err != nil {
+		t.Fatalf("initial pull: %v", err)
+	}
+
+	// Peer deletes gone.txt; the local store edits it meanwhile.
+	runGit(t, peerStore, "rm", "-q", "gone.txt")
+	runGit(t, peerStore, "commit", "-m", "drop gone")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	os.WriteFile(filepath.Join(paths.StoreDir, "gone.txt"), []byte("local edit\n"), 0o644)
+	runGit(t, paths.StoreDir, "add", "-A")
+	runGit(t, paths.StoreDir, "commit", "-m", "local edit")
+
+	res, err := RunWithResult(Options{Resync: true})
+	if err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "gone.txt")); string(got) != "local edit\n" {
+		t.Errorf("resync should keep the locally edited gone.txt, got %q", got)
+	}
+	if len(res.ConflictFiles) != 1 || !strings.HasPrefix(res.ConflictFiles[0], "gone.txt.conflict.peer.") {
+		t.Fatalf("expected one conflict sidecar for gone.txt, got %v", res.ConflictFiles)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, res.ConflictFiles[0])); string(got) != "gone\n" {
+		t.Errorf("sidecar should hold the peer's pre-delete content, got %q", got)
+	}
+}
+
+// TestPullResyncAfterPeerRebuild: when the last-seen ref is not in the
+// peer's history (the peer rebuilt its store), resync cannot list the
+// peer's deletes since the last pull, so it applies none. It still unions
+// the peer's files in and advances the ref to the peer's new HEAD.
+func TestPullResyncAfterPeerRebuild(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerTmp := t.TempDir()
+	peerStore := filepath.Join(peerTmp, "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "seed.txt"), []byte("seed\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "seed")
+
+	setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(Options{}); err != nil {
+		t.Fatalf("initial pull: %v", err)
+	}
+	oldPeerHead := gitexec.RevParseHEAD(peerStore)
+
+	// Peer rebuilds its store with an unrelated history.
+	os.RemoveAll(filepath.Join(peerStore, ".git"))
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "rebuilt.txt"), []byte("rebuilt\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "rebuilt")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	newPeerHead := gitexec.RevParseHEAD(peerStore)
+	if gitexec.ReadRef(paths.StoreDir, peerRefName("peer")) != oldPeerHead {
+		t.Fatalf("setup: last-seen ref should be the old peer HEAD")
+	}
+
+	// Local store loses seed.txt.
+	runGit(t, paths.StoreDir, "rm", "-q", "seed.txt")
+	runGit(t, paths.StoreDir, "commit", "-m", "lose seed")
+
+	if _, err := RunWithResult(Options{Resync: true}); err != nil {
+		t.Fatalf("resync after peer rebuild should not fail: %v", err)
+	}
+	for name, want := range map[string]string{"seed.txt": "seed\n", "rebuilt.txt": "rebuilt\n"} {
+		if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, name)); string(got) != want {
+			t.Errorf("resync should bring in %s=%q, got %q", name, want, got)
+		}
+	}
+	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != newPeerHead {
+		t.Errorf("resync should advance the last-seen ref to the rebuilt peer HEAD %s, got %s", newPeerHead, got)
+	}
+}
