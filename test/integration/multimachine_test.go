@@ -1134,3 +1134,69 @@ func TestMultiMachine_HoldClearedByPeerDeleteIsNotRestored(t *testing.T) {
 		t.Errorf("pull should say the hold was cleared, got:\n%s", out)
 	}
 }
+
+// A machine whose store already lost files (here B confirmed a mass
+// delete; before the delete hold, a wiped project did the same) never
+// gets them back from a plain pull: A has not changed, so there is no
+// new peer commit to apply. `swarf pull --resync` unions every file in
+// A's current tree back into B's store and project, and deletes
+// nothing.
+func TestMultiMachine_ResyncRestoresDivergedStore(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	files := []string{"README.md", "docs/design.md", "src/mod/notes.md"}
+	for _, f := range files {
+		a.write(f, "A's "+f+"\n")
+	}
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.push() // the manifest now lists every file
+
+	// B's store loses the files and commits the loss; A stays unchanged.
+	b.wipeProject("README.md", "docs", "src")
+	mustSwarf(t, b, "push", "--allow-deletes")
+	for _, f := range files {
+		if b.storeHas(a.slug(), f) {
+			t.Fatalf("setup: B's store should have lost %s", f)
+		}
+	}
+	b.write("b-only.md", "B's own file\n")
+	b.push()
+
+	// A plain pull has nothing new from A to apply, so nothing comes back.
+	out := mustSwarf(t, b, "pull")
+	for _, f := range files {
+		if b.storeHas(a.slug(), f) || b.exists(f) {
+			t.Fatalf("a plain pull is not expected to restore %s\n--- pull output ---\n%s", f, out)
+		}
+	}
+
+	out = mustSwarf(t, b, "pull", "--resync")
+	for _, f := range files {
+		if !b.storeHas(a.slug(), f) {
+			t.Errorf("--resync should restore %s into B's store\n--- pull output ---\n%s", f, out)
+		}
+		if got := b.read(f); got != "A's "+f+"\n" {
+			t.Errorf("--resync should repopulate B's project with %s, got %q", f, got)
+		}
+	}
+	if got := b.read("b-only.md"); got != "B's own file\n" {
+		t.Errorf("--resync never deletes: B's own file should survive, got %q", got)
+	}
+	if sidecars := findSidecars(t, b.project, "README.md"); len(sidecars) != 0 {
+		t.Errorf("restoring a missing file is not a conflict, got sidecars %v", sidecars)
+	}
+
+	// The restored files go back up on B's next push.
+	b.push()
+	remote := filepath.Join(fakeRemote, "store", "machines", "b", a.slug(), "README.md")
+	if _, err := os.Stat(remote); err != nil {
+		t.Errorf("B's push after --resync should upload the restored files: %v", err)
+	}
+}

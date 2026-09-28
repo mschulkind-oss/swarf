@@ -198,7 +198,7 @@ func TestPullMultiPeerFastForward(t *testing.T) {
 
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult()
+	res, err := RunWithResult(Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestPullMultiPeerConflict(t *testing.T) {
 
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult()
+	res, err := RunWithResult(Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestPullLegacyLayoutDetected(t *testing.T) {
 
 	setupStore(t, "self")
 
-	if _, err := RunWithResult(); err == nil || !strings.Contains(err.Error(), "legacy flat layout") {
+	if _, err := RunWithResult(Options{}); err == nil || !strings.Contains(err.Error(), "legacy flat layout") {
 		t.Fatalf("expected legacy-layout error, got %v", err)
 	}
 }
@@ -303,7 +303,7 @@ func TestPullNoPeersYet(t *testing.T) {
 
 	setupStore(t, "self")
 
-	res, err := RunWithResult()
+	res, err := RunWithResult(Options{})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -337,7 +337,7 @@ func TestPullBootstrapEmptyStore(t *testing.T) {
 		MachineID: "self",
 	})
 
-	res, err := RunWithResult()
+	res, err := RunWithResult(Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestPullPropagatesDelete(t *testing.T) {
 
 	// First pull establishes refs/swarf-peers/peer at the seed commit.
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(); err != nil {
+	if _, err := RunWithResult(Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestPullPropagatesDelete(t *testing.T) {
 	runGit(t, peerStore, "commit", "-m", "drop doomed")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult()
+	res, err := RunWithResult(Options{})
 	if err != nil {
 		t.Fatalf("second pull: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestPullDeleteVsLocalModify(t *testing.T) {
 
 	// Establish last-seen.
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(); err != nil {
+	if _, err := RunWithResult(Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 
@@ -432,7 +432,7 @@ func TestPullDeleteVsLocalModify(t *testing.T) {
 	runGit(t, peerStore, "commit", "-m", "peer delete")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult()
+	res, err := RunWithResult(Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -485,7 +485,7 @@ func TestPullUnrelatedHistories(t *testing.T) {
 
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult()
+	res, err := RunWithResult(Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -534,7 +534,7 @@ func TestPullPostUpgradeMergeBase(t *testing.T) {
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
 	headBefore := runGitOut(t, paths.StoreDir, "rev-parse", "HEAD")
-	res, err := RunWithResult()
+	res, err := RunWithResult(Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestPullReverseMirrorsIntoProject(t *testing.T) {
 	runGit(t, peerStore, "commit", "-m", "add new.txt")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	if _, err := RunWithResult(); err != nil {
+	if _, err := RunWithResult(Options{}); err != nil {
 		t.Fatalf("pull: %v", err)
 	}
 
@@ -688,5 +688,75 @@ func TestListPeersError(t *testing.T) {
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unexpected error classification: %v", err)
+	}
+}
+
+// TestPullResync: after a pull has recorded the peer's HEAD, a plain pull
+// with no new peer commit applies nothing, so a file the local store
+// lost stays lost. Resync unions the peer's whole tree back in: missing
+// files return, a file whose local content matches no version the peer
+// ever had keeps the local content and gets a conflict sidecar, and a
+// local-only file is never deleted.
+func TestPullResync(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerTmp := t.TempDir()
+	peerStore := filepath.Join(peerTmp, "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "seed.txt"), []byte("seed\n"), 0o644)
+	os.WriteFile(filepath.Join(peerStore, "lost.txt"), []byte("lost\n"), 0o644)
+	os.WriteFile(filepath.Join(peerStore, "shared.txt"), []byte("peer\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "seed")
+
+	setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(Options{}); err != nil {
+		t.Fatalf("initial pull: %v", err)
+	}
+
+	// Local store diverges: loses lost.txt, rewrites shared.txt, adds
+	// local.txt. The peer does not change.
+	os.Remove(filepath.Join(paths.StoreDir, "lost.txt"))
+	os.WriteFile(filepath.Join(paths.StoreDir, "shared.txt"), []byte("local\n"), 0o644)
+	os.WriteFile(filepath.Join(paths.StoreDir, "local.txt"), []byte("mine\n"), 0o644)
+	runGit(t, paths.StoreDir, "add", "-A")
+	runGit(t, paths.StoreDir, "commit", "-m", "diverge")
+
+	if _, err := RunWithResult(Options{}); err != nil {
+		t.Fatalf("plain pull: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "lost.txt")); !os.IsNotExist(err) {
+		t.Fatalf("a plain pull with no new peer commit should not restore lost.txt (err=%v)", err)
+	}
+
+	peerHead := gitexec.RevParseHEAD(peerStore)
+	res, err := RunWithResult(Options{Resync: true})
+	if err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "lost.txt")); string(got) != "lost\n" {
+		t.Errorf("resync should restore lost.txt, got %q", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "shared.txt")); string(got) != "local\n" {
+		t.Errorf("resync should keep the diverged local shared.txt, got %q", got)
+	}
+	if len(res.ConflictFiles) != 1 || !strings.HasPrefix(res.ConflictFiles[0], "shared.txt.conflict.peer.") {
+		t.Errorf("expected one conflict sidecar for shared.txt, got %v", res.ConflictFiles)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "local.txt")); err != nil {
+		t.Errorf("resync never deletes: local.txt should survive: %v", err)
+	}
+	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != peerHead {
+		t.Errorf("resync should leave the last-seen ref at the peer's HEAD %s, got %s", peerHead, got)
+	}
+	if status := strings.TrimSpace(gitexec.StatusPorcelain(paths.StoreDir)); status != "" {
+		t.Errorf("resync should commit what it applied, store is dirty:\n%s", status)
 	}
 }

@@ -243,7 +243,7 @@ Delete hold
 }
 
 func pullCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "pull",
 		Short:   "Pull latest changes from the remote into the store",
 		GroupID: groupSync,
@@ -260,10 +260,23 @@ Conflicts
   When two machines edited the same file between syncs, pull keeps
   your local version at the canonical path and writes the peer's
   version as <file>.conflict.<peer-id>.<timestamp>. See
-  'swarf docs conflicts' for the resolution workflow.`,
-		Example: `  swarf pull`,
-		RunE:    func(cmd *cobra.Command, args []string) error { return pull.Run() },
+  'swarf docs conflicts' for the resolution workflow.
+
+Resync
+  A plain pull applies only what each peer changed since the last pull,
+  so files this machine's store lost (and committed as deleted) do not
+  come back while the peer stays unchanged. --resync ignores what was
+  already pulled and copies in every file each peer has now; it never
+  deletes. A file whose local content differs from every version the
+  peer had gets a conflict sidecar, as above.`,
+		Example: `  swarf pull
+  swarf pull --resync`,
 	}
+	resync := cmd.Flags().Bool("resync", false, "Union every file each peer has into the store, ignoring what was already pulled; never deletes")
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return pull.Run(pull.Options{Resync: *resync})
+	}
+	return cmd
 }
 
 // --- System ---

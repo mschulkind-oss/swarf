@@ -14,7 +14,7 @@ import (
 
 func TestPullNoConfig(t *testing.T) {
 	testutil.GitRepo(t)
-	err := Run()
+	err := Run(Options{})
 	if err != ErrNoConfig {
 		t.Fatalf("expected ErrNoConfig, got %v", err)
 	}
@@ -24,7 +24,7 @@ func TestPullGitNoStoreNoRemote(t *testing.T) {
 	testutil.GitRepo(t)
 	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
-	if err := Run(); err != ErrNotGitRepo {
+	if err := Run(Options{}); err != ErrNotGitRepo {
 		t.Fatalf("expected ErrNotGitRepo when store missing and no remote, got %v", err)
 	}
 }
@@ -47,7 +47,7 @@ func TestPullGitBootstrapsFromRemote(t *testing.T) {
 	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s"})
 
-	if err := Run(); err != nil {
+	if err := Run(Options{}); err != nil {
 		t.Fatalf("pull: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(paths.StoreDir, "seed.txt")); err != nil {
@@ -58,7 +58,7 @@ func TestPullGitBootstrapsFromRemote(t *testing.T) {
 func TestPullUnknownBackend(t *testing.T) {
 	testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "unknown", Remote: "", Debounce: "5s"})
-	err := Run()
+	err := Run(Options{})
 	if err == nil {
 		t.Fatal("expected error for unknown backend")
 	}
@@ -92,7 +92,7 @@ func TestPullGitSuccess(t *testing.T) {
 
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s"})
 
-	err := Run()
+	err := Run(Options{})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -103,7 +103,7 @@ func TestPullGitPullFailure(t *testing.T) {
 	testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
 
-	err := Run()
+	err := Run(Options{})
 	if err == nil {
 		t.Fatal("expected error from git pull with no remote")
 	}
@@ -122,7 +122,7 @@ func TestPullRcloneNotInstalled(t *testing.T) {
 	os.Setenv("PATH", "")
 	defer os.Setenv("PATH", origPath)
 
-	err := Run()
+	err := Run(Options{})
 	if err == nil {
 		t.Fatal("expected error when rclone not installed")
 	}
@@ -166,14 +166,14 @@ esac
 	// Seed the store with an initial commit so git has a HEAD; pullFromPeer's
 	// rclone sync is a no-op (fake), so the peer cache is effectively empty.
 	// The fetch attempt will fail, and pullRclone treats that as a per-peer
-	// warning and continues — so Run() should return nil overall.
+	// warning and continues — so Run(Options{}) should return nil overall.
 	runGit(t, paths.StoreDir, "config", "user.email", "t@t")
 	runGit(t, paths.StoreDir, "config", "user.name", "t")
 	os.WriteFile(filepath.Join(paths.StoreDir, "seed.txt"), []byte("x"), 0o644)
 	runGit(t, paths.StoreDir, "add", "-A")
 	runGit(t, paths.StoreDir, "commit", "-m", "seed")
 
-	err := Run()
+	err := Run(Options{})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -184,7 +184,7 @@ func TestPullRcloneFailure(t *testing.T) {
 
 	// Fake rclone that fails on every invocation. The first failure is on
 	// `rclone lsf` against the machines/ path, which surfaces as an error
-	// from listPeers → Run().
+	// from listPeers → Run(Options{}).
 	fakeDir := t.TempDir()
 	fakeRclone := filepath.Join(fakeDir, "rclone")
 	os.WriteFile(fakeRclone, []byte("#!/bin/sh\necho 'rclone error: bad remote' >&2\nexit 1\n"), 0o755)
@@ -202,7 +202,7 @@ func TestPullRcloneFailure(t *testing.T) {
 	runGit(t, paths.StoreDir, "add", "-A")
 	runGit(t, paths.StoreDir, "commit", "-m", "seed")
 
-	err := Run()
+	err := Run(Options{})
 	if err == nil {
 		t.Fatal("expected error from failing rclone")
 	}

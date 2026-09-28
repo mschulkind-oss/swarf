@@ -38,12 +38,20 @@ type Result struct {
 	ConflictFiles []string
 }
 
-func Run() error {
-	_, err := RunWithResult()
+// Options tunes one pull.
+type Options struct {
+	// Resync ignores each peer's last-seen ref and unions every file in
+	// the peer's current tree into the store, deleting nothing
+	// ('swarf pull --resync').
+	Resync bool
+}
+
+func Run(opts Options) error {
+	_, err := RunWithResult(opts)
 	return err
 }
 
-func RunWithResult() (*Result, error) {
+func RunWithResult(opts Options) (*Result, error) {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
 		return nil, ErrNoConfig
@@ -53,7 +61,7 @@ func RunWithResult() (*Result, error) {
 	case "git":
 		return nil, pullGit(gc)
 	case "rclone":
-		return pullRclone(gc)
+		return pullRclone(gc, opts)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnknownBackend, gc.Backend)
 	}
@@ -97,7 +105,7 @@ func pullGit(gc *config.GlobalConfig) error {
 //  4. Apply the resulting A/M/D entries to the local working tree, creating
 //     conflict sidecars where local has diverged.
 //  5. Commit any changes and advance refs/swarf-peers/<peer>.
-func pullRclone(gc *config.GlobalConfig) (*Result, error) {
+func pullRclone(gc *config.GlobalConfig, opts Options) (*Result, error) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		return nil, errors.New("rclone is not installed")
 	}
@@ -137,7 +145,7 @@ func pullRclone(gc *config.GlobalConfig) (*Result, error) {
 		if peer == self {
 			continue
 		}
-		if err := pullFromPeer(gc, peer, result); err != nil {
+		if err := pullFromPeer(gc, peer, opts.Resync, result); err != nil {
 			console.Warn(fmt.Sprintf("peer %s: %v", peer, err))
 			continue
 		}
@@ -337,8 +345,10 @@ func peerRefName(peer string) string {
 }
 
 // pullFromPeer refreshes the peer's cache, computes a file delta against the
-// last-seen peer HEAD, and applies it to the local store.
-func pullFromPeer(gc *config.GlobalConfig, peer string, result *Result) error {
+// last-seen peer HEAD, and applies it to the local store. With resync it
+// skips the last-seen ref and applies the peer's whole tree in
+// content-union mode instead.
+func pullFromPeer(gc *config.GlobalConfig, peer string, resync bool, result *Result) error {
 	peerCache := paths.PeerCacheDir(peer)
 	if err := os.MkdirAll(peerCache, 0o755); err != nil {
 		return fmt.Errorf("mkdir peer cache: %w", err)
@@ -373,7 +383,7 @@ func pullFromPeer(gc *config.GlobalConfig, peer string, result *Result) error {
 	}
 
 	lastSeen := gitexec.ReadRef(paths.StoreDir, peerRefName(peer))
-	if lastSeen == peerHead {
+	if lastSeen == peerHead && !resync {
 		return nil
 	}
 
@@ -385,9 +395,14 @@ func pullFromPeer(gc *config.GlobalConfig, peer string, result *Result) error {
 	//   3. Post-upgrade / first contact — lastSeen empty but local has HEAD.
 	//      Try merge-base (recovers linked histories from the old design).
 	//      If none, fall back to content-union (adds/modifies, no deletes).
-	unionMode := false
+	// A resync forces content-union whatever the ref says: the local store
+	// may have lost files since lastSeen, and only the peer's full tree
+	// shows them.
+	unionMode := resync
 	effectiveOld := lastSeen
-	if lastSeen == "" {
+	if resync {
+		effectiveOld = ""
+	} else if lastSeen == "" {
 		if localHead == "" {
 			// Bootstrap: diff from empty tree gives us every file as an add.
 			effectiveOld = ""
