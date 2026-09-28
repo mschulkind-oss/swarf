@@ -231,3 +231,42 @@ func TestExcludeRoundTrip(t *testing.T) {
 		t.Fatalf("expected no excludes by default, got %v", got.Exclude)
 	}
 }
+
+// [sync] pull_interval is read from config and survives a rewrite (e.g.
+// EnsureMachineID persisting a default machine id).
+func TestPullIntervalRoundTrip(t *testing.T) {
+	setupTestConfig(t)
+	os.WriteFile(paths.GlobalConfigTOML, []byte("[sync]\nbackend = \"rclone\"\nremote = \"r:\"\npull_interval = \"10m\"\n"), 0o644)
+	got := ReadGlobalConfig()
+	if got == nil || got.PullInterval != "10m" {
+		t.Fatalf("expected pull_interval=10m, got %+v", got)
+	}
+	EnsureMachineID()
+	if got := ReadGlobalConfig(); got.PullInterval != "10m" {
+		t.Fatalf("rewriting the config dropped pull_interval, got %q", got.PullInterval)
+	}
+}
+
+func TestParsePullInterval(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"", 0, true},
+		{"0", 0, true},
+		{" 0 ", 0, true},
+		{"10m", 10 * time.Minute, true},
+		{"1h", time.Hour, true},
+		{"30s", 30 * time.Second, true},
+		{"0s", 0, true},
+		{"soon", 0, false},
+		{"10", 0, false},
+	}
+	for _, c := range cases {
+		got, err := ParsePullInterval(c.in)
+		if (err == nil) != c.ok || got != c.want {
+			t.Errorf("ParsePullInterval(%q) = %v, %v; want %v, ok=%v", c.in, got, err, c.want, c.ok)
+		}
+	}
+}

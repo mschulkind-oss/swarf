@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -16,6 +17,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/link"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
+	"github.com/mschulkind-oss/swarf/internal/pull"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
 	"github.com/mschulkind-oss/swarf/internal/synclock"
 )
@@ -32,10 +34,33 @@ func Run(ctx context.Context) error {
 		duration = 5 * time.Second
 	}
 
+	// Scheduled pulls stop when the daemon does, however watchProjects
+	// returns. Deferred waits run last-in first-out, so cancel runs
+	// before the wait for the pull goroutine.
+	ctx, cancel := context.WithCancel(ctx)
+	var pulls sync.WaitGroup
+	defer pulls.Wait()
+	defer cancel()
+
 	backend := makeBackend(gc)
 	skip := mirror.SkipPatterns(gc.Exclude)
 	debouncer := NewDebouncer(duration, func() { syncCycle(ctx, backend, skip) })
 	defer debouncer.Cancel()
+
+	interval, note := pullSchedule(gc)
+	if note != "" {
+		slog.Warn(note)
+	}
+	if interval > 0 {
+		slog.Info("Scheduled pull enabled", "every", interval)
+		pulls.Add(1)
+		go func() {
+			defer pulls.Done()
+			runScheduledPulls(ctx, interval, func(ctx context.Context) error {
+				return pull.Run(ctx, pull.Options{})
+			})
+		}()
+	}
 
 	return watchProjects(ctx, debouncer, skip)
 }

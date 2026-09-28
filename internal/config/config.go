@@ -26,9 +26,13 @@ type GlobalConfig struct {
 	// Exclude holds the [sync] exclude patterns: paths inside a drawer
 	// that the mirror never copies into the store. See
 	// mirror.SkipPatterns for the pattern forms.
-	Exclude   []string `toml:"exclude"`
-	MachineID string   `toml:"-"`
-	AutoSweep []string `toml:"-"`
+	Exclude []string `toml:"exclude"`
+	// PullInterval is [sync] pull_interval: how often the daemon runs a
+	// scheduled pull (rclone backend only). Empty or "0" means off. See
+	// ParsePullInterval.
+	PullInterval string   `toml:"pull_interval"`
+	MachineID    string   `toml:"-"`
+	AutoSweep    []string `toml:"-"`
 }
 
 type globalConfigFile struct {
@@ -44,6 +48,8 @@ type syncSection struct {
 	DirName    string   `toml:"dir_name,omitempty"`
 	NoFastList bool     `toml:"no_fast_list,omitempty"`
 	Exclude    []string `toml:"exclude,omitempty"`
+	// PullInterval: see GlobalConfig.PullInterval.
+	PullInterval string `toml:"pull_interval,omitempty"`
 }
 
 type machineSection struct {
@@ -64,13 +70,14 @@ func ReadGlobalConfig() *GlobalConfig {
 		return nil
 	}
 	c := &GlobalConfig{
-		Backend:    f.Sync.Backend,
-		Remote:     f.Sync.Remote,
-		Debounce:   f.Sync.Debounce,
-		DirName:    f.Sync.DirName,
-		NoFastList: f.Sync.NoFastList,
-		Exclude:    f.Sync.Exclude,
-		MachineID:  f.Machine.ID,
+		Backend:      f.Sync.Backend,
+		Remote:       f.Sync.Remote,
+		Debounce:     f.Sync.Debounce,
+		DirName:      f.Sync.DirName,
+		NoFastList:   f.Sync.NoFastList,
+		Exclude:      f.Sync.Exclude,
+		PullInterval: f.Sync.PullInterval,
+		MachineID:    f.Machine.ID,
 	}
 	if c.Backend == "" {
 		c.Backend = "git"
@@ -91,12 +98,13 @@ func WriteGlobalConfig(c *GlobalConfig) error {
 	}
 	f := globalConfigFile{
 		Sync: syncSection{
-			Backend:    c.Backend,
-			Remote:     c.Remote,
-			Debounce:   c.Debounce,
-			DirName:    c.DirName,
-			NoFastList: c.NoFastList,
-			Exclude:    c.Exclude,
+			Backend:      c.Backend,
+			Remote:       c.Remote,
+			Debounce:     c.Debounce,
+			DirName:      c.DirName,
+			NoFastList:   c.NoFastList,
+			Exclude:      c.Exclude,
+			PullInterval: c.PullInterval,
 		},
 	}
 	if c.MachineID != "" {
@@ -236,6 +244,17 @@ func writeDrawers(drawers []DrawerEntry) error {
 }
 
 var durationRE = regexp.MustCompile(`^(\d+(?:\.\d+)?)\s*(ms|s|m|h)$`)
+
+// ParsePullInterval parses [sync] pull_interval. Empty or "0" (or any
+// zero duration) means scheduled pulls are off and returns 0; anything
+// else must be a ParseDuration value such as "10m".
+func ParsePullInterval(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+	return ParseDuration(s)
+}
 
 func ParseDuration(s string) (time.Duration, error) {
 	s = strings.TrimSpace(s)

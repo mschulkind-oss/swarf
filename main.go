@@ -231,7 +231,12 @@ Delete hold
   (every tracked file, or at least 10 that are half or more of them),
   the push copies adds and edits but deletes nothing from the store:
   the project is in a delete hold, and 'swarf status' shows it. Restore
-  the files, or pass --allow-deletes to apply the deletes this once.`,
+  the files, or pass --allow-deletes to apply the deletes this once.
+
+Sync lock
+  Push, pull, and each daemon cycle hold the sync lock (the file
+  ~/.cache/swarf/sync.lock), so only one of them works on the store at
+  a time. A push that finds it held says so and waits.`,
 		Example: `  swarf push
   swarf push --allow-deletes`,
 	}
@@ -250,7 +255,9 @@ func pullCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		Long: `Pulls the latest changes from the configured remote into the local
 store. Useful if another machine pushed changes and you want them
-immediately (the daemon also pulls periodically).
+immediately. The daemon pulls on its own only when [sync] pull_interval
+is set (a duration such as "10m"; rclone backend only); otherwise run
+'swarf pull' yourself.
 
 On a fresh machine where the store doesn't exist yet, 'swarf pull' also
 bootstraps: it creates the store and seeds it from the remote (for the
@@ -274,7 +281,12 @@ Resync
   restored on purpose. A file that matches none of them keeps its local
   content; it also gets a conflict sidecar, as above, unless the peer's
   current copy is one this store already had and has since edited.
-  Rclone backend only.`,
+  Rclone backend only.
+
+Sync lock
+  Push, pull, and each daemon cycle hold the sync lock (the file
+  ~/.cache/swarf/sync.lock), so only one of them works on the store at
+  a time. A pull that finds it held says so and waits.`,
 		Example: `  swarf pull
   swarf pull --resync`,
 	}
