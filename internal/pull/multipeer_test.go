@@ -695,7 +695,7 @@ func TestPullFlagsUnregisteredProjects(t *testing.T) {
 
 	// We can't introspect the Result for unregistered slugs directly —
 	// the check is that the mirror helper returns them correctly.
-	synced, unregistered := mirrorStoreBackToProjects(nil, nil)
+	synced, unregistered, _ := mirrorStoreBackToProjects(nil, nil, nil)
 	if len(synced) != 0 {
 		t.Fatalf("no drawers registered, expected nothing synced; got %v", synced)
 	}
@@ -1376,4 +1376,97 @@ func TestPullResultRecordsPeerFailuresAndUnregistered(t *testing.T) {
 	if !slices.Contains(res.Unregistered, "forms") {
 		t.Errorf("forms has no drawer here and should be listed as unregistered, got %v", res.Unregistered)
 	}
+}
+
+// A pull that applies a peer's change to a file the user saves in the
+// project while the download runs keeps the user's save and writes the
+// peer's version as a conflict sidecar beside it. Otherwise the next
+// forward pass would copy the save over the peer's version in the store
+// with nothing to say the peer's change was lost.
+func TestPullSidecarsPeerChangeToFileSavedDuringDownload(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerStore := filepath.Join(t.TempDir(), "peer-store")
+	os.MkdirAll(filepath.Join(peerStore, "forms"), 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "forms", "notes.md"), []byte("v1\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "peer seed")
+
+	repo := setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	project := filepath.Join(repo, "..", "forms-project", "swarf")
+	os.MkdirAll(project, 0o755)
+	config.RegisterDrawer("forms", filepath.Dir(project))
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
+		t.Fatalf("seeding pull: %v", err)
+	}
+
+	// The peer edits notes.md and adds new.md.
+	os.WriteFile(filepath.Join(peerStore, "forms", "notes.md"), []byte("v2 from the peer\n"), 0o644)
+	os.WriteFile(filepath.Join(peerStore, "forms", "new.md"), []byte("new from the peer\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "peer edits")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+
+	gate := gateRcloneSync(t, "")
+	done := make(chan *Result, 1)
+	go func() {
+		res, err := RunWithResult(context.Background(), Options{})
+		if err != nil {
+			t.Errorf("pull: %v", err)
+		}
+		done <- res
+	}()
+	gate.waitStarted(t)
+	// The user saves both paths while the peer is downloading.
+	saves := map[string]string{
+		"notes.md": "v2 the user saved meanwhile\n",
+		"new.md":   "the user's own new.md\n",
+	}
+	for name, content := range saves {
+		os.WriteFile(filepath.Join(project, name), []byte(content), 0o644)
+	}
+	gate.release(t)
+	res := <-done
+	if res == nil {
+		t.FailNow()
+	}
+
+	peerVersion := map[string]string{"notes.md": "v2 from the peer\n", "new.md": "new from the peer\n"}
+	for name, want := range saves {
+		if got, _ := os.ReadFile(filepath.Join(project, name)); string(got) != want {
+			t.Errorf("project %s = %q, want the user's save %q", name, got, want)
+		}
+		sidecars := findSidecarsIn(t, project, name)
+		if len(sidecars) != 1 {
+			t.Errorf("expected one conflict sidecar for %s in the project, got %v", name, sidecars)
+			continue
+		}
+		if got, _ := os.ReadFile(sidecars[0]); string(got) != peerVersion[name] {
+			t.Errorf("sidecar for %s = %q, want the peer's version %q", name, got, peerVersion[name])
+		}
+		found := false
+		for _, c := range res.ConflictFiles {
+			found = found || strings.HasPrefix(c, "forms/"+name+".conflict.peer.")
+		}
+		if !found {
+			t.Errorf("the pull should report the conflict on %s, got %v", name, res.ConflictFiles)
+		}
+	}
+}
+
+// findSidecarsIn returns the conflict sidecars of base in dir.
+func findSidecarsIn(t *testing.T, dir, base string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, base+".conflict.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return matches
 }

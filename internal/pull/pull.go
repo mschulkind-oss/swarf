@@ -49,6 +49,10 @@ type Result struct {
 	// applying is set once a peer's download finishes and pull starts
 	// changing the store for it, even if that peer then fails.
 	applying bool
+	// applied maps each store path a peer's add or modify wrote to
+	// that peer, so the reverse mirror can tell a file the user saved
+	// over a peer's change during the pull.
+	applied map[string]string
 }
 
 // PeerFailure is one peer a pull could not merge, and why.
@@ -204,8 +208,9 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 	// they actually work. Without this, pull updates only the store; the
 	// project's swarf/ keeps showing stale files until the daemon's next
 	// forward mirror accidentally undoes our pull.
-	synced, unregistered := mirrorStoreBackToProjects(mirror.SkipPatterns(gc.Exclude), stamps)
+	synced, unregistered, savedOver := mirrorStoreBackToProjects(mirror.SkipPatterns(gc.Exclude), stamps, result.applied)
 	result.Unregistered = unregistered
+	result.ConflictFiles = append(result.ConflictFiles, savedOver...)
 
 	// An interrupted pull still mirrors back what it applied — skipping
 	// that would leave the store ahead of the projects, and the next
@@ -279,10 +284,18 @@ func mirrorProjectsToStore(skip mirror.Skip) map[string]mirror.Stamps {
 // overwrite it, and a peer's delete does not remove it. A drawer with no
 // stamps, registered mid-pull, has no such protection.
 //
-// Returns the slugs that were mirrored, and the slugs present in the store
+// When a peer's add or modify (applied, store path → peer) landed on a
+// file the user saved during the pull, the save stays and the store's
+// copy — the peer's version — is written as a conflict sidecar beside
+// it, as for any other divergent edit; otherwise the next forward pass
+// would copy the save over the peer's version with nothing to show for
+// it.
+//
+// Returns the slugs that were mirrored, the slugs present in the store
 // that have no drawer on this machine (so the caller can tell the user to
-// 'swarf init' them).
-func mirrorStoreBackToProjects(skip mirror.Skip, stamps map[string]mirror.Stamps) (synced, unregistered []string) {
+// 'swarf init' them), and the conflict sidecars written for saves over a
+// peer's change.
+func mirrorStoreBackToProjects(skip mirror.Skip, stamps map[string]mirror.Stamps, applied map[string]string) (synced, unregistered, conflicts []string) {
 	drawers := config.ReadDrawers()
 	registered := make(map[string]string, len(drawers)) // slug → host
 	for _, d := range drawers {
@@ -293,8 +306,9 @@ func mirrorStoreBackToProjects(skip mirror.Skip, stamps map[string]mirror.Stamps
 	// is a project slug.
 	entries, err := os.ReadDir(paths.StoreDir)
 	if err != nil {
-		return nil, nil
+		return nil, nil, nil
 	}
+	ts := time.Now().UTC().Format("20060102T150405Z")
 	for _, e := range entries {
 		if !e.IsDir() || e.Name() == ".git" {
 			continue
@@ -314,6 +328,7 @@ func mirrorStoreBackToProjects(skip mirror.Skip, stamps map[string]mirror.Stamps
 		if _, holding := deletehold.Read(marker); holding {
 			held = mirror.HeldPaths(dst, src, manifest, skip)
 		}
+		conflicts = append(conflicts, sidecarSavesOverPeerChanges(slug, dst, skip, stamps[slug], applied, ts)...)
 		if err := mirror.TrackedReverse(src, dst, manifest, skip, stamps[slug]); err != nil {
 			slog.Warn("pull: reverse mirror failed", "project", slug, "err", err)
 			continue
@@ -327,7 +342,42 @@ func mirrorStoreBackToProjects(skip mirror.Skip, stamps map[string]mirror.Stamps
 	}
 	sort.Strings(synced)
 	sort.Strings(unregistered)
-	return synced, unregistered
+	return synced, unregistered, conflicts
+}
+
+// sidecarSavesOverPeerChanges writes, into the store, a conflict sidecar
+// of each file under slug that a peer's add or modify wrote this pull
+// (applied) and that the user saved differently in the project (dst)
+// since stamps. The reverse mirror that follows copies the sidecars into
+// the project and leaves the saves in place. Returns the sidecars'
+// store paths.
+func sidecarSavesOverPeerChanges(slug, dst string, skip mirror.Skip, stamps mirror.Stamps, applied map[string]string, ts string) []string {
+	var rels []string
+	for path := range applied {
+		if rel, ok := strings.CutPrefix(path, slug+"/"); ok {
+			rels = append(rels, rel)
+		}
+	}
+	sort.Strings(rels)
+	var sidecars []string
+	for _, rel := range mirror.Protected(dst, skip, stamps, rels) {
+		path := slug + "/" + rel
+		peerContent, err := os.ReadFile(filepath.Join(paths.StoreDir, path))
+		if err != nil {
+			continue
+		}
+		saved, err := os.ReadFile(filepath.Join(dst, rel))
+		if err != nil || bytes.Equal(saved, peerContent) {
+			continue
+		}
+		sidecar, err := writeConflictSidecar(path, applied[path], ts, peerContent)
+		if err != nil {
+			slog.Warn("pull: writing conflict sidecar failed", "path", path, "err", err)
+			continue
+		}
+		sidecars = append(sidecars, sidecar)
+	}
+	return sidecars
 }
 
 // holdReleaseMessage tells the user how a delete hold on slug ended
@@ -544,9 +594,15 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 		}
 		switch e.Status {
 		case "A", "M", "T":
-			c, err := applyAddOrModify(peer, peerCache, effectiveOld, peerHead, e.Path, ts)
+			c, wrote, err := applyAddOrModify(peer, peerCache, effectiveOld, peerHead, e.Path, ts)
 			if err != nil {
 				return err
+			}
+			if wrote {
+				if result.applied == nil {
+					result.applied = make(map[string]string)
+				}
+				result.applied[e.Path] = peer
 			}
 			if c != "" {
 				conflicts = append(conflicts, c)
@@ -587,7 +643,8 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 }
 
 // applyAddOrModify brings one peer add/modify into the local working tree.
-// Returns the path of a conflict sidecar if local diverged, or "" otherwise.
+// Returns the path of a conflict sidecar if local diverged, or "" otherwise,
+// and whether it wrote the peer's content to the store's copy.
 //
 // Three-way comparison on modify:
 //   - local == peerNew  → already identical, no-op.
@@ -597,32 +654,32 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 //
 // oldRef is the ref to use for "the version the peer had before this
 // change" — lastSeen or merge-base, whichever the caller resolved.
-func applyAddOrModify(peer, peerCache, oldRef, peerHead, rel, ts string) (string, error) {
+func applyAddOrModify(peer, peerCache, oldRef, peerHead, rel, ts string) (sidecar string, wrote bool, err error) {
 	peerContent, err := gitexec.ShowFile(peerCache, peerHead, rel)
 	if err != nil {
 		// The peer's working tree should still have this file since the diff
 		// came from peerHead; fall back to reading it directly.
 		peerContent, err = os.ReadFile(filepath.Join(peerCache, rel))
 		if err != nil {
-			return "", fmt.Errorf("read peer content for %s: %w", rel, err)
+			return "", false, fmt.Errorf("read peer content for %s: %w", rel, err)
 		}
 	}
 
 	localPath := filepath.Join(paths.StoreDir, rel)
 	localContent, readErr := os.ReadFile(localPath)
 	if readErr == nil && bytes.Equal(localContent, peerContent) {
-		return "", nil
+		return "", false, nil
 	}
 
 	if os.IsNotExist(readErr) {
 		// Fresh add. No conflict possible.
 		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-			return "", fmt.Errorf("mkdir for %s: %w", rel, err)
+			return "", false, fmt.Errorf("mkdir for %s: %w", rel, err)
 		}
 		if err := os.WriteFile(localPath, peerContent, 0o644); err != nil {
-			return "", fmt.Errorf("write %s: %w", rel, err)
+			return "", false, fmt.Errorf("write %s: %w", rel, err)
 		}
-		return "", nil
+		return "", true, nil
 	}
 
 	// Three-way merge. Check whether local is at some historical state the
@@ -630,9 +687,9 @@ func applyAddOrModify(peer, peerCache, oldRef, peerHead, rel, ts string) (string
 	// their new content cleanly.
 	if peerHasVersionMatching(peerCache, oldRef, peerHead, rel, localContent) {
 		if err := os.WriteFile(localPath, peerContent, 0o644); err != nil {
-			return "", fmt.Errorf("write %s: %w", rel, err)
+			return "", false, fmt.Errorf("write %s: %w", rel, err)
 		}
-		return "", nil
+		return "", true, nil
 	}
 
 	// In union mode (no trusted old ref), a local copy that has already
@@ -642,13 +699,14 @@ func applyAddOrModify(peer, peerCache, oldRef, peerHead, rel, ts string) (string
 	if oldRef == "" {
 		if localHead := gitexec.RevParseHEAD(paths.StoreDir); localHead != "" &&
 			historyHasVersion(paths.StoreDir, localHead, rel, peerContent) {
-			return "", nil
+			return "", false, nil
 		}
 	}
 
 	// Both sides diverged from every state the peer has been through.
 	// Keep local, save peer version as a sidecar.
-	return writeConflictSidecar(rel, peer, ts, peerContent)
+	sidecar, err = writeConflictSidecar(rel, peer, ts, peerContent)
+	return sidecar, false, err
 }
 
 // peerHasVersionMatching reports whether the peer's history contains any

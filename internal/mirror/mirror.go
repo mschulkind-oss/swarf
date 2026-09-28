@@ -231,6 +231,23 @@ func (s Stamps) changed(root, rel string) bool {
 	return !ok || was.size != info.Size() || !was.modTime.Equal(info.ModTime())
 }
 
+// Protected returns the paths among rels that TrackedReverse, given
+// since and skip, leaves alone in root because they changed there since
+// the stamps: not excluded by skip, and existing at a different size or
+// modification time than since recorded. A nil since protects nothing.
+func Protected(root string, skip Skip, since Stamps, rels []string) []string {
+	if since == nil {
+		return nil
+	}
+	var out []string
+	for _, rel := range rels {
+		if !skipsEntry(skip, rel) && since.changed(root, rel) {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
 // fileSet returns the drawer-relative paths of the files under root that
 // a copy pass would copy: not skipped, and resolvable to a file (not a
 // link to a directory). It is the set a forward pass records in the manifest.

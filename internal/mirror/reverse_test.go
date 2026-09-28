@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -278,5 +279,27 @@ func TestTakeStampsMissingRoot(t *testing.T) {
 	}
 	if s.changed(root, "never.md") {
 		t.Error("a file that does not exist is not changed")
+	}
+}
+
+// Protected picks out, from the given paths, the ones TrackedReverse
+// would spare: changed in the project since the stamps and not excluded.
+func TestProtected(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "same.md"), "as stamped")
+	writeFile(t, filepath.Join(root, "saved.md"), "as stamped")
+	writeFile(t, filepath.Join(root, "cache", "saved.md"), "as stamped")
+	stamps := TakeStamps(root, nil)
+	writeFile(t, filepath.Join(root, "saved.md"), "saved since the stamps")
+	writeFile(t, filepath.Join(root, "cache", "saved.md"), "saved since the stamps")
+	writeFile(t, filepath.Join(root, "created.md"), "new")
+
+	skip := SkipPatterns([]string{"cache/"})
+	got := Protected(root, skip, stamps, []string{"same.md", "saved.md", "cache/saved.md", "created.md", "absent.md"})
+	if strings.Join(got, ",") != "saved.md,created.md" {
+		t.Errorf("Protected = %v, want [saved.md created.md]", got)
+	}
+	if got := Protected(root, nil, nil, []string{"saved.md"}); got != nil {
+		t.Errorf("nil stamps protect nothing, got %v", got)
 	}
 }
