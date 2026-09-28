@@ -365,6 +365,27 @@ func TestPushRef(t *testing.T) {
 	}
 }
 
+// A server-side refusal (here a pre-receive hook) is a plain error, not
+// ErrPushRejected, forced or not: only a non-fast-forward means another
+// repository wrote the branch.
+func TestPushRefHookRefusalIsNotRejected(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	execCmd(t, "", "git", "init", "--bare", bare)
+	hook := filepath.Join(bare, "hooks", "pre-receive")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := makeRepo(t)
+	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "mine")
+	AddRemote(repo, "origin", bare)
+	for _, force := range []bool{false, true} {
+		err := PushRef(context.Background(), repo, "origin", "refs/heads/machines/box", force)
+		if err == nil || errors.Is(err, ErrPushRejected) {
+			t.Errorf("force=%v: a hook's refusal should be a plain error, got %v", force, err)
+		}
+	}
+}
+
 func TestIsAncestor(t *testing.T) {
 	repo := makeRepo(t)
 	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "one")
