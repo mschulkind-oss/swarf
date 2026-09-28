@@ -258,7 +258,7 @@ func mismatchMsg(explanation string) string {
 // Informational — surfaces what "last-seen" state the pull path has cached.
 func CheckPeerRefs() Check {
 	gc := config.ReadGlobalConfig()
-	if gc == nil || gc.Backend != "rclone" {
+	if gc == nil || (gc.Backend != "rclone" && gc.Backend != "git") {
 		return Check{"peer refs", true, ""}
 	}
 	if !paths.IsDir(paths.StoreDir) {

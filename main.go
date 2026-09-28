@@ -279,12 +279,19 @@ func pullCmd() *cobra.Command {
 		Long: `Pulls the latest changes from the configured remote into the local
 store. Useful if another machine pushed changes and you want them
 immediately. The daemon pulls on its own only when [sync] pull_interval
-is set (a duration such as "10m"; rclone backend only); otherwise run
-'swarf pull' yourself.
+is set (a duration such as "10m"); otherwise run 'swarf pull' yourself.
+
+Each other machine is a peer: with the rclone backend, its
+<remote>/machines/<machine_id>/ subtree; with the git backend, its
+machine branch, machines/<machine_id> on the git remote. Pull applies
+what each peer changed since the last pull, file by file, to the store,
+then copies the store into your projects.
 
 On a fresh machine where the store doesn't exist yet, 'swarf pull' also
-bootstraps: it creates the store and seeds it from the remote (for the
-git backend) or from any existing peer (for the rclone backend).
+bootstraps: it creates the store and seeds it from every peer. With the
+git backend, a store with no commits starts from this machine's own
+machine branch when the remote has it, so a reinstalled machine gets
+its data back before the peers are pulled.
 
 Conflicts
   When two machines edited the same file between syncs, pull keeps
@@ -304,7 +311,7 @@ Resync
   restored on purpose. A file that matches none of them keeps its local
   content; it also gets a conflict sidecar, as above, unless the peer
   has not changed the file since the last pull (that is a local edit,
-  kept as a plain pull would keep it). Rclone backend only.
+  kept as a plain pull would keep it).
 
 Sync lock
   Push, pull, and each daemon cycle hold the sync lock (the file
@@ -313,7 +320,7 @@ Sync lock
 		Example: `  swarf pull
   swarf pull --resync`,
 	}
-	resync := cmd.Flags().Bool("resync", false, "Union every file each peer has into the store, ignoring what was already pulled (rclone backend only)")
+	resync := cmd.Flags().Bool("resync", false, "Union every file each peer has into the store, ignoring what was already pulled")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		return pull.Run(cmd.Context(), pull.Options{Resync: *resync})
 	}

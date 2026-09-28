@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
+	"github.com/mschulkind-oss/swarf/internal/gitexec"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
@@ -31,30 +33,97 @@ func TestPullGitNoStoreNoRemote(t *testing.T) {
 	}
 }
 
-func TestPullGitBootstrapsFromRemote(t *testing.T) {
-	// A fresh machine with no store but a valid git remote should clone.
+// A fresh machine with no store bootstraps from the other machines'
+// machine branches: pull creates the store, adds the remote, fetches,
+// and applies every peer file as an add. It no longer clones.
+func TestPullGitBootstrapsFromPeerMachineBranch(t *testing.T) {
 	testutil.GitRepo(t)
 	bare := testutil.BareRemote(t)
-
-	// Seed bare remote with a commit.
-	staging := filepath.Join(t.TempDir(), "staging")
-	runGit(t, "", "clone", bare, staging)
-	runGit(t, staging, "config", "user.email", "t@t")
-	runGit(t, staging, "config", "user.name", "t")
-	os.WriteFile(filepath.Join(staging, "seed.txt"), []byte("seed"), 0o644)
-	runGit(t, staging, "add", "-A")
-	runGit(t, staging, "commit", "-m", "seed")
-	runGit(t, staging, "push", "origin", "HEAD")
+	pushBranch(t, bare, "machines/peer", map[string]string{"proj/seed.txt": "seed"})
 
 	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
-	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s"})
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s", MachineID: "self"})
 
+	res, err := RunWithResult(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(paths.StoreDir, "proj", "seed.txt")); err != nil || string(got) != "seed" {
+		t.Fatalf("expected the peer's proj/seed.txt in the store, got %q, %v", got, err)
+	}
+	if res.PeersMerged != 1 {
+		t.Errorf("PeersMerged = %d, want 1", res.PeersMerged)
+	}
+	if got := gitexec.RemoteURL(paths.StoreDir, "origin"); got != bare {
+		t.Errorf("the bootstrapped store's origin = %q, want %q", got, bare)
+	}
+	if gitexec.ReadRef(paths.StoreDir, peerRefName("peer")) == "" {
+		t.Error("the pull should record the peer's last-seen ref")
+	}
+	if out := gitOut(t, paths.StoreDir, "for-each-ref", "refs/remotes/"); out != "" {
+		t.Errorf("pull must not create remote-tracking branches:\n%s", out)
+	}
+}
+
+// A machine branch that disappears from the remote is pruned from the
+// store's refs/swarf-machines/ copy, so pull stops reading it.
+func TestPullGitPrunesRemovedMachineBranch(t *testing.T) {
+	testutil.GitRepo(t)
+	bare := testutil.BareRemote(t)
+	pushBranch(t, bare, "machines/gone", map[string]string{"proj/a.txt": "a"})
+
+	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s", MachineID: "self"})
 	if err := Run(context.Background(), Options{}); err != nil {
 		t.Fatalf("pull: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(paths.StoreDir, "seed.txt")); err != nil {
-		t.Fatalf("expected seed.txt in store, got: %v", err)
+	if gitexec.ReadRef(paths.StoreDir, machineRefName("gone")) == "" {
+		t.Fatal("setup: the first pull should fetch machines/gone")
 	}
+	runGit(t, "", "--git-dir", bare, "update-ref", "-d", "refs/heads/machines/gone")
+	res, err := RunWithResult(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("second pull: %v", err)
+	}
+	if gitexec.ReadRef(paths.StoreDir, machineRefName("gone")) != "" {
+		t.Error("the removed machine branch should be pruned from refs/swarf-machines/")
+	}
+	if res.PeersSeen != 0 {
+		t.Errorf("PeersSeen = %d, want 0", res.PeersSeen)
+	}
+}
+
+// pushBranch pushes one commit holding files to branch on the bare
+// repository, on top of whatever the branch already has.
+func pushBranch(t *testing.T, bare, branch string, files map[string]string) {
+	t.Helper()
+	staging := filepath.Join(t.TempDir(), "staging")
+	runGit(t, "", "init", "-q", staging)
+	runGit(t, staging, "config", "user.email", "t@t")
+	runGit(t, staging, "config", "user.name", "t")
+	if _, ok, _ := gitexec.LsRemoteRef(staging, bare, "refs/heads/"+branch); ok {
+		runGit(t, staging, "fetch", "-q", bare, branch)
+		runGit(t, staging, "reset", "-q", "--hard", "FETCH_HEAD")
+	}
+	for rel, content := range files {
+		os.MkdirAll(filepath.Dir(filepath.Join(staging, rel)), 0o755)
+		os.WriteFile(filepath.Join(staging, rel), []byte(content), 0o644)
+	}
+	runGit(t, staging, "add", "-A")
+	runGit(t, staging, "commit", "-q", "-m", "peer commit")
+	runGit(t, staging, "push", "-q", bare, "HEAD:refs/heads/"+branch)
+}
+
+// gitOut runs git in dir and returns its trimmed output.
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestPullUnknownBackend(t *testing.T) {
@@ -100,18 +169,15 @@ func TestPullGitSuccess(t *testing.T) {
 	}
 }
 
-func TestPullGitPullFailure(t *testing.T) {
-	// Store is a git repo but has no remote, so pull will fail.
+// A store with no origin and no [sync] remote has nowhere to pull
+// from, and pull says so.
+func TestPullGitNoRemote(t *testing.T) {
 	testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
 
 	err := Run(context.Background(), Options{})
-	if err == nil {
-		t.Fatal("expected error from git pull with no remote")
-	}
-	// The error should be wrapped with "git pull:" prefix.
-	if err.Error()[:9] != "git pull:" {
-		t.Fatalf("expected 'git pull:' prefix, got %v", err)
+	if !errors.Is(err, ErrNoGitRemote) {
+		t.Fatalf("expected ErrNoGitRemote, got %v", err)
 	}
 }
 
@@ -222,13 +288,32 @@ func runGit(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// TestPullGitResyncRejected: resync is a rclone-backend operation; with
-// the git backend it is refused rather than silently running a plain pull.
-func TestPullGitResyncRejected(t *testing.T) {
-	testutil.InitializedSwarf(t)
-	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
-	if err := Run(context.Background(), Options{Resync: true}); !errors.Is(err, ErrResyncNeedsRclone) {
-		t.Fatalf("expected ErrResyncNeedsRclone, got %v", err)
+// 'swarf pull --resync' works on the git backend: a file this store
+// lost after pulling it comes back from the unchanged peer, which a
+// plain pull does not do.
+func TestPullGitResync(t *testing.T) {
+	testutil.GitRepo(t)
+	bare := testutil.BareRemote(t)
+	pushBranch(t, bare, "machines/peer", map[string]string{"proj/a.txt": "a"})
+	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s", MachineID: "self"})
+	if err := Run(context.Background(), Options{}); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	runGit(t, paths.StoreDir, "rm", "-q", "proj/a.txt")
+	runGit(t, paths.StoreDir, "commit", "-q", "-m", "lost it")
+
+	if err := Run(context.Background(), Options{}); err != nil {
+		t.Fatalf("plain pull: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "proj", "a.txt")); err == nil {
+		t.Fatal("setup: a plain pull should not restore a file the peer did not change")
+	}
+	if err := Run(context.Background(), Options{Resync: true}); err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "proj", "a.txt")); err != nil {
+		t.Fatalf("--resync should restore proj/a.txt: %v", err)
 	}
 }
 

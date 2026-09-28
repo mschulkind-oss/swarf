@@ -86,18 +86,6 @@ func Clone(url, dest string) error {
 	return err
 }
 
-// CloneBranch clones url into dest with branch checked out (and
-// tracked) instead of the remote's default branch.
-func CloneBranch(url, dest, branch string) error {
-	_, err := run("", "clone", "--branch", branch, url, dest)
-	return err
-}
-
-func Pull(dir string) error {
-	_, err := run(dir, "pull")
-	return err
-}
-
 func StatusPorcelain(dir string) string {
 	out, _ := runStdout(dir, "status", "--porcelain")
 	return out
@@ -392,4 +380,50 @@ func LsRemoteRef(dir, remote, ref string) (sha string, ok bool, err error) {
 func IsAncestor(dir, a, b string) bool {
 	_, err := run(dir, "merge-base", "--is-ancestor", a, b)
 	return err == nil
+}
+
+// FetchRefspec runs `git fetch --prune` of refspec (e.g.
+// "+refs/heads/machines/*:refs/swarf-machines/*") from remote. Only
+// refspec's destination refs change: --refmap= stops git from also
+// updating the remote's remote-tracking branches, and no tags are
+// fetched. --prune removes each destination ref whose source is gone.
+// A cancelled ctx kills the fetch.
+func FetchRefspec(ctx context.Context, dir, remote, refspec string) error {
+	out, err := runCtx(ctx, dir, "fetch", "--prune", "--no-tags", "--refmap=", remote, refspec)
+	if err != nil && out != "" {
+		return fmt.Errorf("%s: %w", out, err)
+	}
+	return err
+}
+
+// ListRefs returns the refs under prefix (e.g. "refs/swarf-machines/"),
+// keyed by the ref name with prefix removed, each with the SHA it
+// points at.
+func ListRefs(dir, prefix string) (map[string]string, error) {
+	out, err := runStdout(dir, "for-each-ref", "--format=%(objectname) %(refname)", prefix)
+	if err != nil {
+		return nil, err
+	}
+	refs := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		sha, name, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(name, prefix); ok && rest != "" {
+			refs[rest] = sha
+		}
+	}
+	return refs, nil
+}
+
+// ResetHard moves the current branch to commit and makes the index and
+// working tree match it (`git reset --hard`). It also works on a
+// repository with no commits yet, where it starts the branch at commit.
+func ResetHard(dir, commit string) error {
+	out, err := run(dir, "reset", "--hard", "--quiet", commit)
+	if err != nil && out != "" {
+		return fmt.Errorf("%s: %w", out, err)
+	}
+	return err
 }

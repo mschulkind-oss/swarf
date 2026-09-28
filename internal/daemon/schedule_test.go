@@ -15,9 +15,10 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/pull"
 )
 
-// The daemon schedules pulls only when [sync] pull_interval is set and
-// the backend is rclone. The git backend says once that it cannot, and
-// a value that does not parse is reported rather than guessed at.
+// The daemon schedules pulls only when [sync] pull_interval is set, on
+// the rclone and git backends alike. A backend that cannot pull says so
+// once, and a value that does not parse is reported rather than guessed
+// at.
 func TestPullSchedule(t *testing.T) {
 	cases := []struct {
 		name, backend, interval string
@@ -28,7 +29,8 @@ func TestPullSchedule(t *testing.T) {
 		{"rclone zero", "rclone", "0", 0, ""},
 		{"rclone set", "rclone", "10m", 10 * time.Minute, ""},
 		{"git unset", "git", "", 0, ""},
-		{"git set", "git", "10m", 0, "not supported"},
+		{"git set", "git", "10m", 10 * time.Minute, ""},
+		{"unknown backend set", "ftp", "10m", 0, "not supported"},
 		{"rclone invalid", "rclone", "soon", 0, "pull_interval"},
 	}
 	for _, c := range cases {

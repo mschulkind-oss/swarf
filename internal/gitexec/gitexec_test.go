@@ -402,3 +402,70 @@ func TestIsAncestor(t *testing.T) {
 		t.Error("a commit this repository does not have is not an ancestor")
 	}
 }
+
+// FetchRefspec writes only the refspec's destination refs: no
+// remote-tracking branches, no tags. It prunes a destination ref whose
+// source branch is gone, and ListRefs reads the namespace back.
+func TestFetchRefspecAndListRefs(t *testing.T) {
+	src := makeRepo(t)
+	os.WriteFile(filepath.Join(src, "f"), []byte("x"), 0o644)
+	execCmd(t, src, "git", "add", "f")
+	execCmd(t, src, "git", "commit", "-m", "one")
+	execCmd(t, src, "git", "tag", "v1")
+	execCmd(t, src, "git", "branch", "machines/a")
+	execCmd(t, src, "git", "branch", "machines/b")
+	sha := RevParseHEAD(src)
+
+	dst := makeRepo(t)
+	execCmd(t, dst, "git", "remote", "add", "origin", src)
+	spec := "+refs/heads/machines/*:refs/swarf-machines/*"
+	if err := FetchRefspec(context.Background(), dst, "origin", spec); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := ListRefs(dst, "refs/swarf-machines/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 2 || refs["a"] != sha || refs["b"] != sha {
+		t.Fatalf("ListRefs = %v, want a and b at %s", refs, sha)
+	}
+	if others, _ := ListRefs(dst, "refs/remotes/"); len(others) != 0 {
+		t.Errorf("fetch must not write remote-tracking branches: %v", others)
+	}
+	if tags, _ := ListRefs(dst, "refs/tags/"); len(tags) != 0 {
+		t.Errorf("fetch must not write tags: %v", tags)
+	}
+
+	execCmd(t, src, "git", "branch", "-D", "machines/b")
+	if err := FetchRefspec(context.Background(), dst, "origin", spec); err != nil {
+		t.Fatal(err)
+	}
+	if refs, _ := ListRefs(dst, "refs/swarf-machines/"); len(refs) != 1 || refs["a"] != sha {
+		t.Errorf("a removed branch should be pruned, got %v", refs)
+	}
+}
+
+// ResetHard starts a repository with no commits at a fetched commit,
+// working tree included.
+func TestResetHardFromNoCommits(t *testing.T) {
+	src := makeRepo(t)
+	os.WriteFile(filepath.Join(src, "f"), []byte("content"), 0o644)
+	execCmd(t, src, "git", "add", "f")
+	execCmd(t, src, "git", "commit", "-m", "one")
+	sha := RevParseHEAD(src)
+
+	dst := makeRepo(t)
+	execCmd(t, dst, "git", "fetch", src, "HEAD")
+	if err := ResetHard(dst, sha); err != nil {
+		t.Fatal(err)
+	}
+	if got := RevParseHEAD(dst); got != sha {
+		t.Errorf("HEAD = %q, want %q", got, sha)
+	}
+	if got, _ := os.ReadFile(filepath.Join(dst, "f")); string(got) != "content" {
+		t.Errorf("working tree f = %q", got)
+	}
+	if err := ResetHard(dst, "0000000000000000000000000000000000000000"); err == nil {
+		t.Error("resetting to a commit the repository lacks should fail")
+	}
+}

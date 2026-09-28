@@ -13,9 +13,8 @@ import (
 // pullSchedule decides whether the daemon runs scheduled pulls, from
 // [sync] pull_interval and the backend. It returns the interval (0 means
 // no scheduled pulls) and, when the setting cannot be honored, a note for
-// the daemon to log once at startup. Only the rclone backend pulls on a
-// schedule: a git-backend pull does not mirror into projects, and the
-// git backend is single-machine.
+// the daemon to log once at startup. The rclone and git backends both
+// pull on a schedule; any other backend cannot pull at all.
 func pullSchedule(gc *config.GlobalConfig) (time.Duration, string) {
 	interval, err := config.ParsePullInterval(gc.PullInterval)
 	if err != nil {
@@ -24,7 +23,7 @@ func pullSchedule(gc *config.GlobalConfig) (time.Duration, string) {
 	if interval <= 0 {
 		return 0, ""
 	}
-	if gc.Backend != "rclone" {
+	if gc.Backend != "rclone" && gc.Backend != "git" {
 		return 0, fmt.Sprintf("[sync] pull_interval is set, but scheduled pull is not supported with the %s backend; not scheduling it", gc.Backend)
 	}
 	return interval, ""

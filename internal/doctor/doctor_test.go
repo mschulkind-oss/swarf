@@ -472,3 +472,22 @@ func TestCheckMachineOwnerGit(t *testing.T) {
 		t.Errorf("doctor message should list exactly two fixes, got %d:\n%s", n, c.Msg)
 	}
 }
+
+// The git backend now keeps last-seen peer refs too, so doctor lists
+// them as it does for rclone.
+func TestCheckPeerRefsGitBackend(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "r", Debounce: "5s"})
+	testutil.GitCommit(t, paths.StoreDir, "seed")
+	out, err := exec.Command("git", "-C", paths.StoreDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("git", "-C", paths.StoreDir, "update-ref", "refs/swarf-peers/laptop", strings.TrimSpace(string(out))).Run(); err != nil {
+		t.Fatal(err)
+	}
+	c := doctor.CheckPeerRefs()
+	if !strings.Contains(c.Msg, "laptop") {
+		t.Errorf("doctor should list the git backend's last-seen peer refs, got %q", c.Msg)
+	}
+}

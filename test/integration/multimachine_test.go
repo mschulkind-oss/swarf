@@ -1514,32 +1514,6 @@ func TestMultiMachine_DaemonScheduledPull(t *testing.T) {
 	}
 }
 
-// With the git backend, a pull_interval is not scheduled: the daemon
-// says so once at startup.
-func TestMultiMachine_DaemonScheduledPullGitBackendNote(t *testing.T) {
-	m := newMachine(t, "a", t.TempDir())
-	m.setSyncConfig("backend = \"git\"\ndebounce = \"1s\"\npull_interval = \"1s\"\n")
-	d := m.startDaemon()
-
-	const note = "not supported with the git backend"
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(d.log(), note) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the daemon should log that scheduled pull is unsupported\n--- daemon log ---\n%s", d.log())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	// Give a wrongly scheduled pull, or a repeated note, time to show.
-	time.Sleep(2500 * time.Millisecond)
-	out := d.log()
-	if n := strings.Count(out, note); n != 1 {
-		t.Errorf("the note should be logged once, got %d\n--- daemon log ---\n%s", n, out)
-	}
-	if strings.Contains(out, "Scheduled pull enabled") || strings.Contains(out, "scheduled pull failed") {
-		t.Errorf("no pull should be scheduled with the git backend\n--- daemon log ---\n%s", out)
-	}
-}
-
 // A daemon told to stop (SIGTERM) while a scheduled pull is downloading
 // ends the download and exits promptly, leaving no rclone behind.
 func TestMultiMachine_DaemonStopsDuringScheduledPull(t *testing.T) {
@@ -1759,5 +1733,280 @@ func TestMultiMachineGit_SharedMachineIDRefusesSecondPush(t *testing.T) {
 	a.write("a2.md", "more from A\n")
 	if out, err := a.swarf("push"); err == nil {
 		t.Errorf("after B took over, A is the one refused:\n%s", out)
+	}
+}
+
+// newGitMachineWithSlug is newGitMachine with the project directory
+// named slug, so two machines share one project (see newMachineWithSlug).
+func newGitMachineWithSlug(t *testing.T, id, bare, slug string) *machine {
+	t.Helper()
+	m := newMachineWithSlug(t, id, t.TempDir(), slug)
+	m.setSyncConfig(fmt.Sprintf("backend = \"git\"\nremote = %q\ndebounce = \"1s\"\n", bare))
+	return m
+}
+
+// storeRefs lists the refs under prefix in this machine's store, one
+// per line.
+func (m *machine) storeRefs(prefix string) string {
+	m.t.Helper()
+	out, err := exec.Command("git", "-C", filepath.Join(m.home, ".local", "share", "swarf"),
+		"for-each-ref", "--format=%(refname)", prefix).Output()
+	if err != nil {
+		m.t.Fatalf("store refs: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// With the git backend, pull reads every other machine's machine branch:
+// a fresh B bootstraps from A's branch with no clone, A's later edit
+// reaches B's project, and B's edit reaches A's. The branches are
+// fetched into the store's refs/swarf-machines/ namespace, never as
+// remote-tracking branches. The git counterpart of
+// TestMultiMachine_RoundTrip.
+func TestMultiMachineGit_RoundTrip(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("shared.md", "v1 from A\n")
+	a.push()
+
+	b := newGitMachineWithSlug(t, "b", bare, a.slug())
+	b.pull()
+	if !b.storeHas(a.slug(), "shared.md") {
+		t.Fatal("B's bootstrap pull should bring A's shared.md into B's store")
+	}
+	b.init()
+	if got := b.read("shared.md"); got != "v1 from A\n" {
+		t.Fatalf("B's shared.md after init = %q, want A's v1", got)
+	}
+	if got := b.storeRefs("refs/remotes/"); got != "" {
+		t.Errorf("pull must not create remote-tracking branches:\n%s", got)
+	}
+	if got := b.storeRefs("refs/swarf-machines/"); !strings.Contains(got, "refs/swarf-machines/a") {
+		t.Errorf("pull should fetch A's machine branch into refs/swarf-machines/:\n%s", got)
+	}
+
+	b.write("shared.md", "v2 from B\n")
+	b.push()
+	a.pull()
+	if got := a.read("shared.md"); got != "v2 from B\n" {
+		t.Fatalf("A after round-trip pull: got %q, want %q", got, "v2 from B\n")
+	}
+	if sidecars := findSidecars(t, a.project, "shared.md"); len(sidecars) != 0 {
+		t.Errorf("a clean round trip writes no sidecars, got %v", sidecars)
+	}
+}
+
+// Both machines edit one file without seeing each other's edit: the
+// puller keeps its own version and gets the peer's as a conflict sidecar.
+func TestMultiMachineGit_ConflictingEdits(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("shared.md", "seed\n")
+	a.push()
+
+	b := newGitMachineWithSlug(t, "b", bare, a.slug())
+	b.pull()
+	b.init()
+
+	a.write("shared.md", "A wins\n")
+	a.push()
+	b.write("shared.md", "B wins\n")
+	b.push()
+
+	a.pull()
+	if got := a.read("shared.md"); got != "A wins\n" {
+		t.Fatalf("A's shared.md should keep A's text, got %q", got)
+	}
+	sidecars := findSidecars(t, a.project, "shared.md")
+	if len(sidecars) != 1 || !strings.Contains(sidecars[0], ".conflict.b.") {
+		t.Fatalf("A should have one .conflict.b.* sidecar after pull, got %v", sidecars)
+	}
+	if got := a.read(sidecars[0]); got != "B wins\n" {
+		t.Errorf("the sidecar should hold B's version, got %q", got)
+	}
+	if strings.Contains(a.read("shared.md"), "<<<<<<<") {
+		t.Error("pull must never leave merge markers")
+	}
+}
+
+// A file A deletes is deleted from B's project by B's next pull.
+func TestMultiMachineGit_DeletePropagates(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("doomed.md", "bye\n")
+	a.write("kept.md", "stay\n")
+	a.push()
+
+	b := newGitMachineWithSlug(t, "b", bare, a.slug())
+	b.pull()
+	b.init()
+	if !b.exists("doomed.md") {
+		t.Fatal("B should have doomed.md after the first sync")
+	}
+
+	os.Remove(filepath.Join(a.project, "swarf", "doomed.md"))
+	a.push()
+
+	out := mustSwarf(t, b, "pull")
+	if b.exists("doomed.md") {
+		t.Fatalf("B's doomed.md should be gone after pull\n--- pull output ---\n%s", out)
+	}
+	if !b.exists("kept.md") {
+		t.Error("B's kept.md should survive A's unrelated delete")
+	}
+}
+
+// B set up its own store before ever pulling, so its history and A's
+// share no commit. The pull unions A's files in (content-union mode)
+// and deletes nothing of B's.
+func TestMultiMachineGit_UnrelatedHistoriesUnion(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("from-a.md", "A\n")
+	a.push()
+
+	b := newGitMachineWithSlug(t, "b", bare, a.slug())
+	b.init()
+	b.write("from-b.md", "B\n")
+	b.push()
+
+	out := mustSwarf(t, b, "pull")
+	if got := b.read("from-a.md"); got != "A\n" {
+		t.Errorf("B should get A's file, got %q\n--- pull output ---\n%s", got, out)
+	}
+	if got := b.read("from-b.md"); got != "B\n" {
+		t.Errorf("B's own file should survive the union, got %q", got)
+	}
+	b.push()
+	a.pull()
+	if got := a.read("from-b.md"); got != "B\n" {
+		t.Errorf("A should get B's file back, got %q", got)
+	}
+}
+
+// A reinstalled machine (same machine_id, fresh home) gets its own data
+// back from its machine branch, plus every peer's, from one 'swarf
+// pull'; its next push fast-forwards the machine branch instead of
+// being refused as another store's.
+func TestMultiMachineGit_ReinstallRecoversOwnBranch(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("mine.md", "A's own\n")
+	a.push()
+
+	b := newGitMachineWithSlug(t, "b", bare, a.slug())
+	b.pull()
+	b.init()
+	b.write("theirs.md", "B's\n")
+	b.push()
+
+	oldTip := bareRef(bare, "refs/heads/machines/a")
+	a2 := newGitMachineWithSlug(t, "a", bare, a.slug())
+	out := mustSwarf(t, a2, "pull")
+	if !a2.storeHas(a.slug(), "mine.md") || !a2.storeHas(a.slug(), "theirs.md") {
+		t.Fatalf("the reinstalled store should hold its own and B's files\n--- pull output ---\n%s\n--- store ---\n%s",
+			out, listTree(a2.storeRoot(a.slug())))
+	}
+	if !strings.Contains(out, "machines/a") {
+		t.Errorf("pull should say it started the store from this machine's branch:\n%s", out)
+	}
+	a2.init()
+	if got := a2.read("mine.md"); got != "A's own\n" {
+		t.Errorf("reinstalled project mine.md = %q", got)
+	}
+	a2.write("new.md", "after reinstall\n")
+	if out, err := a2.swarf("push"); err != nil {
+		t.Fatalf("the reinstalled machine's push should fast-forward its machine branch: %v\n%s", err, out)
+	}
+	if !isAncestorIn(bare, oldTip, bareRef(bare, "refs/heads/machines/a")) {
+		t.Error("machines/a should have moved forward from its old tip, not been replaced")
+	}
+}
+
+// isAncestorIn reports whether commit a is an ancestor of commit b in
+// the bare repository.
+func isAncestorIn(bare, a, b string) bool {
+	return exec.Command("git", "--git-dir", bare, "merge-base", "--is-ancestor", a, b).Run() == nil
+}
+
+// The git counterpart of TestMultiMachine_ResyncRestoresDivergedStore:
+// files B's store lost stay lost on a plain pull, since A has not
+// changed, and 'swarf pull --resync' brings them back without deleting
+// anything of B's.
+func TestMultiMachineGit_ResyncRestoresDivergedStore(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	files := []string{"README.md", "docs/design.md"}
+	for _, f := range files {
+		a.write(f, "A's "+f+"\n")
+	}
+	a.push()
+
+	b := newGitMachineWithSlug(t, "b", bare, a.slug())
+	b.pull()
+	b.init()
+	b.push() // the manifest now lists every file
+
+	b.wipeProject("README.md", "docs")
+	mustSwarf(t, b, "push", "--allow-deletes")
+	b.write("b-only.md", "B's own file\n")
+	b.push()
+
+	out := mustSwarf(t, b, "pull")
+	for _, f := range files {
+		if b.storeHas(a.slug(), f) {
+			t.Fatalf("a plain pull is not expected to restore %s\n--- pull output ---\n%s", f, out)
+		}
+	}
+
+	out = mustSwarf(t, b, "pull", "--resync")
+	for _, f := range files {
+		if got := b.read(f); got != "A's "+f+"\n" {
+			t.Errorf("--resync should restore %s into B's project, got %q\n--- pull output ---\n%s", f, got, out)
+		}
+	}
+	if got := b.read("b-only.md"); got != "B's own file\n" {
+		t.Errorf("--resync never deletes: B's own file should survive, got %q", got)
+	}
+}
+
+// With [sync] pull_interval set, a git-backend daemon pulls on its own:
+// a file A pushes reaches B's project with no 'swarf pull' on B.
+func TestMultiMachineGit_DaemonScheduledPull(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.push()
+
+	b := newGitMachineWithSlug(t, "b", bare, a.slug())
+	b.pull()
+	b.init()
+	b.push()
+
+	b.setSyncConfig(fmt.Sprintf("backend = \"git\"\nremote = %q\ndebounce = \"1s\"\npull_interval = \"1s\"\n", bare))
+	d := b.startDaemon()
+
+	a.write("from-a.md", "pushed by A\n")
+	a.push()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for !b.exists("from-a.md") {
+		if time.Now().After(deadline) {
+			t.Fatalf("B's daemon should pull A's new file on its own\n--- daemon log ---\n%s", d.log())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if got := b.read("from-a.md"); got != "pushed by A\n" {
+		t.Errorf("B's project from-a.md = %q", got)
+	}
+	if strings.Contains(d.log(), "not supported") {
+		t.Errorf("the git backend supports scheduled pull\n--- daemon log ---\n%s", d.log())
 	}
 }

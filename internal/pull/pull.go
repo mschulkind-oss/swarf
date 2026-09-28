@@ -28,10 +28,10 @@ import (
 )
 
 var (
-	ErrNoConfig          = errors.New("no global config found — run 'swarf init' first")
-	ErrNotGitRepo        = errors.New("store is not a git repository")
-	ErrUnknownBackend    = errors.New("unknown backend")
-	ErrResyncNeedsRclone = errors.New("--resync needs the rclone backend")
+	ErrNoConfig       = errors.New("no global config found — run 'swarf init' first")
+	ErrNotGitRepo     = errors.New("store is not a git repository")
+	ErrUnknownBackend = errors.New("unknown backend")
+	ErrNoGitRemote    = errors.New("the store has no git remote (origin) and [sync] remote is empty, so there is nothing to pull from")
 )
 
 // Result summarizes what happened during a pull.
@@ -66,16 +66,14 @@ type Options struct {
 	// Resync ignores each peer's last-seen ref and unions every file in
 	// the peer's current tree into the store ('swarf pull --resync'). The
 	// only deletes it applies are the ones the peer made since that ref.
-	// Rclone backend only.
 	Resync bool
 }
 
 // Run pulls once. A pull that finds another push, pull, or daemon cycle
 // holding the sync lock waits for it, and gives up if ctx ends first.
-// With the rclone backend ctx also bounds the downloads: ending it kills
-// the in-flight rclone, skips the remaining peers, and returns ctx's
-// error once whatever it applied from peers is mirrored back into the
-// projects.
+// ctx also bounds the downloads: ending it kills the in-flight rclone
+// or git fetch, skips the remaining peers, and returns ctx's error once
+// whatever it applied from peers is mirrored back into the projects.
 func Run(ctx context.Context, opts Options) error {
 	_, err := RunWithResult(ctx, opts)
 	return err
@@ -97,10 +95,7 @@ func RunWithResult(ctx context.Context, opts Options) (*Result, error) {
 
 	switch gc.Backend {
 	case "git":
-		if opts.Resync {
-			return nil, ErrResyncNeedsRclone
-		}
-		return nil, pullGit(gc)
+		return pullGit(ctx, gc, opts)
 	case "rclone":
 		return pullRclone(ctx, gc, opts)
 	default:
@@ -108,40 +103,97 @@ func RunWithResult(ctx context.Context, opts Options) (*Result, error) {
 	}
 }
 
-func pullGit(gc *config.GlobalConfig) error {
-	// Auto-bootstrap: if the store doesn't exist yet, clone it from the
-	// configured remote. Users on a fresh machine can now just run
-	// `swarf pull` instead of the (now removed) `swarf clone`.
-	if !paths.IsDir(paths.StoreDir) || !gitexec.IsRepo(paths.StoreDir) {
+// machineRefPrefix is the store-local namespace a git-backend pull
+// fetches every machine branch into: refs/swarf-machines/<machine_id>
+// is the store's copy of machines/<machine_id> as of the last fetch.
+// These are not remote-tracking branches, so they stay out of sight of
+// anyone looking at the store with git, and a push never sends them.
+const machineRefPrefix = "refs/swarf-machines/"
+
+// machineRefName is the store's copy of machineID's machine branch.
+func machineRefName(machineID string) string {
+	return machineRefPrefix + machineID
+}
+
+// pullGit is the multi-peer, file-delta pull for the git backend. Every
+// machine pushes its store to its own machine branch (see
+// backends.MachineBranch), so each machine branch other than this
+// machine's is one peer, merged exactly as the rclone backend merges a
+// peer (see mergePeer). The steps:
+//
+//  1. Create the store if there is none (a fresh machine no longer
+//     clones), and give it the [sync] remote as origin if it has none.
+//  2. Fetch every machine branch into refs/swarf-machines/ (see
+//     machineRefPrefix), which brings each peer's history into the store.
+//  3. Reinstall recovery: a store with no commits whose own machine
+//     branch is already on the remote starts from that branch, so a
+//     reinstalled machine gets its old data back and its next push
+//     fast-forwards the branch.
+//  4. Merge each peer, mirror the store back into the projects, and
+//     report, as pullRclone does.
+func pullGit(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Result, error) {
+	if gc.Remote == "" && !gitexec.IsRepo(paths.StoreDir) {
+		return nil, ErrNotGitRepo
+	}
+	if err := initialize.EnsureStore("", gc); err != nil {
+		return nil, fmt.Errorf("ensure store: %w", err)
+	}
+	if !gitexec.IsRepo(paths.StoreDir) {
+		return nil, ErrNotGitRepo
+	}
+	if !gitexec.RemoteExists(paths.StoreDir, "origin") {
 		if gc.Remote == "" {
-			return ErrNotGitRepo
+			return nil, ErrNoGitRemote
 		}
-		if err := os.RemoveAll(paths.StoreDir); err != nil {
-			return fmt.Errorf("clear store dir: %w", err)
+		if err := gitexec.AddRemote(paths.StoreDir, "origin", gc.Remote); err != nil {
+			return nil, fmt.Errorf("add remote origin: %w", err)
 		}
-		// A reinstalled machine starts from its own machine branch when
-		// the remote has one: the default branch is no longer pushed, so
-		// it may be behind this machine's own later commits, and a store
-		// started from it could not fast-forward the machine branch.
-		branch := backends.MachineBranch(gc.EffectiveMachineID())
-		if _, ok, _ := gitexec.LsRemoteRef("", gc.Remote, "refs/heads/"+branch); ok {
-			if err := gitexec.CloneBranch(gc.Remote, paths.StoreDir, branch); err != nil {
-				return fmt.Errorf("git clone: %w", err)
-			}
-			console.Ok(fmt.Sprintf("Cloned store from %s (this machine's branch %s)", gc.Remote, branch))
-			return nil
-		}
-		if err := gitexec.Clone(gc.Remote, paths.StoreDir); err != nil {
-			return fmt.Errorf("git clone: %w", err)
-		}
-		console.Ok(fmt.Sprintf("Cloned store from %s", gc.Remote))
-		return nil
 	}
-	if err := gitexec.Pull(paths.StoreDir); err != nil {
-		return fmt.Errorf("git pull: %w", err)
+	remote := gitexec.RemoteURL(paths.StoreDir, "origin")
+
+	refspec := "+refs/heads/" + backends.MachineSuffix + "/*:" + machineRefPrefix + "*"
+	slog.Info("pull: fetching machine branches", "remote", remote)
+	if err := gitexec.FetchRefspec(ctx, paths.StoreDir, "origin", refspec); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("git fetch %s: %w", remote, err)
 	}
-	console.Ok("Pulled latest changes.")
-	return nil
+	tips, err := gitexec.ListRefs(paths.StoreDir, machineRefPrefix)
+	if err != nil {
+		return nil, fmt.Errorf("list machine branches: %w", err)
+	}
+
+	self := config.EnsureMachineID()
+	if own := tips[self]; own != "" && gitexec.RevParseHEAD(paths.StoreDir) == "" {
+		branch := backends.MachineBranch(self)
+		if err := gitexec.ResetHard(paths.StoreDir, own); err != nil {
+			return nil, fmt.Errorf("start the store from %s: %w", branch, err)
+		}
+		// The branch already has this commit, so a push has nothing to
+		// send until the store moves past it.
+		if err := gitexec.UpdateRef(paths.StoreDir, backends.PushedRef(self), own); err != nil {
+			slog.Warn("pull: could not record the pushed commit", "ref", backends.PushedRef(self), "err", err)
+		}
+		console.Ok(fmt.Sprintf("Started the store from this machine's branch %s on %s", branch, remote))
+	}
+
+	// Flush pending project → store edits before merging peers, as
+	// pullRclone does. It runs after the recovery above, which replaces
+	// the store's working tree.
+	stamps := mirrorProjectsToStore(mirror.SkipPatterns(gc.Exclude))
+
+	peers := make([]string, 0, len(tips))
+	for id := range tips {
+		peers = append(peers, id)
+	}
+	sort.Strings(peers)
+	return mergePeers(ctx, gc, peers, self, stamps, func(ctx context.Context, peer string, result *Result) error {
+		// The fetch above already brought the peer's history into the
+		// store; merging starts changing it.
+		result.applying = true
+		return mergePeer(peer, tips[peer], opts.Resync, result)
+	})
 }
 
 // pullRclone is the multi-peer, file-delta pull used by the rclone backend.
@@ -193,15 +245,31 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 		return &Result{}, nil
 	}
 
+	return mergePeers(ctx, gc, peers, self, stamps, func(ctx context.Context, peer string, result *Result) error {
+		return pullFromPeer(ctx, gc, peer, opts.Resync, result)
+	})
+}
+
+// mergePeers is the part of a pull every backend shares. It runs
+// pullPeer for each of peers except self — pullPeer brings that peer's
+// store into this one and merges it with mergePeer — then mirrors the
+// store back into every registered project and reports the result.
+// stamps are from the forward mirror (mirrorProjectsToStore) the caller
+// ran first. A peer that fails is reported and skipped; ending ctx skips
+// the remaining peers.
+func mergePeers(ctx context.Context, gc *config.GlobalConfig, peers []string, self string, stamps map[string]mirror.Stamps,
+	pullPeer func(ctx context.Context, peer string, result *Result) error) (*Result, error) {
 	result := &Result{PeersSeen: len(peers)}
+	others := 0
 	for _, peer := range peers {
 		if peer == self {
 			continue
 		}
+		others++
 		if ctx.Err() != nil {
 			break
 		}
-		if err := pullFromPeer(ctx, gc, peer, opts.Resync, result); err != nil {
+		if err := pullPeer(ctx, peer, result); err != nil {
 			console.Warn(fmt.Sprintf("peer %s: %v", peer, err))
 			result.PeerFailures = append(result.PeerFailures, PeerFailure{Peer: peer, Err: err})
 			continue
@@ -239,6 +307,8 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 		}
 		console.Hint("Open each original file, edit it to reflect what you want, then `rm` the .conflict.* sidecar.")
 		console.Hint("See 'swarf docs conflicts' for the full resolution workflow.")
+	} else if others == 0 {
+		console.Info("No peers found on remote yet.")
 	} else {
 		console.Ok(fmt.Sprintf("Pulled %d peer(s) cleanly.", result.PeersMerged))
 	}

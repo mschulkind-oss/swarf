@@ -28,7 +28,7 @@ type GlobalConfig struct {
 	// mirror.SkipPatterns for the pattern forms.
 	Exclude []string `toml:"exclude"`
 	// PullInterval is [sync] pull_interval: how often the daemon runs a
-	// scheduled pull (rclone backend only). Empty or "0" means off. See
+	// scheduled pull. Empty or "0" means off. See
 	// ParsePullInterval.
 	PullInterval string   `toml:"pull_interval"`
 	MachineID    string   `toml:"-"`
