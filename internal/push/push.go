@@ -25,7 +25,12 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/synclock"
 )
 
-var ErrNoConfig = errors.New("no global config found — run 'swarf init' first")
+var (
+	ErrNoConfig = errors.New("no global config found — run 'swarf init' first")
+	// ErrTakeOverNeedsRclone: owner tokens exist only for the rclone
+	// backend, so there is nothing for --take-over to override.
+	ErrTakeOverNeedsRclone = errors.New("--take-over needs the rclone backend")
+)
 
 // Options tunes one push.
 type Options struct {
@@ -46,6 +51,9 @@ func Run(ctx context.Context, opts Options) error {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
 		return ErrNoConfig
+	}
+	if opts.TakeOver && gc.Backend != "rclone" {
+		return ErrTakeOverNeedsRclone
 	}
 
 	// Hold the sync lock for the whole cycle, so a pull or a daemon
