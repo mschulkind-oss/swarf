@@ -223,7 +223,8 @@ func CheckMachineOwner(gc *config.GlobalConfig) Check {
 // on the store's origin and is not an ancestor of the store's HEAD. The
 // branch then holds commits this store never had, which a different
 // store with the same machine_id pushed, and a push that is never forced
-// is refused.
+// is refused. A store with no commits yet fails too, but is told to
+// run 'swarf pull', which starts it from the branch.
 func checkMachineBranch(gc *config.GlobalConfig) Check {
 	if !paths.IsDir(paths.StoreDir) {
 		return Check{"machine owner", true, ""}
@@ -240,7 +241,18 @@ func checkMachineBranch(gc *config.GlobalConfig) Check {
 	if !ok {
 		return Check{"machine owner", true, fmt.Sprintf("Machine branch %s is not on the remote yet (the next push creates it)", branch)}
 	}
-	if head := gitexec.RevParseHEAD(paths.StoreDir); head != "" && gitexec.IsAncestor(paths.StoreDir, tip, head) {
+	head := gitexec.RevParseHEAD(paths.StoreDir)
+	if head == "" {
+		// A store with no commits is a reinstall, not a mismatch yet:
+		// 'swarf pull' starts it from the branch (reinstall recovery).
+		// Once anything is committed that is no longer possible.
+		return Check{"machine owner", false, fmt.Sprintf(
+			"Machine branch %s is on %s, but this store has no commits yet\n"+
+				"    Fix: If this computer replaces the one that pushed it: run 'swarf pull' now, before anything is committed, to start the store from %s.\n"+
+				"    Fix: If this is a different computer: give it its own id under [machine] id in %s.",
+			branch, remote, branch, paths.GlobalConfigTOML)}
+	}
+	if gitexec.IsAncestor(paths.StoreDir, tip, head) {
 		return Check{"machine owner", true, fmt.Sprintf("Machine branch %s holds only this store's commits", branch)}
 	}
 	return Check{"machine owner", false, mismatchMsg(backends.GitBranchMismatch(gc.EffectiveMachineID(), remote))}

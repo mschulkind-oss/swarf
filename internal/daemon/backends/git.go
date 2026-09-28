@@ -137,7 +137,7 @@ func GitBranchMismatch(machineID, remote string) string {
 	branch := MachineBranch(machineID)
 	return fmt.Sprintf("branch %s on %s has commits from a different store that also uses machine_id %q.\n"+
 		"  If this is a different computer: give it its own id under [machine] id in %s.\n"+
-		"  If this computer replaces that one: 'swarf push --take-over' force-pushes this store to %s and discards the commits only the old store pushed there; 'swarf pull' does not bring that branch in, so copy out anything you need beforehand (git fetch %s %s).",
+		"  If this computer replaces that one: 'swarf push --take-over' force-pushes this store to %s and discards the commits only the old store pushed there; 'swarf pull' starts a store from that branch only while the store has no commits, so copy out anything you need beforehand (git fetch %s %s).",
 		branch, remote, machineID, paths.GlobalConfigTOML, branch, remote, branch)
 }
 

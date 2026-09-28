@@ -491,3 +491,39 @@ func TestCheckPeerRefsGitBackend(t *testing.T) {
 		t.Errorf("doctor should list the git backend's last-seen peer refs, got %q", c.Msg)
 	}
 }
+
+// A store with no commits whose machine branch is already on the remote
+// is a reinstalled machine, and 'swarf pull' starts the store from that
+// branch (reinstall recovery). doctor says to run it, not to take over
+// the branch, which would discard the old store's only copy of its data.
+func TestCheckMachineOwnerGitNoCommitsSaysPull(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	bare := testutil.BareRemote(t)
+	gitC := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	gitC(paths.StoreDir, "remote", "add", "origin", bare)
+	old := t.TempDir()
+	gitC(old, "init")
+	gitC(old, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "--allow-empty", "-m", "old store")
+	gitC(old, "push", bare, "HEAD:refs/heads/machines/box")
+	gc := &config.GlobalConfig{Backend: "git", Remote: bare, MachineID: "box"}
+
+	c := doctor.CheckMachineOwner(gc)
+	if c.OK {
+		t.Fatalf("a store with no commits and an existing machine branch needs a pull first: %+v", c)
+	}
+	for _, want := range []string{"machines/box", "swarf pull"} {
+		if !strings.Contains(c.Msg, want) {
+			t.Errorf("doctor message missing %q:\n%s", want, c.Msg)
+		}
+	}
+	for _, unwanted := range []string{"--take-over"} {
+		if strings.Contains(c.Msg, unwanted) {
+			t.Errorf("doctor message should not contain %q:\n%s", unwanted, c.Msg)
+		}
+	}
+}
