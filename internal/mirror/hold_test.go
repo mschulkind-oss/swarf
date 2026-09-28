@@ -279,6 +279,17 @@ func TestTrackedDirHoldMarkerLifecycle(t *testing.T) {
 	}
 }
 
+// reverseAndClear runs pull's reverse step on the fixture: read the held
+// paths, mirror the store back into the project, then clear the hold.
+func (f *holdFixture) reverseAndClear(skip Skip) (HoldRelease, bool) {
+	f.t.Helper()
+	held := HeldPaths(f.src, f.dst, f.manifest, skip)
+	if err := TrackedReverse(f.dst, f.src, f.manifest, skip); err != nil {
+		f.t.Fatalf("TrackedReverse: %v", err)
+	}
+	return ClearResolvedHold(f.src, f.dst, held, f.marker)
+}
+
 // ClearResolvedHold is how pull ends a hold after its reverse mirror has
 // put the files back, without a full forward pass.
 func TestClearResolvedHold(t *testing.T) {
@@ -286,21 +297,65 @@ func TestClearResolvedHold(t *testing.T) {
 	f.remove("a.md", "b.md")
 	f.pass(Guard{}, nil)
 
-	if ClearResolvedHold(f.src, f.dst, f.manifest, nil, f.marker) {
+	held := HeldPaths(f.src, f.dst, f.manifest, nil)
+	if len(held) != 2 {
+		t.Fatalf("expected both files held, got %v", held)
+	}
+	if _, ok := ClearResolvedHold(f.src, f.dst, held, f.marker); ok {
 		t.Fatal("files still missing: the hold is not resolved")
 	}
 	if !f.markerExists() {
 		t.Fatal("an unresolved hold keeps its marker")
 	}
 
-	if err := Dir(f.dst, f.src, nil); err != nil {
-		t.Fatal(err)
-	}
-	if !ClearResolvedHold(f.src, f.dst, f.manifest, nil, f.marker) {
+	release, ok := f.reverseAndClear(nil)
+	if !ok {
 		t.Fatal("files are back: the hold is resolved")
+	}
+	if release != (HoldRelease{Restored: 2}) {
+		t.Errorf("expected both files restored, got %+v", release)
 	}
 	if f.markerExists() {
 		t.Error("a resolved hold loses its marker")
+	}
+}
+
+// A hold whose files the store has lost too — a peer deleted them and
+// pull merged that — is over, but nothing was restored.
+func TestClearResolvedHoldCountsFilesGoneFromStore(t *testing.T) {
+	f := newHoldFixture(t, "a.md", "b.md")
+	f.remove("a.md", "b.md")
+	f.pass(Guard{}, nil)
+
+	held := HeldPaths(f.src, f.dst, f.manifest, nil)
+	os.Remove(filepath.Join(f.dst, "a.md"))
+	os.Remove(filepath.Join(f.dst, "b.md"))
+	if err := TrackedReverse(f.dst, f.src, f.manifest, nil); err != nil {
+		t.Fatal(err)
+	}
+	release, ok := ClearResolvedHold(f.src, f.dst, held, f.marker)
+	if !ok {
+		t.Fatal("no held file is left in the store: the hold is over")
+	}
+	if release != (HoldRelease{Gone: 2}) {
+		t.Errorf("expected both files gone and none restored, got %+v", release)
+	}
+}
+
+// A held file the reverse mirror failed to copy back is still missing
+// from the project while the store has it: the marker stays.
+func TestClearResolvedHoldKeepsMarkerForUnrestoredFile(t *testing.T) {
+	f := newHoldFixture(t, "a.md", "b.md")
+	f.remove("a.md", "b.md")
+	f.pass(Guard{}, nil)
+
+	held := HeldPaths(f.src, f.dst, f.manifest, nil)
+	writeFile(t, filepath.Join(f.src, "a.md"), "restored")
+	if _, ok := ClearResolvedHold(f.src, f.dst, held, f.marker); ok {
+		t.Fatal("b.md is still only in the store: the hold is not resolved")
+	}
+	if !f.markerExists() {
+		t.Error("an unresolved hold keeps its marker")
 	}
 }
 
@@ -344,10 +399,11 @@ func TestClearResolvedHoldIgnoresDirectoryExcludedFiles(t *testing.T) {
 	if h == nil || h.Count != 10 {
 		t.Fatalf("expected a hold on the ten tracked files, got %+v", h)
 	}
-	if err := Dir(f.dst, f.src, skip); err != nil {
-		t.Fatal(err)
-	}
-	if !ClearResolvedHold(f.src, f.dst, f.manifest, skip, f.marker) {
+	release, ok := f.reverseAndClear(skip)
+	if !ok {
 		t.Fatal("tracked files are back: the hold is resolved")
+	}
+	if release != (HoldRelease{Restored: 10}) {
+		t.Errorf("expected the ten tracked files restored, got %+v", release)
 	}
 }

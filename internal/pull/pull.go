@@ -18,6 +18,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/console"
 	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
+	"github.com/mschulkind-oss/swarf/internal/deletehold"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
@@ -234,20 +235,44 @@ func mirrorStoreBackToProjects(skip mirror.Skip) (synced, unregistered []string)
 		}
 		src := filepath.Join(paths.StoreDir, slug)
 		dst := paths.SwarfDir(host)
-		if err := mirror.TrackedReverse(src, dst, paths.ProjectManifest(slug), skip); err != nil {
+		manifest, marker := paths.ProjectManifest(slug), paths.DeleteHoldMarker(slug)
+		// Read what a delete hold is holding before the reverse mirror
+		// rewrites the manifest, which erases that evidence.
+		var held []string
+		if _, holding := deletehold.Read(marker); holding {
+			held = mirror.HeldPaths(dst, src, manifest, skip)
+		}
+		if err := mirror.TrackedReverse(src, dst, manifest, skip); err != nil {
 			slog.Warn("pull: reverse mirror failed", "project", slug, "err", err)
 			continue
 		}
 		// The reverse mirror just copied back any files a delete hold
 		// kept in the store, which is the "restore the files" way out.
-		if mirror.ClearResolvedHold(dst, src, paths.ProjectManifest(slug), skip, paths.DeleteHoldMarker(slug)) {
-			console.Ok(fmt.Sprintf("%s: restored the files a delete hold kept in the store; hold cleared.", slug))
+		if release, ok := mirror.ClearResolvedHold(dst, src, held, marker); ok {
+			console.Ok(holdReleaseMessage(slug, release))
 		}
 		synced = append(synced, slug)
 	}
 	sort.Strings(synced)
 	sort.Strings(unregistered)
 	return synced, unregistered
+}
+
+// holdReleaseMessage tells the user how a delete hold on slug ended
+// during pull: the held files came back from the store, or they were no
+// longer in the store either (deleted on another machine), or some of
+// each.
+func holdReleaseMessage(slug string, r mirror.HoldRelease) string {
+	switch {
+	case r.Gone == 0 && r.Restored == 0:
+		return fmt.Sprintf("%s: delete hold cleared.", slug)
+	case r.Gone == 0:
+		return fmt.Sprintf("%s: restored the files a delete hold kept in the store; hold cleared.", slug)
+	case r.Restored == 0:
+		return fmt.Sprintf("%s: the files a delete hold kept are no longer in the store (deleted on another machine), so there was nothing to copy back; hold cleared.", slug)
+	default:
+		return fmt.Sprintf("%s: restored %d file(s) a delete hold kept in the store; %d more are no longer in the store (deleted on another machine); hold cleared.", slug, r.Restored, r.Gone)
+	}
 }
 
 // listPeers returns the machine IDs found under <remote>/machines/.
@@ -457,7 +482,7 @@ func pullFromPeer(gc *config.GlobalConfig, peer string, result *Result) error {
 // Three-way comparison on modify:
 //   - local == peerNew  → already identical, no-op.
 //   - local == peerOld  → local is at the version the peer started from;
-//                         peer simply moved forward, apply cleanly.
+//     peer simply moved forward, apply cleanly.
 //   - otherwise         → both sides changed the same file, conflict sidecar.
 //
 // oldRef is the ref to use for "the version the peer had before this

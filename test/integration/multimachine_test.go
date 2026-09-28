@@ -1083,3 +1083,54 @@ func TestMultiMachine_AllowDeletesAppliesHeldDeletes(t *testing.T) {
 		t.Errorf("no hold expected after confirming, got:\n%s", out)
 	}
 }
+
+// A delete hold can also end because the files are gone everywhere: B's
+// project lost them, and a peer deleted them on purpose. B's pull merges
+// the peer's deletes into the store, so the reverse mirror has nothing
+// to copy back. The hold is over, but pull must not claim it restored
+// the files.
+func TestMultiMachine_HoldClearedByPeerDeleteIsNotRestored(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	files := []string{"one.md", "two.md", "three.md"}
+	for _, f := range files {
+		a.write(f, "A's "+f+"\n")
+	}
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.push()
+
+	// A deletes the files on purpose and confirms it.
+	a.push() // the manifest now lists every file
+	a.wipeProject(files...)
+	mustSwarf(t, a, "push", "--allow-deletes")
+
+	// B loses them too, and its push holds.
+	b.wipeProject(files...)
+	b.push()
+	if _, err := os.Stat(b.holdMarker(a.slug())); err != nil {
+		t.Fatalf("setup: expected B's push to hold: %v", err)
+	}
+
+	out := mustSwarf(t, b, "pull")
+	for _, f := range files {
+		if b.exists(f) {
+			t.Errorf("%s was deleted on A and should stay gone on B", f)
+		}
+	}
+	if _, err := os.Stat(b.holdMarker(a.slug())); !os.IsNotExist(err) {
+		t.Errorf("hold marker should be removed once no held file is left in the store (err=%v)", err)
+	}
+	if strings.Contains(out, "restored") {
+		t.Errorf("pull restored nothing and must not say it did, got:\n%s", out)
+	}
+	if !strings.Contains(out, "hold cleared") {
+		t.Errorf("pull should say the hold was cleared, got:\n%s", out)
+	}
+}

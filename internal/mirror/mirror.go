@@ -386,23 +386,62 @@ func (p deletePlan) holds() bool {
 	return deletehold.Triggered(p.tracked, p.missing, len(p.atStake))
 }
 
-// ClearResolvedHold removes the hold marker at marker when src no longer
-// has deletes that would hold — the files came back, as they do when
-// pull's reverse mirror copies them in from the store. Read-only apart
-// from the marker: nothing is copied or deleted and the manifest is left
-// as is. Reports whether a marker was removed.
-func ClearResolvedHold(src, dst, manifestPath string, skip Skip, marker string) bool {
-	if _, ok := deletehold.Read(marker); !ok {
-		return false
+// HeldPaths returns the paths a forward pass from src to dst would hold
+// right now: the manifest entries gone from src that dst still has, when
+// there are enough of them for a delete hold (deletehold.Triggered). Nil
+// when no pass would hold. Read-only.
+//
+// Pull reads them before its reverse mirror, which rewrites the manifest
+// and so erases the evidence of what was held, and hands them to
+// ClearResolvedHold afterwards.
+func HeldPaths(src, dst, manifestPath string, skip Skip) []string {
+	plan := planDeletes(readManifest(manifestPath), fileSet(src, skip), dst, skip)
+	if !plan.holds() {
+		return nil
 	}
-	if planDeletes(readManifest(manifestPath), fileSet(src, skip), dst, skip).holds() {
-		return false
+	return plan.atStake
+}
+
+// HoldRelease says how the held paths of a delete hold stood when
+// ClearResolvedHold removed its hold marker.
+type HoldRelease struct {
+	// Restored counts held paths the project has again: pull's reverse
+	// mirror copied them back from the store.
+	Restored int
+	// Gone counts held paths the store no longer has either, so there
+	// was nothing to copy back — typically a peer deleted them and pull
+	// merged that delete into the store.
+	Gone int
+}
+
+// ClearResolvedHold removes the hold marker at marker once none of held
+// (the paths HeldPaths returned before pull's reverse mirror) is still
+// missing from project while the store has it. Each held path has then
+// either come back to project or left the store too; the release counts
+// which. A path still missing from project and present in store — its
+// copy back failed — keeps the marker for the next forward pass to
+// judge. Read-only apart from the marker. ok reports whether a marker
+// was removed.
+func ClearResolvedHold(project, store string, held []string, marker string) (release HoldRelease, ok bool) {
+	if _, exists := deletehold.Read(marker); !exists {
+		return HoldRelease{}, false
+	}
+	for _, rel := range held {
+		if _, err := os.Lstat(filepath.Join(project, rel)); err == nil {
+			release.Restored++
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(store, rel)); os.IsNotExist(err) {
+			release.Gone++
+			continue
+		}
+		return HoldRelease{}, false
 	}
 	if err := deletehold.Remove(marker); err != nil {
 		slog.Warn("mirror: removing hold marker failed", "path", marker, "err", err)
-		return false
+		return HoldRelease{}, false
 	}
-	return true
+	return release, true
 }
 
 // Skip decides whether one entry is outside the mirror's remit. rel is
