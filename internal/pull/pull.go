@@ -197,11 +197,14 @@ func mirrorProjectsToStore(skip mirror.Skip) {
 
 // mirrorStoreBackToProjects copies the store's per-project subdirectories
 // back into each registered drawer's swarf/ directory, matching what the
-// daemon does in the forward direction. Destructive: files present in the
-// project but missing from the store are deleted, so peer deletes propagate.
-// We accept a small race window — if the user edits project/swarf/ during
-// a pull, their change can be clobbered here, same risk the daemon's
-// forward mirror already has.
+// daemon does in the forward direction. Deletes are manifest-gated
+// (mirror.TrackedReverse): a project file missing from the store is
+// deleted only when the manifest says swarf synced it before, so peer
+// deletes propagate but a file saved during the pull survives. The
+// manifest is then rewritten to the project's file set. We still accept
+// a small race window — if the user edits a synced file during a pull,
+// the store's copy can overwrite it here, same risk the daemon's forward
+// mirror already has.
 //
 // Returns the slugs that were mirrored, and the slugs present in the store
 // that have no drawer on this machine (so the caller can tell the user to
@@ -231,7 +234,7 @@ func mirrorStoreBackToProjects(skip mirror.Skip) (synced, unregistered []string)
 		}
 		src := filepath.Join(paths.StoreDir, slug)
 		dst := paths.SwarfDir(host)
-		if err := mirror.Dir(src, dst, skip); err != nil {
+		if err := mirror.TrackedReverse(src, dst, paths.ProjectManifest(slug), skip); err != nil {
 			slog.Warn("pull: reverse mirror failed", "project", slug, "err", err)
 			continue
 		}

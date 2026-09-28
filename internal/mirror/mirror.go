@@ -4,12 +4,11 @@
 //   - Daemon (forward):  project/swarf/  →  store/<project>/
 //   - Pull   (reverse):  store/<project>/  →  project/swarf/
 //
-// The model is deliberately destructive in both directions — files missing
-// from the source are removed from the destination. The assumption is that
-// we control the schedule (forward always runs right before pull's reverse,
-// so the store is up-to-date with local edits first) and that losing a
-// tiny amount of uncommitted work mid-operation is acceptable. Cross-
-// machine sync already has that property: rclone sync is destructive too.
+// Both directions propagate deletes only through the manifest: a file
+// missing from the source is removed from the destination only when the
+// manifest says swarf synced it before (TrackedDir forward,
+// TrackedReverse reverse). Forward always runs right before pull's
+// reverse, so the store is up-to-date with local edits first.
 package mirror
 
 import (
@@ -26,9 +25,11 @@ import (
 )
 
 // Dir mirrors src into dst destructively: files in src are copied/updated
-// under dst, and files in dst missing from src are deleted. Used for the
-// reverse (store → project) mirror in pull, where deletes in the store
-// should propagate to the project.
+// under dst, and files in dst missing from src are deleted. Pull's
+// reverse (store → project) mirror used this until it moved to
+// TrackedReverse, which deletes only files the manifest lists; nothing
+// in swarf calls Dir now, and a new caller should prefer one of the
+// manifest-gated variants.
 //
 // For the project → store direction, prefer CopyOnly: a project/swarf/
 // that looks empty or partial is never the right signal to wipe the
@@ -133,6 +134,77 @@ func Dir(src, dst string, skip Skip) error {
 	})
 
 	return lastErr
+}
+
+// TrackedReverse mirrors src (the store) into dst (the project) for
+// pull's reverse step, deleting only what swarf has seen synced. Files in
+// src are copied/updated under dst as Dir does. A dst file is deleted
+// only when the manifest at manifestPath lists it — swarf synced it
+// before — and src no longer has it, which is how a peer's delete
+// reaches this project. A dst file the manifest has never listed was
+// saved since the last forward pass (for instance while pull was
+// downloading peers), so it is left for the next forward pass to copy
+// into the store rather than deleted for being absent from it.
+//
+// Afterwards the manifest is rewritten to dst's current file set, so the
+// next forward pass starts from what pull left behind: files pull just
+// copied in count as synced, and files it deleted are no longer listed.
+//
+// Paths matched by skip are neither copied, deleted, nor recorded, as in
+// every other mirror pass. Errors from individual files are logged and
+// do not abort; the last one is returned.
+func TrackedReverse(src, dst, manifestPath string, skip Skip) error {
+	oldSet := readManifest(manifestPath)
+	lastErr := CopyOnly(src, dst, skip)
+
+	for rel := range oldSet {
+		if skipsEntry(skip, rel) {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(src, rel)); !os.IsNotExist(err) {
+			continue
+		}
+		target := filepath.Join(dst, rel)
+		if err := os.Remove(target); err == nil {
+			slog.Debug("mirror: deleted file gone from store", "path", rel)
+			removeEmptyDirsUpTo(target, dst)
+		}
+	}
+
+	if err := writeManifest(manifestPath, fileSet(dst, skip)); err != nil {
+		slog.Warn("mirror: writing manifest failed", "path", manifestPath, "err", err)
+	}
+	return lastErr
+}
+
+// fileSet returns the drawer-relative paths of the files under root that
+// a copy pass would copy: not skipped, and resolvable to something
+// readable. It is the set a forward pass records in the manifest.
+func fileSet(root string, skip Skip) map[string]struct{} {
+	set := make(map[string]struct{})
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, _ := filepath.Rel(root, path)
+		if rel == "." {
+			return nil
+		}
+		if skips(skip, rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if _, err := statResolvable(path); err == nil {
+			set[rel] = struct{}{}
+		}
+		return nil
+	})
+	return set
 }
 
 // Guard configures the delete hold for one TrackedDir pass. The zero
@@ -323,30 +395,7 @@ func ClearResolvedHold(src, dst, manifestPath string, skip Skip, marker string) 
 	if _, ok := deletehold.Read(marker); !ok {
 		return false
 	}
-	current := make(map[string]struct{})
-	filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel, _ := filepath.Rel(src, path)
-		if rel == "." {
-			return nil
-		}
-		if skips(skip, rel, d.IsDir()) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if _, err := statResolvable(path); err == nil {
-			current[rel] = struct{}{}
-		}
-		return nil
-	})
-	if planDeletes(readManifest(manifestPath), current, dst, skip).holds() {
+	if planDeletes(readManifest(manifestPath), fileSet(src, skip), dst, skip).holds() {
 		return false
 	}
 	if err := deletehold.Remove(marker); err != nil {

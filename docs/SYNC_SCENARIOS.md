@@ -26,8 +26,11 @@ to verify each scenario is handled correctly — when one isn't, the
   target of another machine's full store mirror
 - **forward mirror** — project → store (`mirror.TrackedDir`, deletes
   propagate only via the manifest)
-- **reverse mirror** — store → project (`mirror.Dir`, destructive:
-  anything in project missing from store gets deleted)
+- **reverse mirror** — store → project (`mirror.TrackedReverse`: a
+  project file missing from the store is deleted only when the manifest
+  lists it; afterwards the manifest is rewritten to the project's file
+  set. Before Sync Hardening task 2 this was the destructive `mirror.Dir`,
+  which deleted anything in the project missing from the store)
 - **sync exclude** — a glob from `[sync] exclude` in `config.toml`,
   matched against a drawer-relative path (`mirror.SkipPatterns`). An
   excluded path lives in the project only: it is never copied to the
@@ -42,22 +45,24 @@ flowchart LR
         M[manifest.txt] -.->|"deletes only files\nin manifest but missing\nfrom project NOW"| B
         A -->|update| M
     end
-    subgraph Reverse[" Reverse (Dir) — store → project "]
+    subgraph Reverse[" Reverse (TrackedReverse) — store → project "]
         C[store/slug/] -->|copy current files| D[project/swarf/]
-        D -.->|"destructively wipe\nanything not in store"| C
+        M -.->|"deletes only files\nin manifest but missing\nfrom store NOW"| D
+        D -->|rewrite| M
     end
 ```
 
-The asymmetry matters: forward mirror is conservative (manifest gates
-deletes), reverse mirror is destructive (anything not in source gets
-removed).
+Both directions gate deletes on the same manifest: a file is deleted
+only when swarf has seen it synced. (The reverse mirror used to be
+destructive — anything not in the store was removed from the project —
+until [Sync Hardening](SYNC_HARDENING.md) task 2.)
 
 Three call sites use `TrackedDir`:
 - `internal/daemon/runner.go:mirrorAllProjects` (every debounce)
 - `internal/push/push.go:Run` (on `swarf push`)
 - `internal/pull/pull.go:mirrorProjectsToStore` (start of `swarf pull`)
 
-One call site uses `mirror.Dir`:
+One call site uses `mirror.TrackedReverse`:
 - `internal/pull/pull.go:mirrorStoreBackToProjects` (end of `swarf pull`)
 
 ### Sync excludes cut across both directions
@@ -72,9 +77,9 @@ mirror is only half of an exclude:
   what `rclone sync` uploads.
 - **Reverse** — the same Skip has to suppress the *delete* pass. The store
   has no copy of an excluded path by design, and the reverse mirror
-  deletes whatever the store lacks, so without the Skip the first `swarf
-  pull` after adding an exclude would delete those files out of the
-  project. Excluding a directory would destroy it.
+  deletes manifest-listed files the store lacks, so without the Skip the
+  first `swarf pull` after adding an exclude would delete those files out
+  of the project. Excluding a directory would destroy it.
 
 Two non-mirror consumers follow from the same rule: the daemon does not
 watch excluded subtrees (`addRecursive`, `isExcluded`), and `swarf status`
@@ -160,7 +165,7 @@ sequenceDiagram
     FM->>S: project state → store (no-op if up to date)
     U->>PC: rclone sync remote/peer → ~/.cache/swarf/peers/peer/
     U->>S: git fetch peer-remote, apply A/M/D
-    U->>RM: mirrorStoreBackToProjects (Dir, destructive)
+    U->>RM: mirrorStoreBackToProjects (TrackedReverse, manifest-gated)
     RM->>P: store → project (peer files now visible)
 ```
 
@@ -434,10 +439,10 @@ sequenceDiagram
     S->>S: mirrorProjectsToStore (TrackedDir)<br/>no manifest, project empty → no-op<br/>writes empty manifest
     S->>Rmt: rclone sync remote/machines/A → peer cache<br/>git fetch peer-A
     S->>S: apply A/M/D from peer (union mode if no merge-base)<br/>store/slug now has all of A's files
-    S->>P: mirrorStoreBackToProjects (Dir)<br/>destructive: store/slug → project/swarf
+    S->>P: mirrorStoreBackToProjects (TrackedReverse)<br/>store/slug → project/swarf, manifest = 693
     Note over P: project/swarf has 693 files
     Note over S,Rmt: daemon (or `swarf push`) eventually fires
-    S->>Rmt: TrackedDir(project, store, manifest)<br/>oldSet=empty, newSet=693<br/>no deletes; manifest = 693
+    S->>Rmt: TrackedDir(project, store, manifest)<br/>oldSet=693, newSet=693<br/>no deletes
     S->>Rmt: rclone sync store → remote/machines/B
     Note over Rmt: remote/machines/B now mirrors A's content
 ```
@@ -447,10 +452,11 @@ right way given the post-`70fc2ea` code. Specifically:
 
 - The `TrackedDir` on pull's forward mirror sees an absent manifest
   and short-circuits to "no deletes."
-- After reverse mirror lands files in the project, the manifest is
-  *still* empty (pull's forward mirror wrote it before reverse mirror
-  populated the project). Next daemon/push cycle records the full set,
-  no deletes happen, and the manifest is brought up to date.
+- After reverse mirror lands files in the project, it rewrites the
+  manifest to the project's file set (693 files), so the next
+  daemon/push cycle starts from what pull left behind and finds no
+  deletes. (Before Sync Hardening task 2 the manifest stayed empty until
+  that cycle recorded the full set; the outcome was the same.)
 - Backend `Sync` pushes to `remote/machines/<self_id>/` — A's subtree
   is never touched.
 

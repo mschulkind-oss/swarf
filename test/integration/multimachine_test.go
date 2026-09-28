@@ -21,7 +21,8 @@ import (
 // fakeRemoteShim writes an rclone stand-in into dir, pointing at
 // fakeRemoteRoot. The shim implements lsf / mkdir / sync / copy / about /
 // size / lsd with filesystem paths. Remote refs of the form fake:<path>
-// resolve to fakeRemoteRoot/<path>.
+// resolve to fakeRemoteRoot/<path>. When FAKE_RCLONE_AFTER_DOWNLOAD is set,
+// sync/copy runs it with bash after every copy from a fake: source.
 func fakeRemoteShim(t *testing.T, dir, fakeRemoteRoot string) string {
 	t.Helper()
 	shim := filepath.Join(dir, "rclone")
@@ -95,6 +96,7 @@ case "$cmd" in
         *) if [ -z "$src" ]; then src="$a"; else dst="$a"; fi ;;
       esac
     done
+    src_ref="$src"
     src=$(resolve "$src")
     dst=$(resolve "$dst")
     mkdir -p "$dst"
@@ -132,6 +134,12 @@ case "$cmd" in
       mkdir -p "$dst"
     fi
     cp -a "$src/." "$dst/"
+    # Test hook: a command to run once a download from the remote lands,
+    # standing in for whatever the user does while a slow pull is still
+    # fetching peers.
+    case "$src_ref" in
+      fake:*) [ -n "${FAKE_RCLONE_AFTER_DOWNLOAD:-}" ] && bash -c "$FAKE_RCLONE_AFTER_DOWNLOAD" ;;
+    esac
     exit 0
     ;;
   about|size)
@@ -160,7 +168,8 @@ type machine struct {
 	id      string
 	home    string
 	project string
-	shimDir string // directory holding the rclone shim on PATH
+	shimDir string   // directory holding the rclone shim on PATH
+	env     []string // extra KEY=VALUE entries for every swarf run
 }
 
 // newMachine sets up a fresh swarf machine pointed at the given shared
@@ -212,6 +221,7 @@ func (m *machine) swarfIn(dir string, args ...string) (string, error) {
 		"XDG_CACHE_HOME="+filepath.Join(m.home, ".cache"),
 		"PATH="+m.shimDir+":"+os.Getenv("PATH"),
 	)
+	cmd.Env = append(cmd.Env, m.env...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -725,6 +735,50 @@ func TestMultiMachine_LocalEditSurvivesPull(t *testing.T) {
 	b.pull()
 	if got := b.read("shared.md"); got != "B's local v2\n" {
 		t.Fatalf("B's unpushed local change should survive pull, got %q", got)
+	}
+}
+
+// A file saved while pull is still downloading peers — after pull's
+// forward mirror, before its reverse mirror — has never been synced, so
+// the reverse mirror must leave it alone even though the store lacks it.
+// Deletes a peer made in the same pull still land.
+func TestMultiMachine_FileSavedDuringPullSurvives(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.write("doomed.md", "bye\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.pull() // records B's project in the manifest
+
+	os.Remove(filepath.Join(a.project, "swarf", "doomed.md"))
+	a.push()
+
+	saved := filepath.Join(b.project, "swarf", "saved-mid-pull.md")
+	b.env = []string{"FAKE_RCLONE_AFTER_DOWNLOAD=printf 'new work\\n' > '" + saved + "'"}
+	out := mustSwarf(t, b, "pull")
+	b.env = nil
+
+	if got := b.read("saved-mid-pull.md"); got != "new work\n" {
+		t.Fatalf("a file saved during pull should survive it, got %q\n--- pull output ---\n%s", got, out)
+	}
+	if b.exists("doomed.md") {
+		t.Fatalf("A's delete should still reach B's project\n--- pull output ---\n%s", out)
+	}
+	if got := b.read("shared.md"); got != "v1\n" {
+		t.Fatalf("shared.md: got %q, want %q", got, "v1\n")
+	}
+
+	// The next push carries the saved file to the store.
+	b.push()
+	if !b.storeHas(a.slug(), "saved-mid-pull.md") {
+		t.Fatal("B's push should copy the file saved during pull into the store")
 	}
 }
 
