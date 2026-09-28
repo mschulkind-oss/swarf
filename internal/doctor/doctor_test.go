@@ -340,7 +340,7 @@ func TestCheckDeleteHolds(t *testing.T) {
 		t.Fatalf("a held project should fail its check, got %+v", checks)
 	}
 	msg := checks[0].Msg
-	for _, want := range []string{slug, "3 tracked file(s)", "--allow-deletes", filepath.Join(paths.StoreDir, slug)} {
+	for _, want := range []string{slug, "3 tracked file(s)", "--allow-deletes", "swarf pull"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("doctor message missing %q:\n%s", want, msg)
 		}

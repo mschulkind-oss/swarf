@@ -155,7 +155,7 @@ func mirrorAllProjects(skip mirror.Skip) {
 		if hold != nil && hold.New {
 			slog.Warn("delete hold: deletes not applied to the store",
 				"project", d.Slug, "files", hold.Count, "sample", hold.Sample,
-				"fix", "restore the files (swarf pull, for rclone) or run 'swarf push --allow-deletes'")
+				"fix", "restore the files (swarf pull) or run 'swarf push --allow-deletes'")
 		}
 	}
 }

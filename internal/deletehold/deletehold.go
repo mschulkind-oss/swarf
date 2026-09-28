@@ -132,10 +132,12 @@ func (h *Hold) Summary(slug string) string {
 }
 
 // WaysOut lists the two ways to end a hold, worded for the configured
-// backend: restore the files, or confirm the deletes.
+// backend: restore the files, or confirm the deletes. On the rclone and
+// git backends 'swarf pull' restores them (its reverse mirror copies the
+// held files back from the store); otherwise the user copies them.
 func WaysOut(backend, storeProjectDir string) []string {
 	restore := fmt.Sprintf("Restore the files: copy them back from the store at %s", storeProjectDir)
-	if backend == "rclone" {
+	if backend == "rclone" || backend == "git" {
 		restore = "Restore the files: 'swarf pull' copies them back from the store"
 	}
 	return []string{

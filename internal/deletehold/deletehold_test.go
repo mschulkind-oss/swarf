@@ -90,7 +90,11 @@ func TestWaysOut(t *testing.T) {
 		t.Errorf("rclone ways out should name pull and --allow-deletes:\n%s", rc)
 	}
 	git := strings.Join(WaysOut("git", "/store/p"), "\n")
-	if strings.Contains(git, "swarf pull") || !strings.Contains(git, "/store/p") {
-		t.Errorf("git ways out should point at the store, not pull:\n%s", git)
+	if !strings.Contains(git, "swarf pull") || !strings.Contains(git, "--allow-deletes") {
+		t.Errorf("git ways out should name pull and --allow-deletes:\n%s", git)
+	}
+	other := strings.Join(WaysOut("other", "/store/p"), "\n")
+	if strings.Contains(other, "swarf pull") || !strings.Contains(other, "/store/p") {
+		t.Errorf("a backend with no pull should point at the store, not pull:\n%s", other)
 	}
 }

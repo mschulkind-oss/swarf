@@ -1976,6 +1976,40 @@ func TestMultiMachineGit_ResyncRestoresDivergedStore(t *testing.T) {
 	}
 }
 
+// A delete hold on the git backend ends the same way as on rclone: a
+// pull copies the held files back from the store into the project and
+// clears the hold, and status names 'swarf pull' as the way to do it.
+func TestMultiMachineGit_PullReleasesDeleteHold(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	files := []string{"README.md", "docs/design.md"}
+	for _, f := range files {
+		a.write(f, "A's "+f+"\n")
+	}
+	a.push()
+	a.push() // the manifest now lists every file
+
+	a.wipeProject("README.md", "docs")
+	out := mustSwarf(t, a, "push")
+	if _, err := os.Stat(a.holdMarker(a.slug())); err != nil {
+		t.Fatalf("setup: expected the push to hold: %v\n%s", err, out)
+	}
+	if status := mustSwarf(t, a, "status"); !strings.Contains(status, "swarf pull") {
+		t.Errorf("status should name 'swarf pull' as a way out of the hold:\n%s", status)
+	}
+
+	out = mustSwarf(t, a, "pull")
+	for _, f := range files {
+		if got := a.read(f); got != "A's "+f+"\n" {
+			t.Errorf("pull should restore %s, got %q\n--- pull output ---\n%s", f, got, out)
+		}
+	}
+	if _, err := os.Stat(a.holdMarker(a.slug())); !os.IsNotExist(err) {
+		t.Errorf("the hold should be cleared once the files are back (err=%v)\n%s", err, out)
+	}
+}
+
 // With [sync] pull_interval set, a git-backend daemon pulls on its own:
 // a file A pushes reaches B's project with no 'swarf pull' on B.
 func TestMultiMachineGit_DaemonScheduledPull(t *testing.T) {
