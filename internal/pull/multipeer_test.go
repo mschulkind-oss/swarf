@@ -94,8 +94,6 @@ case "$cmd" in
     exit 0
     ;;
   sync|copy)
-    # Test hook: stand in for a slow download that only ends when killed.
-    [ -n "${FAKE_RCLONE_SLOW_SYNC:-}" ] && exec sleep 30
     src=""
     dst=""
     for a in "$@"; do
@@ -104,6 +102,17 @@ case "$cmd" in
         *) if [ -z "$src" ]; then src="$a"; else dst="$a"; fi ;;
       esac
     done
+    # Test hook: log each transfer's source, one per line.
+    [ -n "${FAKE_RCLONE_LOG:-}" ] && echo "$src" >> "$FAKE_RCLONE_LOG"
+    # Test hook: stand in for a slow download. A transfer whose source
+    # contains FAKE_RCLONE_GATE_MATCH (every transfer, if unset) touches
+    # $FAKE_RCLONE_GATE/started, then waits for $FAKE_RCLONE_GATE/release
+    # before copying. See gateRcloneSync.
+    gate="${FAKE_RCLONE_GATE:-}"
+    if [ -n "$gate" ] && [[ "$src" == *"${FAKE_RCLONE_GATE_MATCH:-}"* ]]; then
+      touch "$gate/started"
+      while [ ! -e "$gate/release" ]; do sleep 0.02; done
+    fi
     src=$(resolve "$src")
     dst=$(resolve "$dst")
     # Always do a full rm+cp for sync. We deliberately avoid rsync --delete
@@ -136,6 +145,43 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+}
+
+// rcloneGate holds the fake rclone's transfers at a gate, so a test can
+// act while a pull is mid-download: a slow network, made deterministic.
+type rcloneGate struct{ dir string }
+
+// gateRcloneSync makes every fake rclone sync or copy whose source
+// contains match (every one, when match is empty) wait at the gate until
+// release is called. A gate never released stands in for a download that
+// only ends when the pull's context kills it.
+func gateRcloneSync(t *testing.T, match string) rcloneGate {
+	t.Helper()
+	g := rcloneGate{dir: t.TempDir()}
+	t.Setenv("FAKE_RCLONE_GATE", g.dir)
+	t.Setenv("FAKE_RCLONE_GATE_MATCH", match)
+	return g
+}
+
+// waitStarted blocks until a gated transfer has started.
+func (g rcloneGate) waitStarted(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(g.dir, "started")); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no gated rclone transfer started")
+}
+
+// release lets gated transfers, current and later, proceed.
+func (g rcloneGate) release(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(g.dir, "release"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // setupStore creates an initialized store with the given machine id. Returns
@@ -1052,14 +1098,79 @@ func TestPullCancelledStopsDownload(t *testing.T) {
 	installFakeRclone(t, fakeRoot)
 	setupStore(t, "self")
 	os.MkdirAll(filepath.Join(fakeRoot, "store", "machines", "peer"), 0o755)
-	t.Setenv("FAKE_RCLONE_SLOW_SYNC", "1")
+	gate := gateRcloneSync(t, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	time.AfterFunc(300*time.Millisecond, cancel)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunWithResult(ctx, Options{})
+		done <- err
+	}()
+	gate.waitStarted(t)
 	start := time.Now()
-	_, err := RunWithResult(ctx, Options{})
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Fatalf("a cancelled pull should return promptly, took %v", elapsed)
+	cancel()
+	select {
+	case err := <-done:
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Fatalf("a cancelled pull should return promptly, took %v", elapsed)
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected the context's error, got %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		gate.release(t)
+		t.Fatal("a cancelled pull did not return")
+	}
+}
+
+// A cancelled pull does not wait on a process the killed rclone left
+// behind: a grandchild still holding rclone's stderr pipe would keep the
+// download's Wait blocked until it exited on its own.
+func TestPullCancelledIgnoresLeftoverPipeHolder(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	setupStore(t, "self")
+	os.MkdirAll(filepath.Join(fakeRoot, "store", "machines", "peer"), 0o755)
+
+	// Wrap the fake rclone: a sync leaves a background process holding
+	// stderr, signals it started, then hangs until killed.
+	real, err := exec.LookPath("rclone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	wrapper := "#!/usr/bin/env bash\n" +
+		"if [ \"$1\" = sync ]; then sleep 8 >/dev/null & touch " + started + "; exec sleep 30; fi\n" +
+		"exec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "rclone"), []byte(wrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunWithResult(ctx, Options{})
+		done <- err
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the rclone sync never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	start := time.Now()
+	cancel()
+	err = <-done
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("a cancelled pull should not wait on a leftover pipe holder, took %v", elapsed)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected the context's error, got %v", err)

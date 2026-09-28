@@ -730,6 +730,10 @@ func runRcloneSyncStreaming(ctx context.Context, src, dst string, flags ...strin
 	return runRcloneSyncOnce(ctx, src, dst, flags...)
 }
 
+// rcloneWaitDelay bounds how long a killed rclone's leftover pipe
+// holders can delay a pull's return (exec.Cmd.WaitDelay).
+const rcloneWaitDelay = 2 * time.Second
+
 func runRcloneSyncOnce(ctx context.Context, src, dst string, flags ...string) error {
 	args := append([]string{"sync", src, dst, "-v"}, flags...)
 	if term.IsTerminal(int(os.Stderr.Fd())) {
@@ -738,6 +742,10 @@ func runRcloneSyncOnce(ctx context.Context, src, dst string, flags ...string) er
 		args = append(args, "--stats=5s")
 	}
 	cmd := exec.CommandContext(ctx, "rclone", args...)
+	// Once ctx kills rclone, stop waiting on its stderr pipe after a
+	// moment: a process it left behind can hold the pipe open for as long
+	// as it lives, and a cancelled pull should return promptly.
+	cmd.WaitDelay = rcloneWaitDelay
 	cmd.Stdout = os.Stderr
 	var errBuf bytes.Buffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
