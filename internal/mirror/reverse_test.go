@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // reverseFixture is a store (src) and a project (dst) that have been
@@ -301,5 +302,38 @@ func TestProtected(t *testing.T) {
 	}
 	if got := Protected(root, nil, nil, []string{"saved.md"}); got != nil {
 		t.Errorf("nil stamps protect nothing, got %v", got)
+	}
+}
+
+// A save counts as a change since the stamps when either the size or the
+// modification time differs: an edit that keeps the size, or one whose
+// modification time is set back to what it was.
+func TestStampsChangedBySizeOrModTime(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "same-size.md"), "aaaa")
+	writeFile(t, filepath.Join(root, "same-time.md"), "aaaa")
+	writeFile(t, filepath.Join(root, "untouched.md"), "aaaa")
+	stamped := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for _, rel := range []string{"same-size.md", "same-time.md", "untouched.md"} {
+		if err := os.Chtimes(filepath.Join(root, rel), stamped, stamped); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := TakeStamps(root, nil)
+
+	writeFile(t, filepath.Join(root, "same-size.md"), "bbbb")
+	writeFile(t, filepath.Join(root, "same-time.md"), "a longer save")
+	if err := os.Chtimes(filepath.Join(root, "same-time.md"), stamped, stamped); err != nil {
+		t.Fatal(err)
+	}
+
+	if !s.changed(root, "same-size.md") {
+		t.Error("an edit that keeps the size but moves the modification time is a change")
+	}
+	if !s.changed(root, "same-time.md") {
+		t.Error("an edit that changes the size under the old modification time is a change")
+	}
+	if s.changed(root, "untouched.md") {
+		t.Error("a file as stamped is not a change")
 	}
 }
