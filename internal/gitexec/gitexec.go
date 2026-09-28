@@ -86,6 +86,13 @@ func Clone(url, dest string) error {
 	return err
 }
 
+// CloneBranch clones url into dest with branch checked out (and
+// tracked) instead of the remote's default branch.
+func CloneBranch(url, dest, branch string) error {
+	_, err := run("", "clone", "--branch", branch, url, dest)
+	return err
+}
+
 func Pull(dir string) error {
 	_, err := run(dir, "pull")
 	return err

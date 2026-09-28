@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
@@ -228,5 +229,41 @@ func TestPullGitResyncRejected(t *testing.T) {
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
 	if err := Run(context.Background(), Options{Resync: true}); !errors.Is(err, ErrResyncNeedsRclone) {
 		t.Fatalf("expected ErrResyncNeedsRclone, got %v", err)
+	}
+}
+
+// A reinstalled machine starts its store from its own machine branch,
+// not from the remote's default branch, which the git backend no longer
+// pushes: bootstrapping from the stale default branch would make this
+// machine's next push look like another store's (non-fast-forward).
+func TestPullGitBootstrapsFromOwnMachineBranch(t *testing.T) {
+	testutil.GitRepo(t)
+	bare := testutil.BareRemote(t)
+
+	staging := filepath.Join(t.TempDir(), "staging")
+	runGit(t, "", "clone", bare, staging)
+	runGit(t, staging, "config", "user.email", "t@t")
+	runGit(t, staging, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(staging, "seed.txt"), []byte("seed"), 0o644)
+	runGit(t, staging, "add", "-A")
+	runGit(t, staging, "commit", "-m", "seed")
+	runGit(t, staging, "push", "origin", "HEAD")
+	os.WriteFile(filepath.Join(staging, "later.txt"), []byte("later"), 0o644)
+	runGit(t, staging, "add", "-A")
+	runGit(t, staging, "commit", "-m", "after the upgrade")
+	runGit(t, staging, "push", "origin", "HEAD:refs/heads/machines/box")
+
+	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
+	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s", MachineID: "box"})
+
+	if err := Run(context.Background(), Options{}); err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "later.txt")); err != nil {
+		t.Fatalf("expected the machine branch's later.txt in the store, got: %v", err)
+	}
+	os.WriteFile(filepath.Join(paths.StoreDir, "new.txt"), []byte("new"), 0o644)
+	if res := (&backends.GitBackend{MachineID: "box"}).Sync(context.Background(), paths.StoreDir); !res.Success {
+		t.Fatalf("the reinstalled machine's push should fast-forward its machine branch: %s", res.Message)
 	}
 }

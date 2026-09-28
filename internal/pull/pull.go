@@ -119,6 +119,18 @@ func pullGit(gc *config.GlobalConfig) error {
 		if err := os.RemoveAll(paths.StoreDir); err != nil {
 			return fmt.Errorf("clear store dir: %w", err)
 		}
+		// A reinstalled machine starts from its own machine branch when
+		// the remote has one: the default branch is no longer pushed, so
+		// it may be behind this machine's own later commits, and a store
+		// started from it could not fast-forward the machine branch.
+		branch := backends.MachineBranch(gc.EffectiveMachineID())
+		if _, ok, _ := gitexec.LsRemoteRef("", gc.Remote, "refs/heads/"+branch); ok {
+			if err := gitexec.CloneBranch(gc.Remote, paths.StoreDir, branch); err != nil {
+				return fmt.Errorf("git clone: %w", err)
+			}
+			console.Ok(fmt.Sprintf("Cloned store from %s (this machine's branch %s)", gc.Remote, branch))
+			return nil
+		}
 		if err := gitexec.Clone(gc.Remote, paths.StoreDir); err != nil {
 			return fmt.Errorf("git clone: %w", err)
 		}
