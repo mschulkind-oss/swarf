@@ -22,6 +22,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
+	"github.com/mschulkind-oss/swarf/internal/pull"
 	"github.com/mschulkind-oss/swarf/internal/synclock"
 )
 
@@ -60,6 +61,15 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("ensure store: %w", err)
 	}
 
+	// Git backend: fold in any legacy branch still on the remote first,
+	// so this push carries its content to the machine branch.
+	skip := mirror.SkipPatterns(gc.Exclude)
+	if gc.Backend == "git" {
+		if err := pull.FoldLegacyBranches(ctx, skip); err != nil {
+			console.Warn(fmt.Sprintf("Could not fold in the remote's legacy branches: %v", err))
+		}
+	}
+
 	// Forward mirror: project/swarf/ → store/<slug>/ for every drawer.
 	// TrackedDir keeps a manifest of files we've previously observed so
 	// a never-seeded or transiently-empty project directory can't wipe
@@ -67,7 +77,6 @@ func Run(ctx context.Context, opts Options) error {
 	// next push. A pass that would delete a suspiciously large share of
 	// a project's tracked files holds those deletes instead (see package
 	// deletehold) unless the user passed --allow-deletes.
-	skip := mirror.SkipPatterns(gc.Exclude)
 	for _, d := range config.ReadDrawers() {
 		src := paths.SwarfDir(d.Host)
 		dst := filepath.Join(paths.StoreDir, d.Slug)
@@ -95,6 +104,9 @@ func Run(ctx context.Context, opts Options) error {
 	result := backend.Sync(ctx, paths.StoreDir)
 	if !result.Success {
 		return fmt.Errorf("sync failed: %s", result.Message)
+	}
+	if gc.Backend == "git" {
+		pull.RetireLegacyBranches(ctx)
 	}
 	switch {
 	case result.FilesChanged > 0 && result.Pushed:

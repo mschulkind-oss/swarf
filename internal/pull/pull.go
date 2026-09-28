@@ -129,8 +129,11 @@ func machineRefName(machineID string) string {
 //     branch is already on the remote starts from that branch, so a
 //     reinstalled machine gets its old data back and its next push
 //     fast-forwards the branch.
-//  4. Merge each peer, mirror the store back into the projects, and
-//     report, as pullRclone does.
+//  4. Fold in each legacy branch that is not a tombstone (see
+//     foldLegacy), then merge each peer, mirror the store back into the
+//     projects, and report, as pullRclone does.
+//  5. Retire each legacy branch the machine branch already holds (see
+//     backends.RetireLegacyBranches).
 func pullGit(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Result, error) {
 	if gc.Remote == "" && !gitexec.IsRepo(paths.StoreDir) {
 		return nil, ErrNotGitRepo
@@ -163,6 +166,13 @@ func pullGit(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Resul
 	if err != nil {
 		return nil, fmt.Errorf("list machine branches: %w", err)
 	}
+	legacy, err := fetchLegacyBranches(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, err
+	}
 
 	self := config.EnsureMachineID()
 	if own := tips[self]; own != "" && gitexec.RevParseHEAD(paths.StoreDir) == "" {
@@ -183,17 +193,27 @@ func pullGit(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Resul
 	// the store's working tree.
 	stamps := mirrorProjectsToStore(mirror.SkipPatterns(gc.Exclude))
 
+	// Fold in the legacy branches before the peers: a peer that started
+	// from the same legacy branch then shares its history with the store.
+	result := &Result{}
+	foldLegacyBranches(unfolded(legacy), legacy, remote, result)
+
 	peers := make([]string, 0, len(tips))
 	for id := range tips {
 		peers = append(peers, id)
 	}
 	sort.Strings(peers)
-	return mergePeers(ctx, gc, peers, self, stamps, func(ctx context.Context, peer string, result *Result) error {
+	result, err = mergePeers(ctx, gc, result, peers, self, stamps, func(ctx context.Context, peer string, result *Result) error {
 		// The fetch above already brought the peer's history into the
 		// store; merging starts changing it.
 		result.applying = true
 		return mergePeer(peer, tips[peer], opts.Resync, result)
 	})
+	if err != nil {
+		return result, err
+	}
+	RetireLegacyBranches(ctx)
+	return result, nil
 }
 
 // pullRclone is the multi-peer, file-delta pull used by the rclone backend.
@@ -245,7 +265,7 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 		return &Result{}, nil
 	}
 
-	return mergePeers(ctx, gc, peers, self, stamps, func(ctx context.Context, peer string, result *Result) error {
+	return mergePeers(ctx, gc, &Result{}, peers, self, stamps, func(ctx context.Context, peer string, result *Result) error {
 		return pullFromPeer(ctx, gc, peer, opts.Resync, result)
 	})
 }
@@ -256,10 +276,11 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 // store back into every registered project and reports the result.
 // stamps are from the forward mirror (mirrorProjectsToStore) the caller
 // ran first. A peer that fails is reported and skipped; ending ctx skips
-// the remaining peers.
-func mergePeers(ctx context.Context, gc *config.GlobalConfig, peers []string, self string, stamps map[string]mirror.Stamps,
+// the remaining peers. result collects the outcome; the caller may have
+// started it (the git pull folds legacy branches into it first).
+func mergePeers(ctx context.Context, gc *config.GlobalConfig, result *Result, peers []string, self string, stamps map[string]mirror.Stamps,
 	pullPeer func(ctx context.Context, peer string, result *Result) error) (*Result, error) {
-	result := &Result{PeersSeen: len(peers)}
+	result.PeersSeen = len(peers)
 	others := 0
 	for _, peer := range peers {
 		if peer == self {
@@ -612,6 +633,39 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 		return fmt.Errorf("diff peer: last-seen commit %s is not in the peer's history (the peer rebuilt its store or rewrote its history); run 'swarf pull --resync' to merge its current tree", lastSeen)
 	}
 
+	conflicts, err := applyPeer(peer, peerHead, lastSeen, seenInHistory, resync, result)
+	if err != nil {
+		return err
+	}
+
+	// Stage everything we touched and, if there are changes, make a commit.
+	if err := gitexec.AddAll(paths.StoreDir); err != nil {
+		return fmt.Errorf("add changes: %w", err)
+	}
+	if strings.TrimSpace(gitexec.StatusPorcelain(paths.StoreDir)) != "" {
+		msg := fmt.Sprintf("auto: sync from %s", peer)
+		if err := gitexec.Commit(paths.StoreDir, msg); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+	}
+
+	if err := gitexec.UpdateRef(paths.StoreDir, peerRefName(peer), peerHead); err != nil {
+		return fmt.Errorf("update-ref: %w", err)
+	}
+
+	result.ConflictFiles = append(result.ConflictFiles, conflicts...)
+	return nil
+}
+
+// applyPeer writes the peer's changes up to peerHead into the store's
+// working tree, and returns the conflict sidecars it wrote; mergePeer
+// commits the result. lastSeen is the peer's last-seen commit, or "" for
+// none, and seenInHistory says whether it is an ancestor of peerHead.
+// With no lastSeen, the base is the merge-base of HEAD and peerHead, and
+// a peer that shares no history with the store is unioned in with no
+// deletes. Every file the add or modify rule writes is recorded in
+// result.applied under peer.
+func applyPeer(peer, peerHead, lastSeen string, seenInHistory, resync bool, result *Result) ([]string, error) {
 	localHead := gitexec.RevParseHEAD(paths.StoreDir)
 
 	// Figure out which "mode" this pull is in. Three cases:
@@ -634,7 +688,7 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 		} else {
 			base, err := gitexec.MergeBase(paths.StoreDir, localHead, peerHead)
 			if err != nil {
-				return fmt.Errorf("merge-base: %w", err)
+				return nil, fmt.Errorf("merge-base: %w", err)
 			}
 			if base == "" {
 				// Unrelated histories — can't tell "peer deleted" from "peer
@@ -653,12 +707,12 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 	if unionMode {
 		entries, err = gitexec.DiffNameStatus(paths.StoreDir, "", peerHead)
 		if err != nil {
-			return fmt.Errorf("list peer tree: %w", err)
+			return nil, fmt.Errorf("list peer tree: %w", err)
 		}
 	} else {
 		entries, err = gitexec.DiffNameStatus(paths.StoreDir, effectiveOld, peerHead)
 		if err != nil {
-			return fmt.Errorf("diff peer: %w", err)
+			return nil, fmt.Errorf("diff peer: %w", err)
 		}
 	}
 
@@ -687,7 +741,7 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 	if resync && seenInHistory && lastSeen != peerHead {
 		pending, err := gitexec.DiffNameStatus(paths.StoreDir, lastSeen, peerHead)
 		if err != nil {
-			return fmt.Errorf("diff peer deletes since last pull: %w", err)
+			return nil, fmt.Errorf("diff peer deletes since last pull: %w", err)
 		}
 		for _, e := range pending {
 			if e.Status != "D" || isStoreMetadata(e.Path) {
@@ -695,7 +749,7 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 			}
 			c, err := applyDelete(peer, lastSeen, peerHead, e.Path, ts)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if c != "" {
 				conflicts = append(conflicts, c)
@@ -715,7 +769,7 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 		case "A", "M", "T":
 			c, wrote, err := applyAddOrModify(peer, effectiveOld, seenOld, peerHead, e.Path, ts)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if wrote {
 				if result.applied == nil {
@@ -734,31 +788,14 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 			}
 			c, err := applyDelete(peer, effectiveOld, peerHead, e.Path, ts)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if c != "" {
 				conflicts = append(conflicts, c)
 			}
 		}
 	}
-
-	// Stage everything we touched and, if there are changes, make a commit.
-	if err := gitexec.AddAll(paths.StoreDir); err != nil {
-		return fmt.Errorf("add changes: %w", err)
-	}
-	if strings.TrimSpace(gitexec.StatusPorcelain(paths.StoreDir)) != "" {
-		msg := fmt.Sprintf("auto: sync from %s", peer)
-		if err := gitexec.Commit(paths.StoreDir, msg); err != nil {
-			return fmt.Errorf("commit: %w", err)
-		}
-	}
-
-	if err := gitexec.UpdateRef(paths.StoreDir, peerRefName(peer), peerHead); err != nil {
-		return fmt.Errorf("update-ref: %w", err)
-	}
-
-	result.ConflictFiles = append(result.ConflictFiles, conflicts...)
-	return nil
+	return conflicts, nil
 }
 
 // applyAddOrModify brings one peer add/modify into the local working tree.

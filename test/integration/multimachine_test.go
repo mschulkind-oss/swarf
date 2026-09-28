@@ -2140,3 +2140,203 @@ func TestMultiMachineGit_DaemonScheduledPull(t *testing.T) {
 		t.Errorf("the git backend supports scheduled pull\n--- daemon log ---\n%s", d.log())
 	}
 }
+
+// storeDir is this machine's store.
+func (m *machine) storeDir() string {
+	return filepath.Join(m.home, ".local", "share", "swarf")
+}
+
+// cloneLegacyStore makes this machine's store a clone of the legacy
+// branch main on bare, the way 'swarf pull' set up a store before the
+// git backend used machine branches. Call it before init.
+func (m *machine) cloneLegacyStore(bare string) {
+	m.t.Helper()
+	os.MkdirAll(filepath.Dir(m.storeDir()), 0o755)
+	mustRun(m.t, "", "git", "clone", "-q", "--branch", "main", bare, m.storeDir())
+}
+
+// oldSwarfPush syncs this machine the way a swarf from before machine
+// branches did: mirror and commit the store, then push it to the legacy
+// branch main. The mirror and commit are this swarf's own ('swarf push'
+// with origin briefly unreachable); the push is a plain git push.
+func (m *machine) oldSwarfPush(bare string) {
+	m.t.Helper()
+	mustRun(m.t, m.storeDir(), "git", "remote", "set-url", "origin", filepath.Join(m.t.TempDir(), "offline.git"))
+	m.swarf("push") // commits locally; the push fails
+	mustRun(m.t, m.storeDir(), "git", "remote", "set-url", "origin", bare)
+	mustRun(m.t, m.storeDir(), "git", "push", "-q", "origin", "HEAD:refs/heads/main")
+}
+
+// Two machines that used the git backend before machine branches, and
+// so share one legacy branch, main, upgrade in either order. The first
+// to push folds main into its store, pushes its machine branch, and
+// retires main; the second then syncs through the machine branches
+// alone. Nothing either machine had is lost, including an edit A made
+// but never pushed to main.
+func TestMultiMachineGit_MigrateLegacyBranch(t *testing.T) {
+	for _, order := range []string{"A first", "B first"} {
+		t.Run(order, func(t *testing.T) {
+			bare := newBareRemote(t)
+			a := newGitMachine(t, "a", bare)
+			a.init()
+			a.write("shared.md", "v1\n")
+			a.oldSwarfPush(bare)
+
+			b := newGitMachineWithSlug(t, "b", bare, a.slug())
+			b.cloneLegacyStore(bare)
+			b.init()
+			if got := b.read("shared.md"); got != "v1\n" {
+				t.Fatalf("setup: B's legacy store should have A's shared.md, got %q", got)
+			}
+			b.write("b.md", "from B\n")
+			b.oldSwarfPush(bare) // main moves past A's store
+			a.write("a.md", "A, never pushed to main\n")
+
+			first, second := a, b
+			if order == "B first" {
+				first, second = b, a
+			}
+			out := mustSwarf(t, first, "push")
+			if got := bareRef(bare, "refs/heads/main"); got != "" {
+				t.Fatalf("the first push should retire main\n--- push output ---\n%s", out)
+			}
+			if !strings.Contains(out, "Retired legacy branch main") {
+				t.Errorf("the push should say it retired main:\n%s", out)
+			}
+			second.pull()
+			second.push()
+			first.pull()
+
+			for _, m := range []*machine{a, b} {
+				for rel, want := range map[string]string{"shared.md": "v1\n", "b.md": "from B\n", "a.md": "A, never pushed to main\n"} {
+					if got := m.read(rel); got != want {
+						t.Errorf("machine %s: %s = %q, want %q", m.id, rel, got, want)
+					}
+				}
+				if sidecars := findSidecars(t, m.project, "shared.md"); len(sidecars) != 0 {
+					t.Errorf("machine %s: the migration should write no sidecars, got %v", m.id, sidecars)
+				}
+				if doc, _ := m.swarf("doctor"); strings.Contains(doc, "Legacy branch main") {
+					t.Errorf("machine %s: doctor should report no legacy branch waiting:\n%s", m.id, doc)
+				}
+			}
+			if got, want := bareBranches(t, bare), "refs/heads/machines/a\nrefs/heads/machines/b"; got != want {
+				t.Errorf("after the migration the remote should hold only machine branches:\n%s", got)
+			}
+		})
+	}
+}
+
+// A machine still on an older swarf pushes to main between this
+// machine's push of its machine branch and its retiring of main (here a
+// post-receive hook on the remote does it). The retiring does nothing,
+// so the new commit stays on main; the next pull folds it in, and the
+// push after that retires main.
+func TestMultiMachineGit_LegacyBranchMovedAfterFold(t *testing.T) {
+	bare := newBareRemote(t)
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.oldSwarfPush(bare)
+
+	hook := fmt.Sprintf(`#!/bin/sh
+while read old new ref; do
+  if [ "$ref" = refs/heads/machines/a ] && [ ! -e "$GIT_DIR/moved" ]; then
+    touch "$GIT_DIR/moved"
+    export GIT_AUTHOR_NAME=o GIT_AUTHOR_EMAIL=o@o GIT_COMMITTER_NAME=o GIT_COMMITTER_EMAIL=o@o
+    export GIT_INDEX_FILE="$GIT_DIR/older-index"
+    git read-tree refs/heads/main
+    blob=$(echo "from an older swarf" | git hash-object -w --stdin)
+    git update-index --add --cacheinfo 100644,$blob,%s/late.md
+    commit=$(git commit-tree $(git write-tree) -p refs/heads/main -m "older swarf")
+    git update-ref refs/heads/main $commit
+  fi
+done
+`, a.slug())
+	os.WriteFile(filepath.Join(bare, "hooks", "post-receive"), []byte(hook), 0o755)
+
+	out := mustSwarf(t, a, "push")
+	moved := bareRef(bare, "refs/heads/main")
+	if moved == "" {
+		t.Fatalf("main moved after it was folded in, so the push must not retire it\n--- push output ---\n%s", out)
+	}
+	if !strings.Contains(out, "moved") {
+		t.Errorf("the push should say main moved:\n%s", out)
+	}
+	if doc, _ := a.swarf("doctor"); !strings.Contains(doc, "Legacy branch main has commits not folded") {
+		t.Errorf("doctor should report main waiting to be folded in again:\n%s", doc)
+	}
+
+	a.pull()
+	if got := a.read("late.md"); got != "from an older swarf\n" {
+		t.Fatalf("the next pull should fold in main's new commit, late.md = %q", got)
+	}
+	out = mustSwarf(t, a, "push")
+	if got := bareRef(bare, "refs/heads/main"); got != "" {
+		t.Fatalf("the push after the fold should retire main\n--- push output ---\n%s", out)
+	}
+	if !isAncestorIn(bare, moved, bareRef(bare, "refs/heads/machines/a")) {
+		t.Error("machines/a should hold main's moved tip")
+	}
+}
+
+// A remote that refuses deleting main (as GitHub refuses deleting the
+// default branch; here a pre-receive hook) gets a tombstone on main
+// instead. A machine still on an older swarf is then rejected when it
+// pushes to main, and its 'git pull' refuses the unrelated history, so
+// it writes nothing into the tombstone. Pull ignores the tombstone.
+func TestMultiMachineGit_LegacyBranchTombstone(t *testing.T) {
+	bare := newBareRemote(t)
+	hook := `#!/bin/sh
+while read old new ref; do
+  if [ "$ref" = refs/heads/main ] && [ "$new" = 0000000000000000000000000000000000000000 ]; then
+    echo "refusing to delete the default branch" >&2
+    exit 1
+  fi
+done
+`
+	os.WriteFile(filepath.Join(bare, "hooks", "pre-receive"), []byte(hook), 0o755)
+
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.oldSwarfPush(bare)
+	b := newGitMachineWithSlug(t, "b", bare, a.slug())
+	b.cloneLegacyStore(bare)
+	b.init()
+
+	out := mustSwarf(t, a, "push")
+	tomb := bareRef(bare, "refs/heads/main")
+	files, err := exec.Command("git", "--git-dir", bare, "ls-tree", "--name-only", tomb).Output()
+	if err != nil || strings.TrimSpace(string(files)) != "SWARF-BRANCHES.md" {
+		t.Fatalf("main should hold a tombstone with only SWARF-BRANCHES.md, has %q (%v)\n--- push output ---\n%s", files, err, out)
+	}
+	if !strings.Contains(out, "tombstone") {
+		t.Errorf("the push should say main now holds a tombstone:\n%s", out)
+	}
+
+	// B is still on an older swarf: it commits and pushes to main.
+	os.WriteFile(filepath.Join(b.storeRoot(a.slug()), "old.md"), []byte("older swarf\n"), 0o644)
+	mustRun(t, b.storeDir(), "git", "add", "-A")
+	mustRun(t, b.storeDir(), "git", "commit", "-q", "-m", "older swarf")
+	if out, err := exec.Command("git", "-C", b.storeDir(), "push", "origin", "HEAD:refs/heads/main").CombinedOutput(); err == nil {
+		t.Errorf("an older swarf's push onto the tombstone must be rejected:\n%s", out)
+	}
+	if out, err := exec.Command("git", "-C", b.storeDir(), "pull", "--no-rebase", "origin", "main").CombinedOutput(); err == nil {
+		t.Errorf("an older swarf's git pull must refuse the tombstone's unrelated history:\n%s", out)
+	}
+	if got := bareRef(bare, "refs/heads/main"); got != tomb {
+		t.Errorf("main moved off the tombstone: %q", got)
+	}
+
+	out = mustSwarf(t, a, "pull")
+	if _, err := os.Stat(filepath.Join(a.storeDir(), "SWARF-BRANCHES.md")); err == nil {
+		t.Errorf("pull must ignore the tombstone, but its file reached the store\n--- pull output ---\n%s", out)
+	}
+	if strings.Contains(out, "legacy") {
+		t.Errorf("pull should not treat the tombstone as a legacy branch:\n%s", out)
+	}
+	if doc, _ := a.swarf("doctor"); strings.Contains(doc, "Legacy branch main") {
+		t.Errorf("doctor should not report the tombstone as waiting:\n%s", doc)
+	}
+}

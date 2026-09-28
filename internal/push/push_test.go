@@ -124,3 +124,41 @@ func TestPushGitRetryReportsPush(t *testing.T) {
 		t.Errorf("a retry that pushed should say so:\n%s", out.String())
 	}
 }
+
+// TestPushGitFoldsAndRetiresLegacyBranch: a git-backend push folds the
+// remote's legacy branch (main, pushed before machine branches) into the
+// store, pushes it to the machine branch, and then retires the legacy
+// branch by deleting it.
+func TestPushGitFoldsAndRetiresLegacyBranch(t *testing.T) {
+	bare := testutil.BareRemote(t)
+	gitPushSetup(t, bare)
+	staging := t.TempDir()
+	os.WriteFile(filepath.Join(staging, "legacy.md"), []byte("from before"), 0o644)
+	for _, args := range [][]string{
+		{"-C", staging, "init"},
+		{"-C", staging, "add", "-A"},
+		{"-C", staging, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "-m", "older swarf"},
+		{"-C", staging, "push", bare, "HEAD:refs/heads/main"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	legacyTip, err := exec.Command("git", "--git-dir", bare, "rev-parse", "refs/heads/main").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Run(context.Background(), Options{}); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(paths.StoreDir, "legacy.md")); err != nil || string(got) != "from before" {
+		t.Errorf("the push should fold main's legacy.md into the store, got %q, %v", got, err)
+	}
+	if err := exec.Command("git", "--git-dir", bare, "merge-base", "--is-ancestor", strings.TrimSpace(string(legacyTip)), "refs/heads/machines/box").Run(); err != nil {
+		t.Errorf("machines/box should hold main's old tip: %v", err)
+	}
+	if out, _ := exec.Command("git", "--git-dir", bare, "for-each-ref", "--format=%(refname)", "refs/heads/").Output(); strings.TrimSpace(string(out)) != "refs/heads/machines/box" {
+		t.Errorf("main should be retired, leaving only the machine branch:\n%s", out)
+	}
+}

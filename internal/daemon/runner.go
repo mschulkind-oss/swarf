@@ -62,6 +62,11 @@ func Run(ctx context.Context) error {
 //  3. Update store README
 //  4. Backend sync: commit + push
 //
+// On the git backend the cycle also migrates off a legacy branch: it
+// folds any legacy branch into the store before the forward mirror
+// (pull.FoldLegacyBranches) and retires the ones the push put on the
+// machine branch afterwards (backends.RetireLegacyBranches).
+//
 // The CLI 'swarf push' runs the same steps via internal/push.
 //
 // ctx is the daemon's signal context: on SIGTERM it's cancelled, which
@@ -83,6 +88,12 @@ func syncCycle(ctx context.Context, backend backends.SyncBackend, skip mirror.Sk
 	}
 	defer release()
 	relinkAllProjects()
+	git, isGit := backend.(*backends.GitBackend)
+	if isGit {
+		if err := pull.FoldLegacyBranches(ctx, skip); err != nil && ctx.Err() == nil {
+			slog.Warn("sync: could not fold in the remote's legacy branches", "err", err)
+		}
+	}
 	mirrorAllProjects(skip)
 	initialize.WriteStoreReadme()
 	result := backend.Sync(ctx, paths.StoreDir)
@@ -90,6 +101,9 @@ func syncCycle(ctx context.Context, backend backends.SyncBackend, skip mirror.Sk
 		slog.Info("sync: " + result.Message)
 	} else if !result.Success && !result.Logged {
 		slog.Warn("sync: " + result.Message)
+	}
+	if isGit && result.Success {
+		backends.RetireLegacyBranches(ctx, paths.StoreDir, git.MachineID)
 	}
 }
 

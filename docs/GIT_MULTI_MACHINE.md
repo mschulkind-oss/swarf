@@ -108,12 +108,19 @@ not a tombstone:
   the legacy tip, fast-forward the store to the legacy tip. Otherwise apply
   it as if it were a peer (same file rules and sidecars) and make the
   resulting commit record the legacy tip as a second parent, so the legacy
-  tip becomes an ancestor of `HEAD`.
+  tip becomes an ancestor of `HEAD`. Either way the fold runs between a
+  forward and a reverse mirror, as a pull does, so the store's
+  uncommitted files (the forward mirror's) count as local edits: a
+  fast-forward keeps whatever the store has that the legacy tip does not
+  staged for the next push to commit. A push (and each daemon cycle)
+  folds in before it commits.
 - **Retire it** only after the machine branch has been pushed and the
   remote legacy tip is an ancestor of it. Delete the branch; if the remote
   refuses, force-push a tombstone to it. If the legacy tip moved in between
   (a machine still running an older swarf pushed to it), do nothing this
-  time; the next pass folds in the new commits.
+  time; the next pass folds in the new commits. If the remote refuses the
+  tombstone too, the branch stays, the refusal is recorded, and the next
+  pass tries again.
 - Pull skips tombstones. An older swarf on another machine then fails to
   push to the tombstoned branch (non-fast-forward) instead of writing into
   it, and `git pull` refuses the unrelated history. So nothing is lost, but

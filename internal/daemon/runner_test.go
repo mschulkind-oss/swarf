@@ -401,3 +401,32 @@ func TestMakeBackendGitPersistsMachineID(t *testing.T) {
 		t.Errorf("config machine id = %q, want the backend's %q persisted", gc.MachineID, b.MachineID)
 	}
 }
+
+// A git-backend daemon cycle is a push, so it migrates too: it folds the
+// remote's legacy branch into the store, pushes the machine branch, and
+// retires the legacy branch.
+func TestSyncCycleFoldsAndRetiresLegacyBranch(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	bare := testutil.BareRemote(t)
+	staging := t.TempDir()
+	os.WriteFile(filepath.Join(staging, "legacy.md"), []byte("from before"), 0o644)
+	for _, args := range [][]string{
+		{"-C", paths.StoreDir, "remote", "add", "origin", bare},
+		{"-C", staging, "init"},
+		{"-C", staging, "add", "-A"},
+		{"-C", staging, "-c", "user.email=o@o", "-c", "user.name=o", "commit", "-m", "older swarf"},
+		{"-C", staging, "push", bare, "HEAD:refs/heads/main"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	syncCycle(context.Background(), &backends.GitBackend{MachineID: "box"}, nil)
+	if got, err := os.ReadFile(filepath.Join(paths.StoreDir, "legacy.md")); err != nil || string(got) != "from before" {
+		t.Errorf("the cycle should fold main's legacy.md into the store, got %q, %v", got, err)
+	}
+	if out, _ := exec.Command("git", "--git-dir", bare, "for-each-ref", "--format=%(refname)", "refs/heads/").Output(); strings.TrimSpace(string(out)) != "refs/heads/machines/box" {
+		t.Errorf("main should be retired, leaving only the machine branch:\n%s", out)
+	}
+}
