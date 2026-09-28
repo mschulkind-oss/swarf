@@ -760,3 +760,69 @@ func TestPullResync(t *testing.T) {
 		t.Errorf("resync should commit what it applied, store is dirty:\n%s", status)
 	}
 }
+
+// TestPullResyncAppliesPendingPeerDeletes: when the peer has committed
+// since the last pull, resync first applies the deletes in that range as a
+// plain pull would, then advances the last-seen ref to the peer's new
+// HEAD. Skipping them would move the ref past the deletes for good: no
+// later pull would apply them, and the next push would hand the file back
+// to a peer that removed it.
+func TestPullResyncAppliesPendingPeerDeletes(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerTmp := t.TempDir()
+	peerStore := filepath.Join(peerTmp, "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "seed.txt"), []byte("seed\n"), 0o644)
+	os.WriteFile(filepath.Join(peerStore, "gone.txt"), []byte("gone\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "seed")
+
+	setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(Options{}); err != nil {
+		t.Fatalf("initial pull: %v", err)
+	}
+
+	// Peer moves forward: deletes gone.txt, adds new.txt.
+	runGit(t, peerStore, "rm", "-q", "gone.txt")
+	os.WriteFile(filepath.Join(peerStore, "new.txt"), []byte("new\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "drop gone, add new")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	peerHead := gitexec.RevParseHEAD(peerStore)
+
+	res, err := RunWithResult(Options{Resync: true})
+	if err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	if len(res.ConflictFiles) != 0 {
+		t.Errorf("expected no conflicts, got %v", res.ConflictFiles)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "gone.txt")); !os.IsNotExist(err) {
+		t.Errorf("resync should apply the peer's delete of gone.txt since the last pull (stat err=%v)", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "new.txt")); string(got) != "new\n" {
+		t.Errorf("resync should bring in new.txt, got %q", got)
+	}
+	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != peerHead {
+		t.Errorf("resync should advance the last-seen ref to the peer's new HEAD %s, got %s", peerHead, got)
+	}
+
+	headBefore := gitexec.RevParseHEAD(paths.StoreDir)
+	if _, err := RunWithResult(Options{}); err != nil {
+		t.Fatalf("follow-up plain pull: %v", err)
+	}
+	if got := gitexec.RevParseHEAD(paths.StoreDir); got != headBefore {
+		t.Errorf("a plain pull after resync should be a no-op, HEAD moved %s -> %s", headBefore, got)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "gone.txt")); !os.IsNotExist(err) {
+		t.Errorf("gone.txt should stay deleted after the follow-up pull (stat err=%v)", err)
+	}
+}

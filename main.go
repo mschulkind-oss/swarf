@@ -266,13 +266,17 @@ Resync
   A plain pull applies only what each peer changed since the last pull,
   so files this machine's store lost (and committed as deleted) do not
   come back while the peer stays unchanged. --resync ignores what was
-  already pulled and copies in every file each peer has now; it never
-  deletes. A file whose local content differs from every version the
-  peer had gets a conflict sidecar, as above. Rclone backend only.`,
+  already pulled and copies in every file each peer has now. It never
+  deletes a file because a peer lacks it; the only deletes it applies
+  are the ones a peer made since the last pull, exactly as a plain pull
+  would. A local file that matches any version a peer ever had is
+  replaced with that peer's current copy, even an older version you
+  restored on purpose; a file that matches none of them keeps its local
+  content and gets a conflict sidecar, as above. Rclone backend only.`,
 		Example: `  swarf pull
   swarf pull --resync`,
 	}
-	resync := cmd.Flags().Bool("resync", false, "Union every file each peer has into the store, ignoring what was already pulled; never deletes (rclone backend only)")
+	resync := cmd.Flags().Bool("resync", false, "Union every file each peer has into the store, ignoring what was already pulled (rclone backend only)")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		return pull.Run(pull.Options{Resync: *resync})
 	}

@@ -42,8 +42,9 @@ type Result struct {
 // Options tunes one pull.
 type Options struct {
 	// Resync ignores each peer's last-seen ref and unions every file in
-	// the peer's current tree into the store, deleting nothing
-	// ('swarf pull --resync'). Rclone backend only.
+	// the peer's current tree into the store ('swarf pull --resync'). The
+	// only deletes it applies are the ones the peer made since that ref.
+	// Rclone backend only.
 	Resync bool
 }
 
@@ -350,8 +351,8 @@ func peerRefName(peer string) string {
 
 // pullFromPeer refreshes the peer's cache, computes a file delta against the
 // last-seen peer HEAD, and applies it to the local store. With resync it
-// skips the last-seen ref and applies the peer's whole tree in
-// content-union mode instead.
+// applies the deletes the peer made since the last-seen ref, then the
+// peer's whole tree in content-union mode instead of the rest of the diff.
 func pullFromPeer(gc *config.GlobalConfig, peer string, resync bool, result *Result) error {
 	peerCache := paths.PeerCacheDir(peer)
 	if err := os.MkdirAll(peerCache, 0o755); err != nil {
@@ -443,6 +444,33 @@ func pullFromPeer(gc *config.GlobalConfig, peer string, resync bool, result *Res
 
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	var conflicts []string
+
+	// A resync still owes the deletes the peer committed since lastSeen:
+	// the union below skips deletes, and the ref advances past them, so
+	// no later pull would apply them. Apply them as a plain pull would —
+	// removing a file only when the local copy matches what the peer had
+	// just before deleting it.
+	if resync && lastSeen != "" && lastSeen != peerHead {
+		pending, err := gitexec.DiffNameStatus(peerCache, lastSeen, peerHead)
+		if err != nil {
+			// lastSeen is not in the peer's history (its store was
+			// rebuilt), so its deletes since then cannot be known.
+			slog.Warn("pull: resync cannot list peer deletes since last pull; applying none", "peer", peer, "last_seen", lastSeen, "err", err)
+		}
+		for _, e := range pending {
+			if e.Status != "D" || isStoreMetadata(e.Path) {
+				continue
+			}
+			c, err := applyDelete(peer, peerCache, lastSeen, e.Path, ts)
+			if err != nil {
+				return err
+			}
+			if c != "" {
+				conflicts = append(conflicts, c)
+			}
+		}
+	}
+
 	for _, e := range entries {
 		if isStoreMetadata(e.Path) {
 			// Skip store-local metadata files (e.g. the auto-generated

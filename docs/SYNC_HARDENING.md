@@ -21,7 +21,9 @@ These are coined here. Each is defined once and used only in this sense.
 - **resync** — `swarf pull --resync`: a pull that ignores the last-seen
   ref for each peer (`refs/swarf-peers/<peer>`, see Sync Scenarios,
   Scenario 4) and instead unions every file in the peer's current tree into
-  the store. It never deletes. This is the same "content-union" mode pull
+  the store. It never deletes a file because the peer's tree lacks it; the
+  only deletes it applies are those the peer committed since the last-seen
+  ref, exactly as a plain pull would. This is the same "content-union" mode pull
   already uses for peers whose history shares no commit with ours.
 - **owner token** — a random value generated once per local store and kept
   in the store's `.git/` directory, so it travels to
@@ -98,7 +100,9 @@ restored them because nothing changed on A.
 
 - `--resync` runs the existing union mode for every peer regardless of the
   last-seen ref, then advances the ref as a normal pull does.
-- Never deletes. Divergent content follows the existing union-mode rules
+- Never deletes a file because the peer lacks it; deletes the peer made
+  since the last-seen ref are still applied, as a plain pull would, since
+  advancing the ref past them would lose them for good. Divergent content follows the existing union-mode rules
   (conflict sidecar when local differs and is not a known peer version).
 
 Tests: integration test that creates the divergence (B's store loses files
