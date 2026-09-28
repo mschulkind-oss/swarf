@@ -347,11 +347,11 @@ const backendsDoc = `
   To pull updates:
     swarf pull     # pulls latest from remote
 
-  The git backend is single-machine. Two machines would each push their
-  own history to the one branch, so the second push fails, and a git
-  'swarf pull' updates the store without copying anything into your
-  projects' swarf/ directories. For more than one machine, use rclone.
-  pull_interval, 'swarf pull --resync', and 'swarf push --take-over' are
+  The git backend is single-machine for now. Each machine pushes to its
+  own machine branch, machines/<machine_id> on the remote, but a git
+  'swarf pull' neither reads the other machines' branches nor copies
+  anything into your projects' swarf/ directories. For more than one
+  machine, use rclone. pull_interval and 'swarf pull --resync' are
   rclone-only.
 
   Rclone (Google Drive, Dropbox, S3, etc.)

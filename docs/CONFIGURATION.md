@@ -66,11 +66,15 @@ The sync transport. Two options:
   Google Drive, Dropbox, S3, B2, SFTP, etc.
 
 Multi-machine sync needs the **rclone** backend. The git backend is
-single-machine: two machines would push their own histories to the one
-branch on the remote, so the second push fails, and `swarf pull` with the
-git backend is a plain `git pull` into the store that does not copy
-anything into your projects. `pull_interval`, `swarf pull --resync`, and
-`swarf push --take-over` are rclone-only for the same reason.
+single-machine for now: each machine pushes to its own branch on the
+remote, `machines/<machine_id>` (only that machine pushes it, and never
+with force), but `swarf pull` with the git backend is a plain `git pull`
+into the store that neither reads the other machines' branches nor copies
+anything into your projects. `pull_interval` and `swarf pull --resync`
+are rclone-only for the same reason. With git, `swarf push --take-over`
+force-pushes this machine's branch when a different store with the same
+`machine_id` pushed to it, discarding the commits only that store pushed
+there.
 
 #### `remote`
 

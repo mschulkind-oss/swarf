@@ -235,10 +235,11 @@ creates `swarf/` in a new directory, while `doctor` only checks and repairs.
 ## Second machine setup
 
 Multi-machine sync means the **rclone backend**. The git backend is
-single-machine: both machines would push to the one branch on the remote,
-the second push fails because its history has diverged, and `swarf pull`
-with the git backend runs a plain `git pull` into the store without
-copying anything into your projects' `swarf/` directories. Use the git
+single-machine for now: each machine pushes to its own branch on the
+remote, `machines/<machine_id>`, but `swarf pull` with the git backend
+runs a plain `git pull` into the store that neither reads the other
+machines' branches nor copies anything into your projects' `swarf/`
+directories. Use the git
 backend on one machine, or switch to rclone before adding a second.
 
 ```bash
