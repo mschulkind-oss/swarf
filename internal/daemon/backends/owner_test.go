@@ -162,3 +162,73 @@ func TestRemoteOwnerToken(t *testing.T) {
 		t.Fatalf("claimed subtree: got %q, %v, %v; want abc", tok, ok, err)
 	}
 }
+
+// shimRcloneCat puts an rclone first on PATH that runs catBody for
+// 'rclone cat' and hands every other subcommand to the real rclone.
+func shimRcloneCat(t *testing.T, catBody string) {
+	t.Helper()
+	real, err := exec.LookPath("rclone")
+	if err != nil {
+		t.Skip("rclone not installed")
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$1\" = cat ]; then\n" + catBody + "\nfi\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "rclone"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestRemoteOwnerTokenReadFailure(t *testing.T) {
+	f := newOwnerFixture(t)
+	f.claimRemote(t, "abc")
+	ctx := context.Background()
+
+	// Any exit other than 3 or 4 means the remote could not be read,
+	// not that the token is missing.
+	shimRcloneCat(t, "echo 'unauthorized' >&2; exit 1")
+	tok, ok, err := RemoteOwnerToken(ctx, f.target)
+	if err == nil || ok {
+		t.Fatalf("unreadable remote: got %q, %v, %v; want an error", tok, ok, err)
+	}
+	if !strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("error should carry rclone's stderr, got %v", err)
+	}
+}
+
+func TestRemoteOwnerTokenFileNotFoundExit(t *testing.T) {
+	f := newOwnerFixture(t)
+	shimRcloneCat(t, "exit 4")
+	if tok, ok, err := RemoteOwnerToken(context.Background(), f.target); err != nil || ok {
+		t.Fatalf("exit 4 (file not found): got %q, %v, %v; want absent", tok, ok, err)
+	}
+}
+
+func TestRemoteOwnerTokenEmptyOutputIsAbsent(t *testing.T) {
+	// Object stores answer a missing path with nothing and exit 0.
+	f := newOwnerFixture(t)
+	shimRcloneCat(t, "exit 0")
+	if tok, ok, err := RemoteOwnerToken(context.Background(), f.target); err != nil || ok {
+		t.Fatalf("empty output: got %q, %v, %v; want absent", tok, ok, err)
+	}
+}
+
+func TestSyncSkipsUploadWhenOwnerTokenUnreadable(t *testing.T) {
+	f := newOwnerFixture(t)
+	f.claimRemote(t, "someone-else")
+	shimRcloneCat(t, "echo 'rate limited' >&2; exit 1")
+	b := &RcloneBackend{Remote: f.remote, MachineID: "box"}
+	res := b.Sync(context.Background(), paths.StoreDir)
+	if res.Success {
+		t.Fatal("sync must not upload when the remote owner token cannot be read")
+	}
+	if !strings.Contains(res.Message, "could not read the remote owner token") {
+		t.Errorf("refusal should say the owner token could not be read:\n%s", res.Message)
+	}
+	if data, _ := os.ReadFile(filepath.Join(f.target, "note.md")); string(data) != "theirs" {
+		t.Errorf("remote note.md = %q; the skipped sync must not touch it", data)
+	}
+	if got := f.remoteToken(t); got != "someone-else" {
+		t.Errorf("remote owner token = %q; the skipped sync must not touch it", got)
+	}
+}
