@@ -826,3 +826,49 @@ func TestPullResyncAppliesPendingPeerDeletes(t *testing.T) {
 		t.Errorf("gone.txt should stay deleted after the follow-up pull (stat err=%v)", err)
 	}
 }
+
+// TestPullResyncUpdatesOlderPeerVersion: resync compares a local file with
+// every version in the peer's history, not only the last-seen one. A local
+// copy at an older peer version is replaced with the peer's current content
+// and gets no conflict sidecar.
+func TestPullResyncUpdatesOlderPeerVersion(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerTmp := t.TempDir()
+	peerStore := filepath.Join(peerTmp, "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "shared.txt"), []byte("v1\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "v1")
+	os.WriteFile(filepath.Join(peerStore, "shared.txt"), []byte("v2\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "v2")
+
+	setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(Options{}); err != nil {
+		t.Fatalf("initial pull: %v", err)
+	}
+
+	// Local store goes back to v1, a version the peer had before lastSeen.
+	os.WriteFile(filepath.Join(paths.StoreDir, "shared.txt"), []byte("v1\n"), 0o644)
+	runGit(t, paths.StoreDir, "add", "-A")
+	runGit(t, paths.StoreDir, "commit", "-m", "back to v1")
+
+	res, err := RunWithResult(Options{Resync: true})
+	if err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	if len(res.ConflictFiles) != 0 {
+		t.Errorf("a local copy at an older peer version should not conflict, got %v", res.ConflictFiles)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "shared.txt")); string(got) != "v2\n" {
+		t.Errorf("resync should update shared.txt to the peer's current v2, got %q", got)
+	}
+}
