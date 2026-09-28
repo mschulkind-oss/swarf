@@ -694,9 +694,10 @@ func TestListPeersError(t *testing.T) {
 // TestPullResync: after a pull has recorded the peer's HEAD, a plain pull
 // with no new peer commit applies nothing, so a file the local store
 // lost stays lost. Resync unions the peer's whole tree back in: missing
-// files return, a file whose local content matches no version the peer
-// ever had keeps the local content and gets a conflict sidecar, and a
-// local-only file is never deleted.
+// files return, a file both sides changed (local content matches no
+// version the peer ever had, and the peer's current content is not one
+// the local store moved on from) keeps the local content and gets a
+// conflict sidecar, and a local-only file is never deleted.
 func TestPullResync(t *testing.T) {
 	fakeRoot := t.TempDir()
 	installFakeRclone(t, fakeRoot)
@@ -735,6 +736,12 @@ func TestPullResync(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(paths.StoreDir, "lost.txt")); !os.IsNotExist(err) {
 		t.Fatalf("a plain pull with no new peer commit should not restore lost.txt (err=%v)", err)
 	}
+
+	// The peer now changes shared.txt too, so both sides have diverged.
+	os.WriteFile(filepath.Join(peerStore, "shared.txt"), []byte("peer2\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "peer edit")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
 	peerHead := gitexec.RevParseHEAD(peerStore)
 	res, err := RunWithResult(Options{Resync: true})
@@ -870,5 +877,57 @@ func TestPullResyncUpdatesOlderPeerVersion(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "shared.txt")); string(got) != "v2\n" {
 		t.Errorf("resync should update shared.txt to the peer's current v2, got %q", got)
+	}
+}
+
+// TestPullResyncKeepsLocalOnlyEdit: a file the local store edited after
+// pulling it, while the peer left it alone, is an ordinary local edit, not
+// divergent content. Resync keeps the local copy and writes no conflict
+// sidecar, as a plain pull would, and running it again changes nothing.
+func TestPullResyncKeepsLocalOnlyEdit(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerTmp := t.TempDir()
+	peerStore := filepath.Join(peerTmp, "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "notes.txt"), []byte("v1\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "v1")
+
+	setupStore(t, "self")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(Options{}); err != nil {
+		t.Fatalf("initial pull: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "notes.txt")); string(got) != "v1\n" {
+		t.Fatalf("initial pull should bring in notes.txt, got %q", got)
+	}
+
+	// Local store edits notes.txt; the peer does not change.
+	os.WriteFile(filepath.Join(paths.StoreDir, "notes.txt"), []byte("v2 local edit\n"), 0o644)
+	runGit(t, paths.StoreDir, "add", "-A")
+	runGit(t, paths.StoreDir, "commit", "-m", "local edit")
+
+	for i := 0; i < 2; i++ {
+		res, err := RunWithResult(Options{Resync: true})
+		if err != nil {
+			t.Fatalf("resync %d: %v", i, err)
+		}
+		if len(res.ConflictFiles) != 0 {
+			t.Errorf("resync %d: a local-only edit should not conflict, got %v", i, res.ConflictFiles)
+		}
+		if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "notes.txt")); string(got) != "v2 local edit\n" {
+			t.Errorf("resync %d: should keep the local edit, got %q", i, got)
+		}
+	}
+	if status := strings.TrimSpace(gitexec.StatusPorcelain(paths.StoreDir)); status != "" {
+		t.Errorf("store should be clean, got:\n%s", status)
+	}
+	if out := runGitOut(t, paths.StoreDir, "ls-files"); strings.Contains(out, ".conflict.") {
+		t.Errorf("no conflict sidecar should be committed, ls-files:\n%s", out)
 	}
 }

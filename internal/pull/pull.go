@@ -572,6 +572,17 @@ func applyAddOrModify(peer, peerCache, oldRef, peerHead, rel, ts string) (string
 		return "", nil
 	}
 
+	// In union mode (no trusted old ref), a local copy that has already
+	// moved on from the peer's current content is an ordinary local edit:
+	// the peer has nothing newer, so keep local with no sidecar, as a plain
+	// pull would for a file the peer has not touched.
+	if oldRef == "" {
+		if localHead := gitexec.RevParseHEAD(paths.StoreDir); localHead != "" &&
+			historyHasVersion(paths.StoreDir, localHead, rel, peerContent) {
+			return "", nil
+		}
+	}
+
 	// Both sides diverged from every state the peer has been through.
 	// Keep local, save peer version as a sidecar.
 	return writeConflictSidecar(rel, peer, ts, peerContent)
@@ -589,7 +600,13 @@ func peerHasVersionMatching(peerCache, oldRef, peerHead, rel string, localConten
 		return err == nil && bytes.Equal(localContent, peerOld)
 	}
 	// Union-mode path: walk peer history for this file.
-	cmd := exec.Command("git", "-C", peerCache, "log", "--format=%H", peerHead, "--", rel)
+	return historyHasVersion(peerCache, peerHead, rel, localContent)
+}
+
+// historyHasVersion reports whether any commit reachable from head in the
+// repo at dir has `rel` with exactly `content`.
+func historyHasVersion(dir, head, rel string, content []byte) bool {
+	cmd := exec.Command("git", "-C", dir, "log", "--format=%H", head, "--", rel)
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -598,8 +615,8 @@ func peerHasVersionMatching(peerCache, oldRef, peerHead, rel string, localConten
 		if sha == "" {
 			continue
 		}
-		content, err := gitexec.ShowFile(peerCache, sha, rel)
-		if err == nil && bytes.Equal(localContent, content) {
+		got, err := gitexec.ShowFile(dir, sha, rel)
+		if err == nil && bytes.Equal(content, got) {
 			return true
 		}
 	}

@@ -102,8 +102,11 @@ restored them because nothing changed on A.
   last-seen ref, then advances the ref as a normal pull does.
 - Never deletes a file because the peer lacks it; deletes the peer made
   since the last-seen ref are still applied, as a plain pull would, since
-  advancing the ref past them would lose them for good. Divergent content follows the existing union-mode rules
-  (conflict sidecar when local differs and is not a known peer version).
+  advancing the ref past them would lose them for good. Divergent content
+  follows the existing union-mode rules (conflict sidecar when local
+  differs and is not a known peer version), except that a local copy
+  edited after the store already had the peer's current content is an
+  ordinary local edit: it is kept with no sidecar, as a plain pull would.
 
 Tests: integration test that creates the divergence (B's store loses files
 and commits, A unchanged), shows a plain pull does not restore them, and

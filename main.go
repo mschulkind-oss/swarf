@@ -271,8 +271,10 @@ Resync
   are the ones a peer made since the last pull, exactly as a plain pull
   would. A local file that matches any version a peer ever had is
   replaced with that peer's current copy, even an older version you
-  restored on purpose; a file that matches none of them keeps its local
-  content and gets a conflict sidecar, as above. Rclone backend only.`,
+  restored on purpose. A file that matches none of them keeps its local
+  content; it also gets a conflict sidecar, as above, unless the peer's
+  current copy is one this store already had and has since edited.
+  Rclone backend only.`,
 		Example: `  swarf pull
   swarf pull --resync`,
 	}
