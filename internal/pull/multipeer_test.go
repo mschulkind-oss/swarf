@@ -1150,6 +1150,98 @@ func TestPullResyncAfterPeerRebuild(t *testing.T) {
 	}
 }
 
+// rebuildPeerStore replaces the peer store's history with one unrelated
+// commit holding only rebuilt.txt (seed.txt is gone from it), mirrors it
+// to the fake remote, and returns the new peer HEAD. The store has
+// already pulled the old history, so its objects include the last-seen
+// commit even though the peer's history no longer does.
+func rebuildPeerStore(t *testing.T, peerStore, fakeRoot string) string {
+	t.Helper()
+	os.RemoveAll(filepath.Join(peerStore, ".git"))
+	os.Remove(filepath.Join(peerStore, "seed.txt"))
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "rebuilt.txt"), []byte("rebuilt\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "rebuilt")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	return gitexec.RevParseHEAD(peerStore)
+}
+
+// pulledPeerStore returns a peer store holding seed.txt that the local
+// store shares history with and has already pulled once.
+func pulledPeerStore(t *testing.T, fakeRoot string) string {
+	t.Helper()
+	peerStore := filepath.Join(t.TempDir(), "peer-store")
+	os.MkdirAll(peerStore, 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "seed.txt"), []byte("seed\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "seed")
+
+	setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
+		t.Fatalf("initial pull: %v", err)
+	}
+	return peerStore
+}
+
+// A plain pull from a peer whose history no longer contains the
+// last-seen ref (the peer rebuilt its store) cannot tell what the peer
+// deleted since then, so it fails that peer and changes nothing, even
+// though the store still has the last-seen commit's objects from the
+// earlier pull. Diffing from those objects would read every file the
+// rebuilt history lacks as a peer delete.
+func TestPullAfterPeerRebuildDeletesNothing(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	peerStore := pulledPeerStore(t, fakeRoot)
+	oldPeerHead := gitexec.ReadRef(paths.StoreDir, peerRefName("peer"))
+	rebuildPeerStore(t, peerStore, fakeRoot)
+
+	res, err := RunWithResult(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if len(res.PeerFailures) != 1 || res.PeerFailures[0].Peer != "peer" {
+		t.Errorf("the rebuilt peer should be recorded as a failure, got %+v", res.PeerFailures)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "seed.txt")); string(got) != "seed\n" {
+		t.Errorf("seed.txt should stay in the store, got %q", got)
+	}
+	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != oldPeerHead {
+		t.Errorf("the last-seen ref should stay at %s, got %s", oldPeerHead, got)
+	}
+}
+
+// A resync from a peer that rebuilt its store applies none of the
+// "deletes since the last-seen ref": that ref is not in the peer's
+// history, even though the store still has its objects.
+func TestPullResyncAfterPeerRebuildDeletesNothing(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	peerStore := pulledPeerStore(t, fakeRoot)
+	newPeerHead := rebuildPeerStore(t, peerStore, fakeRoot)
+
+	if _, err := RunWithResult(context.Background(), Options{Resync: true}); err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	for name, want := range map[string]string{"seed.txt": "seed\n", "rebuilt.txt": "rebuilt\n"} {
+		if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, name)); string(got) != want {
+			t.Errorf("after resync %s should be %q, got %q", name, want, got)
+		}
+	}
+	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != newPeerHead {
+		t.Errorf("resync should advance the last-seen ref to %s, got %s", newPeerHead, got)
+	}
+}
+
 // A pull whose context ends mid-download (a daemon shutting down during a
 // scheduled pull) kills the rclone child and returns promptly instead of
 // waiting for the transfer.
