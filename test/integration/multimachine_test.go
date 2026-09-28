@@ -2340,3 +2340,39 @@ done
 		t.Errorf("doctor should not report the tombstone as waiting:\n%s", doc)
 	}
 }
+
+// A plain bare remote whose HEAD is main — what 'git init --bare -b main'
+// makes, and the usual self-hosted setup — refuses deleting main with no
+// hook at all: git's receive.denyDeleteCurrent defaults to refusing a
+// delete of the branch HEAD names. swarf retires main with a tombstone
+// there too, and the remote keeps only the tombstone and machine
+// branches.
+func TestMultiMachineGit_LegacyBranchIsRemoteHEAD(t *testing.T) {
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	mustRun(t, "", "git", "init", "--bare", "-b", "main", bare)
+
+	a := newGitMachine(t, "a", bare)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.oldSwarfPush(bare)
+	legacy := bareRef(bare, "refs/heads/main")
+
+	out := mustSwarf(t, a, "push")
+	tomb := bareRef(bare, "refs/heads/main")
+	if tomb == "" || tomb == legacy {
+		t.Fatalf("main should hold a tombstone, is at %q (legacy tip %s)\n--- push output ---\n%s", tomb, legacy, out)
+	}
+	files, err := exec.Command("git", "--git-dir", bare, "ls-tree", "--name-only", tomb).Output()
+	if err != nil || strings.TrimSpace(string(files)) != "SWARF-BRANCHES.md" {
+		t.Errorf("main's tombstone should hold only SWARF-BRANCHES.md, has %q (%v)", files, err)
+	}
+	if !strings.Contains(out, "tombstone") {
+		t.Errorf("the push should say main now holds a tombstone:\n%s", out)
+	}
+	if !isAncestorIn(bare, legacy, bareRef(bare, "refs/heads/machines/a")) {
+		t.Error("machines/a should hold main's legacy tip")
+	}
+	if got, want := bareBranches(t, bare), "refs/heads/machines/a\nrefs/heads/main"; got != want {
+		t.Errorf("the remote should hold only the machine branch and the tombstone:\n%s", got)
+	}
+}
