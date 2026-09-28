@@ -11,6 +11,12 @@ type SyncResult struct {
 	Success      bool
 	Message      string
 	FilesChanged int
+	// Pushed means the sync sent the remote commits it did not have
+	// before, including ones an earlier failed push left behind (the git
+	// backend retries those with nothing new to commit). The rclone
+	// backend uploads the whole store every time and cannot tell, so it
+	// reports a push only for a sync that committed something.
+	Pushed bool
 	// Logged means the backend has already logged this failure (or chose
 	// to stay quiet about a repeat of it), so the caller should not log
 	// Message again.

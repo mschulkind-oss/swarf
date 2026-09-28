@@ -154,3 +154,48 @@ func TestGitSyncTakeOverForcePushes(t *testing.T) {
 		t.Errorf("after taking over, a plain sync succeeds: %s", res.Message)
 	}
 }
+
+// A push that fails for any reason but a non-fast-forward (here the
+// remote cannot be reached) is a failed sync, not a success: 'swarf
+// push' must not report it as done. The commit is still made locally,
+// and the refusal wording is kept for a branch another store wrote.
+func TestGitSyncReportsFailedPush(t *testing.T) {
+	newGitFixture(t)
+	gitexec.SetRemoteURL(paths.StoreDir, "origin", filepath.Join(t.TempDir(), "missing.git"))
+	b := &GitBackend{MachineID: "box"}
+	res := b.Sync(context.Background(), paths.StoreDir)
+	if res.Success {
+		t.Fatalf("a push to an unreachable remote must not succeed: %s", res.Message)
+	}
+	if gitexec.RevParseHEAD(paths.StoreDir) == "" {
+		t.Error("the sync should still commit locally")
+	}
+	if strings.Contains(res.Message, "different store") {
+		t.Errorf("an unreachable remote is not another store's branch:\n%s", res.Message)
+	}
+	// Nothing new to commit: the retry fails the same way.
+	if res := b.Sync(context.Background(), paths.StoreDir); res.Success {
+		t.Fatalf("the retry of a push to an unreachable remote must not succeed: %s", res.Message)
+	}
+}
+
+// A server-side refusal of a --take-over force push (receive.denyNonFastForwards,
+// or a hook) is a failed sync, and is not reported as another store's
+// branch.
+func TestGitSyncTakeOverRefusedByRemote(t *testing.T) {
+	f := newGitFixture(t)
+	theirs := f.claimBranch(t, "machines/box")
+	if out, err := exec.Command("git", "--git-dir", f.bare, "config", "receive.denyNonFastForwards", "true").CombinedOutput(); err != nil {
+		t.Fatalf("config: %v\n%s", err, out)
+	}
+	res := (&GitBackend{MachineID: "box", TakeOver: true}).Sync(context.Background(), paths.StoreDir)
+	if res.Success {
+		t.Fatalf("a take-over the remote refused must not succeed: %s", res.Message)
+	}
+	if strings.Contains(res.Message, "different store") {
+		t.Errorf("the remote's refusal is not another store's branch:\n%s", res.Message)
+	}
+	if got := f.ref(t, "refs/heads/machines/box"); got != theirs {
+		t.Errorf("remote machines/box = %q; the refused push must leave it at %q", got, theirs)
+	}
+}

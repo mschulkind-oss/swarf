@@ -108,8 +108,14 @@ func (g *GitBackend) Sync(ctx context.Context, storePath string) SyncResult {
 	}
 	g.loggedRefusal = ""
 	if err != nil {
+		// Unreachable remote, bad credentials, or a server-side refusal
+		// (a hook, receive.denyNonFastForwards) — including of a
+		// --take-over force push. Not another store's commits, so no
+		// refusal wording; the next sync retries, since HEAD is still
+		// past PushedRef.
 		slog.Warn("sync: push failed (will retry later)", "remote", remote, "branch", branch, "err", err)
-		return SyncResult{Success: true, Message: fmt.Sprintf("Committed %d files locally, push failed", nFiles), FilesChanged: nFiles}
+		msg := fmt.Sprintf("push to %s on %s failed (committed locally only; the daemon retries): %v", branch, remote, err)
+		return SyncResult{Success: false, Message: msg, FilesChanged: nFiles, Logged: true}
 	}
 	if err := gitexec.UpdateRef(storePath, PushedRef(g.MachineID), head); err != nil {
 		slog.Warn("sync: could not record the pushed commit", "ref", PushedRef(g.MachineID), "err", err)
@@ -117,7 +123,7 @@ func (g *GitBackend) Sync(ctx context.Context, storePath string) SyncResult {
 	stampNow(paths.LastPushFile)
 	slog.Info("sync: pushed to remote successfully", "remote", remote, "branch", branch, "files", nFiles)
 
-	return SyncResult{Success: true, Message: fmt.Sprintf("Synced %d files", nFiles), FilesChanged: nFiles}
+	return SyncResult{Success: true, Message: fmt.Sprintf("Synced %d files", nFiles), FilesChanged: nFiles, Pushed: true}
 }
 
 // GitBranchMismatch is the explanation, with the ways out, for a machine

@@ -149,7 +149,7 @@ func (r *RcloneBackend) Sync(ctx context.Context, storePath string) SyncResult {
 	stampNow(paths.LastPushFile)
 	slog.Info("sync: rclone sync completed successfully", "remote", target, "files", nFiles, "output", strings.TrimSpace(string(out)))
 
-	return SyncResult{Success: true, Message: fmt.Sprintf("Synced %d files via rclone", nFiles), FilesChanged: nFiles}
+	return SyncResult{Success: true, Message: fmt.Sprintf("Synced %d files via rclone", nFiles), FilesChanged: nFiles, Pushed: nFiles > 0}
 }
 
 // checkOwner compares this store's owner token with the one already in

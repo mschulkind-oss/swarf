@@ -96,9 +96,15 @@ func Run(ctx context.Context, opts Options) error {
 	if !result.Success {
 		return fmt.Errorf("sync failed: %s", result.Message)
 	}
-	if result.FilesChanged > 0 {
+	switch {
+	case result.FilesChanged > 0 && result.Pushed:
 		console.Ok(fmt.Sprintf("Pushed %d file(s).", result.FilesChanged))
-	} else {
+	case result.FilesChanged > 0:
+		// Git backend with no remote configured.
+		console.Ok(fmt.Sprintf("Committed %d file(s) locally; no remote to push to.", result.FilesChanged))
+	case result.Pushed:
+		console.Ok("Pushed commits an earlier push did not send.")
+	default:
 		console.Ok("Nothing to push.")
 	}
 	return nil
