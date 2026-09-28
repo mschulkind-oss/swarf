@@ -85,7 +85,7 @@ func Dir(src, dst string, skip Skip) error {
 			return nil
 		}
 
-		data, err := os.ReadFile(path)
+		data, err := readFile(path)
 		if err != nil {
 			slog.Warn("mirror: read failed", "path", path, "err", err)
 			lastErr = err
@@ -178,8 +178,8 @@ func TrackedReverse(src, dst, manifestPath string, skip Skip) error {
 }
 
 // fileSet returns the drawer-relative paths of the files under root that
-// a copy pass would copy: not skipped, and resolvable to something
-// readable. It is the set a forward pass records in the manifest.
+// a copy pass would copy: not skipped, and resolvable to a file (not a
+// link to a directory). It is the set a forward pass records in the manifest.
 func fileSet(root string, skip Skip) map[string]struct{} {
 	set := make(map[string]struct{})
 	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -199,7 +199,7 @@ func fileSet(root string, skip Skip) map[string]struct{} {
 		if d.IsDir() {
 			return nil
 		}
-		if _, err := statResolvable(path); err == nil {
+		if info, err := statResolvable(path); err == nil && !info.IsDir() {
 			set[rel] = struct{}{}
 		}
 		return nil
@@ -220,7 +220,9 @@ type Guard struct {
 
 // TrackedDir mirrors src into dst, propagating only the deletions that
 // we have first-hand evidence of. Uses a per-source manifest at
-// manifestPath that records the file set seen on the previous pass.
+// manifestPath that records the src files the previous pass left a copy
+// of in dst (a file whose copy failed and that dst never had is left
+// out, as is a link to a directory, which is never copied).
 // Files in the old manifest but missing from src now (and present in
 // dst) are true deletions and get removed from dst. Files that never
 // existed in src (according to the manifest) are untouched in dst,
@@ -283,27 +285,24 @@ func TrackedDir(src, dst, manifestPath string, skip Skip, guard Guard) (*deleteh
 			slog.Debug("mirror: skipping unreadable entry", "path", path, "err", err)
 			return nil
 		}
+		if srcInfo.IsDir() {
+			// A link to a directory: the mirror copies file bytes only,
+			// so this never reaches dst and is not recorded as synced.
+			slog.Warn("mirror: skipping link to a directory", "path", path)
+			return nil
+		}
 
+		// The manifest records what dst has a copy of. A failed copy is
+		// recorded only when dst already holds the file from an earlier
+		// pass, so it is not read as a delete here, and a file that never
+		// reached dst is never grounds for TrackedReverse to delete it.
+		if err := copyFile(path, target, srcInfo); err != nil {
+			lastErr = err
+			if _, err := os.Lstat(target); err != nil {
+				return nil
+			}
+		}
 		newSet[rel] = struct{}{}
-
-		if upToDate(srcInfo, target) {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			slog.Warn("mirror: read failed", "path", path, "err", err)
-			lastErr = err
-			return nil
-		}
-		if err := mkdirAllRepair(filepath.Dir(target)); err != nil {
-			slog.Warn("mirror: mkdir for file failed", "path", target, "err", err)
-			lastErr = err
-			return nil
-		}
-		if err := os.WriteFile(target, data, srcInfo.Mode()); err != nil {
-			slog.Warn("mirror: write failed", "path", target, "err", err)
-			lastErr = err
-		}
 		return nil
 	})
 
@@ -600,7 +599,7 @@ func PendingFiles(src, dst string, skip Skip) int {
 // no deletes should fire yet.
 func readManifest(path string) map[string]struct{} {
 	out := make(map[string]struct{})
-	data, err := os.ReadFile(path)
+	data, err := readFile(path)
 	if err != nil {
 		return out
 	}
@@ -691,7 +690,7 @@ func CopyOnly(src, dst string, skip Skip) error {
 		if upToDate(srcInfo, target) {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := readFile(path)
 		if err != nil {
 			slog.Warn("mirror: read failed", "path", path, "err", err)
 			lastErr = err
@@ -763,6 +762,33 @@ func mkdirAllRepair(dir string) error {
 	}
 	return nil
 }
+
+// copyFile copies the file at path to target unless target is already
+// up to date with srcInfo (statResolvable's result for path), creating
+// target's parent directories. Failures are logged and returned.
+func copyFile(path, target string, srcInfo os.FileInfo) error {
+	if upToDate(srcInfo, target) {
+		return nil
+	}
+	data, err := readFile(path)
+	if err != nil {
+		slog.Warn("mirror: read failed", "path", path, "err", err)
+		return err
+	}
+	if err := mkdirAllRepair(filepath.Dir(target)); err != nil {
+		slog.Warn("mirror: mkdir for file failed", "path", target, "err", err)
+		return err
+	}
+	if err := os.WriteFile(target, data, srcInfo.Mode()); err != nil {
+		slog.Warn("mirror: write failed", "path", target, "err", err)
+		return err
+	}
+	return nil
+}
+
+// readFile reads a source file for a copy pass. A variable so tests can
+// make a read fail.
+var readFile = os.ReadFile
 
 // statResolvable returns os.Stat(path), but treats broken symlinks (the
 // link exists but the target doesn't) as a non-fatal "skip this entry"

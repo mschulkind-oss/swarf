@@ -1,6 +1,7 @@
 package mirror
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -133,4 +134,78 @@ func TestTrackedReverseNoManifestDeletesNothing(t *testing.T) {
 	}
 	assertFile(t, filepath.Join(project, "local.md"), "mine")
 	assertFile(t, filepath.Join(project, "peer.md"), "theirs")
+}
+
+// A symlink to a directory is never copied into the store, so it is not
+// something swarf synced and the reverse mirror must not delete it for
+// being absent from the store.
+func TestTrackedReverseKeepsSymlinkToDirectory(t *testing.T) {
+	f := newReverseFixture(t, "a.md")
+	target := t.TempDir()
+	writeFile(t, filepath.Join(target, "x.md"), "outside the drawer")
+	if err := os.Symlink(target, filepath.Join(f.project, "linked")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TrackedDir(f.project, f.store, f.manifest, nil, Guard{}); err != nil {
+		t.Fatalf("TrackedDir: %v", err)
+	}
+	if _, ok := readManifest(f.manifest)["linked"]; ok {
+		t.Error("a link to a directory is never copied, so the manifest should not list it")
+	}
+
+	f.reverse(nil)
+
+	if !f.projectHas("linked") {
+		t.Error("the link was never synced to the store: the reverse mirror should keep it")
+	}
+	if _, ok := readManifest(f.manifest)["linked"]; ok {
+		t.Error("the rewritten manifest should not list the link either")
+	}
+}
+
+// failReads makes the mirror's reads of the named files fail for the
+// rest of the test, standing in for a file the copy pass cannot read.
+func failReads(t *testing.T, names ...string) {
+	t.Helper()
+	orig := readFile
+	t.Cleanup(func() { readFile = orig })
+	readFile = func(p string) ([]byte, error) {
+		for _, n := range names {
+			if filepath.Base(p) == n {
+				return nil, fmt.Errorf("read %s: injected failure", p)
+			}
+		}
+		return orig(p)
+	}
+}
+
+// A file whose forward copy failed never reached the store. The forward
+// pass does not record it as synced, so the reverse mirror leaves it.
+func TestTrackedReverseKeepsFileWhoseForwardCopyFailed(t *testing.T) {
+	f := newReverseFixture(t, "a.md")
+	writeFile(t, filepath.Join(f.project, "locked.md"), "cannot be read")
+	failReads(t, "locked.md")
+
+	TrackedDir(f.project, f.store, f.manifest, nil, Guard{}) // the copy failure is expected
+	if _, ok := readManifest(f.manifest)["locked.md"]; ok {
+		t.Error("a file that never reached the store should not be recorded as synced")
+	}
+
+	f.reverse(nil)
+	assertFile(t, filepath.Join(f.project, "locked.md"), "cannot be read")
+}
+
+// A file whose forward copy fails but that the store already has from an
+// earlier pass stays recorded, so the forward mirror does not treat it
+// as deleted and prune the store's copy.
+func TestTrackedDirKeepsSyncedFileWhoseCopyFails(t *testing.T) {
+	f := newReverseFixture(t, "a.md", "b.md")
+	writeFile(t, filepath.Join(f.project, "b.md"), "an edit the next copy will fail to read")
+	failReads(t, "b.md")
+
+	TrackedDir(f.project, f.store, f.manifest, nil, Guard{}) // the copy failure is expected
+	if _, ok := readManifest(f.manifest)["b.md"]; !ok {
+		t.Error("b.md is still in the project and the store: the manifest should keep it")
+	}
+	assertFile(t, filepath.Join(f.store, "b.md"), "content of b.md")
 }
