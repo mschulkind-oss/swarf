@@ -201,7 +201,7 @@ and want to find prior research, decisions, or patterns from other repos.
 
 ---
 
-### Remote Pull-Down (Manual, Multi-Peer — Done for Rclone)
+### Remote Pull-Down (Multi-Peer — Done for Rclone)
 
 Swarf now supports multi-machine sync with a conflict-safe per-machine
 layout for the rclone backend:
@@ -213,16 +213,24 @@ layout for the rclone backend:
 - Histories never lose commits; working-tree conflicts are visible as
   files in the store for manual reconciliation.
 
+Addressed by [Sync Hardening](SYNC_HARDENING.md):
+
+- ~~**Automatic pull.**~~ Done: `[sync] pull_interval` (for example
+  `"10m"`) makes the daemon pull on that interval with the rclone
+  backend. Off by default.
+- ~~**Reverse-mirror to projects.**~~ Done: `swarf pull` ends by copying
+  the store back into each project's `swarf/`, deleting a project file
+  only when swarf synced it before and the store no longer has it.
+- **Safety.** A delete hold stops a wiped project from pruning the
+  store (`swarf push --allow-deletes` confirms), `swarf pull --resync`
+  recovers a store that already lost files, an owner token stops two
+  machines sharing a `machine_id` from overwriting each other
+  (`swarf push --take-over` for a real replacement), and a sync lock
+  keeps push, pull, and the daemon from running at once. These terms
+  are defined in [Configuration → Sync safeguards](CONFIGURATION.md#sync-safeguards).
+
 Still open:
 
-- **Automatic pull.** The daemon still only pushes — pulling is manual
-  via `swarf pull`. A configurable `pull_interval` that triggers pull
-  on a timer is the natural next step.
-- **Reverse-mirror to projects.** After a pull that updates files in the
-  store, those changes need to flow back out to each project's `swarf/`
-  directory (the inverse of the current mirror direction). Startup
-  re-link handles some cases, but a deliberate reverse-mirror pass
-  would close the loop.
 - **Smarter conflict UX.** Today's keep-both sidecar is safe but
   coarse-grained. A `swarf resolve` helper that shows a unified diff
   and lets you pick hunks would be nicer for long files.
@@ -230,9 +238,11 @@ Still open:
   remote forever. `swarf peers rm <id>` would delete that folder and
   drop the local peer cache.
 
-**Git backend:** the inbound story is simpler (one remote, standard
-git pull) but still fully manual. A common `pull_interval` mechanism
-would apply to both backends.
+**Git backend:** single-machine. Two machines would push their own
+histories to the one branch, so the second push fails, and a git-backend
+pull updates the store without mirroring into projects. `pull_interval`
+is rclone-only for that reason; multi-machine git is out of scope for
+now.
 
 ---
 

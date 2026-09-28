@@ -475,7 +475,9 @@ all available topics, or specify a topic name for details.`,
   swarf docs config          # configuration reference
   swarf docs sweep           # how sweep works
   swarf docs daemon          # daemon operations
-  swarf docs backends        # git and rclone setup`,
+  swarf docs backends        # git and rclone setup
+  swarf docs conflicts       # resolving conflict sidecars
+  swarf docs safety          # delete holds, resync, owner tokens, sync lock`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				console.Header("Available documentation topics:")

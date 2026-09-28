@@ -224,7 +224,8 @@ creates `swarf/` in a new directory, while `doctor` only checks and repairs.
 | `swarf unlink <file>...` | Reverse a sweep — restore symlinks to regular files |
 | `swarf doctor` | Check health and fix problems (config, store, service, links) |
 | `swarf status` | Show projects, sync state, remote verification, daemon health |
-| `swarf pull` | Pull from the remote (also bootstraps the store on a fresh machine) |
+| `swarf push` | Sync now instead of waiting for the daemon (`--allow-deletes`, `--take-over`) |
+| `swarf pull` | Pull from the remote (also bootstraps the store on a fresh machine; `--resync` to recover) |
 | `swarf daemon start` | Start the background sync daemon (`--foreground` for debugging) |
 | `swarf daemon stop` | Stop the daemon |
 | `swarf daemon status` | Check if the daemon is running |
@@ -232,6 +233,13 @@ creates `swarf/` in a new directory, while `doctor` only checks and repairs.
 | `swarf docs [topic]` | Browse built-in documentation |
 
 ## Second machine setup
+
+Multi-machine sync means the **rclone backend**. The git backend is
+single-machine: both machines would push to the one branch on the remote,
+the second push fails because its history has diverged, and `swarf pull`
+with the git backend runs a plain `git pull` into the store without
+copying anything into your projects' `swarf/` directories. Use the git
+backend on one machine, or switch to rclone before adding a second.
 
 ```bash
 brew install swarf
@@ -247,11 +255,36 @@ to recreate the local `swarf/` directory and symlinks.
 
 ### Multi-machine with rclone (Google Drive, Dropbox, etc.)
 
-Using the rclone backend from two or more machines is fully supported.
+Using the rclone backend from two or more machines is supported.
 Each machine writes to its own subtree on the remote
 (`<remote>/machines/<machine_id>/`), which prevents concurrent writers
 from corrupting each other's `.git/`. `swarf pull` fetches from every
-other machine's subtree and merges into your local store.
+other machine's subtree, merges into your local store, and copies the
+result into each project's `swarf/`. The daemon pulls on its own only if
+you set `[sync] pull_interval` (for example `"10m"`); otherwise run
+`swarf pull` yourself.
+
+Several safeguards keep one machine's mistake from spreading:
+
+- **Delete hold.** If a project suddenly loses every file swarf last
+  synced (at least 2), or at least 10 files that are half or more of
+  them, swarf copies adds and edits but deletes nothing from the store.
+  The project is in a *delete hold* until you restore the files
+  (`swarf pull` copies them back) or confirm with
+  `swarf push --allow-deletes`. `swarf status` and `swarf doctor` list
+  held projects.
+- **Owner token.** Each store keeps a random *owner token* in its
+  `.git/`, uploaded with it. If two machines share a `machine_id`, the
+  second one's push commits locally and refuses to upload over the
+  first's subtree. Give it its own `[machine] id`, or, if it really
+  replaces the old machine, `swarf push --take-over`.
+- **Sync lock.** Push, pull, and each daemon cycle take a *sync lock*
+  (`~/.cache/swarf/sync.lock`), so they never touch the store at the same
+  time. A command that finds it held waits.
+- **Resync.** If a store lost files and committed the deletes, a plain
+  pull will not bring them back while the peer is unchanged.
+  `swarf pull --resync` copies in every file each peer currently has,
+  without deleting anything a peer merely lacks.
 
 When both machines edited the same file before syncing, the merge keeps
 your local version as the main file and writes the peer's version as a
@@ -279,8 +312,11 @@ correctly regardless of mount path.
 - **[Configuration Guide](docs/CONFIGURATION.md)** — all config options,
   file locations, environment variables, and examples
 - **[Roadmap](docs/ROADMAP.md)** — planned features and distribution channels
+- **[Sync Scenarios](docs/SYNC_SCENARIOS.md)** — what happens to your
+  files in each multi-machine sync situation, and which test covers it
 - **Built-in docs:** `swarf docs` lists all topics (`quickstart`,
-  `architecture`, `config`, `sweep`, `daemon`, `backends`)
+  `architecture`, `config`, `sweep`, `daemon`, `backends`, `conflicts`,
+  `safety`)
 
 ## License
 

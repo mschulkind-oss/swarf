@@ -42,3 +42,30 @@ func TestListTopics(t *testing.T) {
 		t.Fatalf("expected 'quickstart' in list: %s", list)
 	}
 }
+
+// TestSafetyTopic pins the sync-safeguards topic and the commands and
+// settings it has to name, so a user who hits a delete hold or an owner
+// mismatch finds the way out in `swarf docs safety`.
+func TestSafetyTopic(t *testing.T) {
+	topic := Get("safety")
+	if topic == nil {
+		t.Fatal("expected safety topic")
+	}
+	for _, want := range []string{
+		"delete hold",
+		"hold marker",
+		"swarf push --allow-deletes",
+		"swarf pull --resync",
+		"owner token",
+		"swarf push --take-over",
+		"sync lock",
+		"pull_interval",
+	} {
+		if !strings.Contains(topic.Content, want) {
+			t.Errorf("safety topic does not mention %q", want)
+		}
+	}
+	if !strings.Contains(ListTopics(), "safety") {
+		t.Fatal("expected 'safety' in the topic list")
+	}
+}

@@ -15,6 +15,11 @@ only need to edit config manually to change defaults or add auto-sweep.
 | `~/.config/swarf/last-commit` | Timestamp of last successful local commit |
 | `~/.config/swarf/last-push` | Timestamp of last successful remote push |
 | `~/.local/share/swarf/` | Central backup store (a git repo mirroring all projects) |
+| `~/.local/share/swarf/.git/swarf-owner` | This store's owner token (rclone backend; see [Owner token](#owner-token-and---take-over)) |
+| `~/.cache/swarf/manifests/<slug>.txt` | The manifest: the files swarf last synced from each project |
+| `~/.cache/swarf/delete-holds/<slug>.json` | Hold marker for a project in a [delete hold](#delete-hold-and---allow-deletes) |
+| `~/.cache/swarf/sync.lock` | The [sync lock](#sync-lock) |
+| `~/.cache/swarf/peers/<peer>/` | Peer cache: a copy of another machine's remote subtree (rclone backend) |
 
 All paths respect XDG conventions. Override with environment variables:
 
@@ -22,6 +27,7 @@ All paths respect XDG conventions. Override with environment variables:
 |----------|---------|----------|
 | `XDG_CONFIG_HOME` | `~/.config` | Config directory (config.toml, drawers.toml, daemon files) |
 | `XDG_DATA_HOME` | `~/.local/share` | Data directory (central store) |
+| `XDG_CACHE_HOME` | `~/.cache` | Cache directory (manifests, hold markers, sync lock, peer caches) |
 
 ## Global config (`config.toml`)
 
@@ -33,6 +39,7 @@ backend = "git"                                      # "git" or "rclone"
 remote = "git@github.com:you/my-swarf-store.git"     # git URL or rclone remote:path
 debounce = "5s"                                      # wait after last change before syncing
 exclude = [".yolo/"]                                 # drawer paths never copied to the store
+pull_interval = "10m"                                # daemon pulls on this interval (rclone only; default off)
 
 [machine]
 id = "laptop"                                        # stable name for this machine (rclone multi-machine)
@@ -57,6 +64,13 @@ The sync transport. Two options:
   by project, just like the local store. The `.git/` directory is synced
   too, so you get full commit history. Works with any rclone backend:
   Google Drive, Dropbox, S3, B2, SFTP, etc.
+
+Multi-machine sync needs the **rclone** backend. The git backend is
+single-machine: two machines would push their own histories to the one
+branch on the remote, so the second push fails, and `swarf pull` with the
+git backend is a plain `git pull` into the store that does not copy
+anything into your projects. `pull_interval`, `swarf pull --resync`, and
+`swarf push --take-over` are rclone-only for the same reason.
 
 #### `remote`
 
@@ -106,6 +120,11 @@ Once set, **don't change it** — the machine's history lives under that
 id on the remote. If you do change it, you need to rename the folder
 manually on the remote.
 
+Every machine needs its **own** id. Two machines that share one (a
+generic hostname, or a `config.toml` copied with dotfiles) would upload
+over each other's subtree; the [owner token](#owner-token-and---take-over)
+stops the second one's upload and `swarf doctor` reports it.
+
 ### `[sync]` section (cont.)
 
 #### `debounce`
@@ -122,6 +141,31 @@ with a unit suffix:
 
 A shorter debounce means faster sync but more commits. The default of `5s`
 batches rapid edits into a single commit.
+
+#### `pull_interval`
+
+How often the daemon runs `swarf pull` on its own. Off by default: without
+it the daemon only pushes, and you run `swarf pull` yourself to bring in
+other machines' changes.
+
+```toml
+[sync]
+pull_interval = "10m"
+```
+
+Same units as `debounce` (`ms`, `s`, `m`, `h`). Empty or `"0"` means off.
+A value that does not parse is logged in the daemon log and treated as
+off.
+
+Only the **rclone** backend pulls on a schedule. With the git backend the
+daemon logs once at startup that scheduled pull is not supported and does
+not schedule it.
+
+Each scheduled pull takes the [sync lock](#sync-lock), so it never
+overlaps a debounced sync or a `swarf push`/`swarf pull` you run by hand;
+a slow pull delays the next one rather than stacking up. The daemon log
+records each pull's start and end, every peer that failed, any conflict
+sidecars it wrote, and store projects not registered on this machine.
 
 #### `no_fast_list`
 
@@ -344,6 +388,15 @@ Reconciliation outcomes:
   want, and `rm` the `.conflict.*` sidecar. Next sync propagates the
   resolution to the other machine.
 
+Pull then copies the store back into each registered project's `swarf/`
+(the *reverse mirror*). It deletes a project file only when the manifest
+says swarf synced it before and the store no longer has it, so a peer's
+delete still lands but a file the manifest has never listed is left for
+the next forward pass to pick up. A file you save while the pull is
+downloading peers is kept too; if a peer changed that same file, the
+peer's version is written as a conflict sidecar. Afterwards the manifest
+is rewritten to the project's current file set.
+
 Nothing is ever silently overwritten. Because the delta is computed
 from each peer's `.git/` at pull time, the machines do not need to
 share commit history — each machine's `git log` shows its own edits
@@ -369,7 +422,9 @@ one and reconciles every peer's working files and git history into it
 via the file-delta pull path. Each peer's last-seen tip is tracked in
 `refs/swarf-peers/<id>` so subsequent pulls apply only incremental
 changes. The new machine starts writing under its own
-`machines/<id>/` folder on its first sync.
+`machines/<id>/` folder on its first sync — check that its `[machine] id`
+differs from every other machine's before that sync. To have the daemon
+pull on its own, set [`pull_interval`](#pull_interval).
 
 ### Migrating from a flat (single-machine) rclone remote
 
@@ -392,6 +447,114 @@ avoid clobbering data. To migrate:
 
 `swarf doctor` detects the legacy layout and prints these steps whenever
 it sees `.git/` at the remote root.
+
+## Sync safeguards
+
+Four mechanisms keep a mistake on one machine — a wiped directory, two
+machines sharing an id, a push racing a pull — from being synced out to
+the others. See [Sync Scenarios](SYNC_SCENARIOS.md) for the situations
+each one covers.
+
+### Delete hold and `--allow-deletes`
+
+A **delete hold** is the state a project is in when the forward mirror
+(project → store, run by the daemon, `swarf push`, and the start of
+`swarf pull`) found that applying the deletes it computed would remove a
+suspiciously large share of the project's tracked files, and so applied
+none of them.
+
+Only files that the manifest lists, that are gone from the project, and
+that the store still has count as "at stake." Paths matched by a sync
+`exclude` are left out: dropping them is deliberate. The pass holds when
+either:
+
+- the project lost every tracked file and at least **2** are at stake, or
+- at least **10** files are at stake and they are at least **half** of
+  the tracked files.
+
+During a hold, adds and edits are still copied, the held paths stay in
+the manifest (so the hold lasts until you act), and excluded paths are
+still pruned from the store. The hold is recorded in a **hold marker**,
+`~/.cache/swarf/delete-holds/<slug>.json`, with the count, a sample of up
+to 10 paths, and when the hold started. The daemon logs a hold once when
+it appears, not every cycle; `swarf status` lists held projects under
+"Delete holds" and `swarf doctor` reports a failing "delete hold" check.
+
+Two ways out:
+
+- **Restore the files.** With rclone, `swarf pull` copies them back from
+  the store and clears the hold (it also clears it if the files are gone
+  from the store too, because another machine deleted them). With git,
+  copy them back from `~/.local/share/swarf/<slug>/`; the next sync
+  clears the hold.
+- **Confirm the deletes.** `swarf push --allow-deletes` applies the held
+  deletes for that one push.
+
+The marker is removed by the next forward pass that does not hold.
+
+### Resync (`swarf pull --resync`)
+
+A plain pull applies only what each peer changed since the last pull
+(tracked by `refs/swarf-peers/<peer>`). If this machine's store lost
+files and committed the deletes, they do not come back while the peer
+stays unchanged. **Resync** — `swarf pull --resync` — ignores that
+last-seen ref and unions every file in each peer's current tree into the
+store, then advances the ref as a normal pull does. Rclone backend only.
+
+- It never deletes a file because a peer lacks it. The only deletes it
+  applies are those a peer made since the last pull, as a plain pull
+  would.
+- A local file that matches any version a peer ever had is replaced by
+  the peer's current copy — even an older version you restored on
+  purpose.
+- A local file that matches none of them keeps its content and gets a
+  conflict sidecar, unless the peer's current copy is one this store
+  already had and has since edited; that is an ordinary local edit and
+  is kept with no sidecar.
+
+### Owner token and `--take-over`
+
+An **owner token** is a random value generated once per local store and
+kept in `~/.local/share/swarf/.git/swarf-owner`, so it travels to
+`<remote>/machines/<machine_id>/` with every rclone upload. Before
+uploading, swarf reads the token already on the remote:
+
+| Remote token | Result |
+|--------------|--------|
+| absent | upload, which claims the subtree |
+| this store's | upload |
+| a different store's | commit locally, skip the upload, report why |
+| unreadable (remote error) | skip the upload for this pass |
+
+A different token means two machines use the same `machine_id` — often a
+shared hostname, or a `config.toml` copied with dotfiles. `swarf doctor`
+reports it as a failing "machine owner" check, and the daemon logs it
+once until it changes. Fix it one of two ways:
+
+- **Different computers:** give this one its own `[machine] id`.
+- **This computer replaces the old one:** `swarf push --take-over`
+  uploads anyway. It replaces the remote subtree with this store and
+  deletes from the remote anything only the old store had there.
+  `swarf pull` merges the other machines' subtrees first, but pull skips
+  this machine's own id, so it never saves the subtree being replaced —
+  copy out anything you need beforehand
+  (`rclone copy <remote>/machines/<id> <dir>`).
+
+`--take-over` is rejected with the git backend, which has no owner token.
+
+### Sync lock
+
+The **sync lock** is an advisory file lock (`flock(2)`) on
+`~/.cache/swarf/sync.lock`, held for the duration of any push, pull, or
+daemon cycle, so two of them never touch the store at the same time. A
+`swarf push` or `swarf pull` that finds it held prints
+
+```
+Another swarf push, pull, or daemon cycle holds the sync lock; waiting for it to finish...
+```
+
+and waits; Ctrl-C ends the wait. The kernel drops the lock when its
+holder exits, so a crashed command never leaves it stuck.
 
 ## Daemon service
 

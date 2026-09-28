@@ -55,6 +55,12 @@ func Topics() []Topic {
 			Description: "What <file>.conflict.<peer>.<ts> sidecars are and how to fix them",
 			Content:     conflictsDoc,
 		},
+		{
+			Name:        "safety",
+			Title:       "Sync Safeguards",
+			Description: "Delete holds, resync, owner tokens, and the sync lock",
+			Content:     safetyDoc,
+		},
 	}
 }
 
@@ -187,6 +193,12 @@ const configDoc = `
   remote = ""              # git remote URL or rclone remote:path
   debounce = "5s"          # wait time after last change before syncing
   exclude = [".yolo/"]     # drawer paths to keep out of the store entirely
+  pull_interval = "10m"    # daemon pulls on this interval (rclone only;
+                           # empty or "0" is off, the default)
+
+  [machine]
+  id = "laptop"            # this machine's folder on an rclone remote;
+                           # every machine needs its own
 
   [auto_sweep]
   paths = ["AGENTS.md"]    # files to sweep automatically when they appear
@@ -246,8 +258,10 @@ const sweepDoc = `
 const daemonDoc = `
   BACKGROUND DAEMON
 
-  The swarf daemon watches ~/.local/share/swarf/ for file changes and
-  syncs to your configured backend after a debounce period.
+  The swarf daemon watches every registered project's swarf/ directory
+  for file changes and syncs to your configured backend after a debounce
+  period. It pulls from other machines only when [sync] pull_interval is
+  set (see below).
 
   Starting:
 
@@ -282,6 +296,23 @@ const daemonDoc = `
   The daemon is a single process for all projects — one watcher,
   one backup, one remote.
 
+  Each sync cycle holds the sync lock, so it never runs at the same time
+  as a 'swarf push' or 'swarf pull'. When a cycle finds a project in a
+  delete hold, or finds another store's owner token on its remote
+  subtree, it logs that once rather than every cycle. See
+  'swarf docs safety'.
+
+  Scheduled pull (rclone backend only):
+
+    [sync]
+    pull_interval = "10m"
+
+    The daemon runs a pull on that interval, under the sync lock like
+    any other pull. Off by default (empty or "0"). With the git backend
+    the daemon logs once at startup that scheduled pull is not
+    supported. Each pull's start, end, failed peers, and conflict
+    sidecars go to the daemon log.
+
   PID file:   ~/.config/swarf/daemon.pid
   Log file:   ~/.config/swarf/daemon.log
 
@@ -315,6 +346,13 @@ const backendsDoc = `
 
   To pull updates:
     swarf pull     # pulls latest from remote
+
+  The git backend is single-machine. Two machines would each push their
+  own history to the one branch, so the second push fails, and a git
+  'swarf pull' updates the store without copying anything into your
+  projects' swarf/ directories. For more than one machine, use rclone.
+  pull_interval, 'swarf pull --resync', and 'swarf push --take-over' are
+  rclone-only.
 
   Rclone (Google Drive, Dropbox, S3, etc.)
   -----------------------------------------
@@ -362,9 +400,17 @@ const backendsDoc = `
   that point, so two machines never need a shared commit history — they
   just exchange file-level diffs over rclone.
 
+  After merging, pull copies the store back into each project's swarf/.
+  It deletes a project file only when swarf synced it before and the
+  store no longer has it, so a file you saved during the pull is kept.
+
   Conflicts (both machines edited the same file before syncing) are kept
   visible as sidecars: <file>.conflict.<peer>.<timestamp>. See
   'swarf docs conflicts' for the full resolution workflow.
+
+  To have the daemon pull on its own, set [sync] pull_interval (see
+  'swarf docs daemon'). For recovering lost files with
+  'swarf pull --resync', see 'swarf docs safety'.
 
   Machine id
   ----------
@@ -377,6 +423,10 @@ const backendsDoc = `
 
   Do not change the id after the first sync — the remote has a folder
   under that name.
+
+  Every machine needs its own id. If two share one, the owner token
+  (see 'swarf docs safety') stops the second from uploading over the
+  first's folder.
 `
 
 const conflictsDoc = `
@@ -468,4 +518,86 @@ const conflictsDoc = `
   Related:
     swarf docs backends    # machine ids and the multi-machine rclone setup
     swarf docs daemon      # how syncs are scheduled
+`
+
+const safetyDoc = `
+  SYNC SAFEGUARDS
+
+  Four mechanisms keep a mistake on one machine from being synced out
+  to the others. The forward mirror below is the copy from a project's
+  swarf/ into the store (run by the daemon, 'swarf push', and the start
+  of 'swarf pull'); the manifest is ~/.cache/swarf/manifests/<slug>.txt,
+  the files swarf last synced from that project.
+
+  Delete hold
+  -----------
+  A delete hold is the state a project is in when the forward mirror
+  found that applying its deletes would remove a suspiciously large
+  share of the project's tracked files, and so applied none of them.
+  It holds when:
+
+    - the project lost every tracked file, and at least 2 are at stake, or
+    - at least 10 files are at stake and they are half or more of the
+      tracked files.
+
+  "At stake" means listed in the manifest, gone from the project, and
+  still in the store. Sync excludes do not count. Adds and edits are
+  still copied during a hold, and the held files stay in the manifest,
+  so the hold lasts until you act.
+
+  The hold marker, ~/.cache/swarf/delete-holds/<slug>.json, records the
+  count, a sample of paths, and when the hold started. 'swarf status'
+  and 'swarf doctor' list held projects. Two ways out:
+
+    swarf pull                     # rclone: copies the files back from
+                                   # the store and clears the hold
+    swarf push --allow-deletes     # confirm: apply the deletes this once
+
+  With the git backend, copy the files back from
+  ~/.local/share/swarf/<slug>/ instead.
+
+  Resync
+  ------
+  A plain pull applies only what each peer changed since the last pull.
+  If this store lost files and committed the deletes, they stay lost
+  while the peer is unchanged. Resync ignores what was already pulled
+  and copies in every file each peer has now:
+
+    swarf pull --resync            # rclone backend only
+
+  It never deletes a file because a peer lacks it; the only deletes it
+  applies are the ones a peer made since the last pull. A local file
+  that differs from every version a peer ever had keeps its content and
+  gets a conflict sidecar (see 'swarf docs conflicts').
+
+  Owner token
+  -----------
+  An owner token is a random value each store keeps in
+  ~/.local/share/swarf/.git/swarf-owner. It is uploaded with the store
+  to <remote>/machines/<machine_id>/. Before uploading, swarf reads the
+  token already there: absent or this store's, it uploads; a different
+  store's, it commits locally and refuses to upload, because two
+  machines share one machine_id. If the remote token cannot be read at
+  all, the upload is skipped for that pass. 'swarf doctor' reports a
+  mismatch.
+
+  Fix it by giving this machine its own [machine] id, or, if this
+  computer replaces the old one:
+
+    swarf push --take-over
+
+  That replaces the remote subtree with this store and deletes from the
+  remote anything only the old store had there. 'swarf pull' never
+  pulls this machine's own subtree, so copy out anything you need from
+  it first (rclone copy <remote>/machines/<id> <dir>).
+
+  Sync lock
+  ---------
+  The sync lock is an advisory lock on ~/.cache/swarf/sync.lock held for
+  the whole of any push, pull, or daemon cycle, so two of them never
+  touch the store at the same time. A command that finds it held says
+  so and waits; Ctrl-C ends the wait.
+
+  Scheduled pulls ([sync] pull_interval, rclone only) take the same
+  lock. See 'swarf docs daemon'.
 `

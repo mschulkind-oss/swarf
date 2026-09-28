@@ -5,15 +5,22 @@ in, and what we want to happen vs. what currently happens. The goal is
 to verify each scenario is handled correctly — when one isn't, the
 "Currently" line points at the bug.
 
-> **Status as of 2026-05-15.** The original "empty project wipes the
-> store" bug from 2026-05-12 is partially fixed by commit `70fc2ea`
-> (manifest-tracked forward mirror in `internal/mirror/mirror.go`).
-> The fix closes the **first-run** failure mode: when a manifest is
-> absent (fresh machine, or a slug we've never observed locally), the
-> forward mirror does no deletes. The **stale-manifest mid-life**
-> failure mode — manifest already records N files, project then loses
-> some/all of them between passes — is **still live**. See Scenarios 6
-> and 7 for the precise conditions.
+> **Status as of 2026-09-28.** The work in [Sync Hardening](SYNC_HARDENING.md)
+> (tasks 1–5) has landed. The **stale-manifest mid-life** failure mode —
+> manifest already records N files, project then loses some or all of
+> them between passes — is fixed by the delete hold (Scenarios 6, 7, and
+> 8). The reverse mirror no longer deletes project files it has never
+> seen synced, the sync lock serializes push, pull, and the daemon cycle
+> (Scenario 5), `swarf pull --resync` recovers a store that already lost
+> files, and the owner token stops two machines sharing a `machine_id`
+> from overwriting each other (Scenario 12). Still open: retiring a peer
+> (Scenario 10) and a regression test for manifest corruption
+> (Scenario 11).
+>
+> *Earlier status (2026-05-15):* commit `70fc2ea` (manifest-tracked
+> forward mirror) closed the **first-run** failure mode — with no
+> manifest, the forward mirror does no deletes — but left the
+> stale-manifest case live.
 
 ## Vocabulary
 
@@ -35,6 +42,9 @@ to verify each scenario is handled correctly — when one isn't, the
   matched against a drawer-relative path (`mirror.SkipPatterns`). An
   excluded path lives in the project only: it is never copied to the
   store, never watched, and never counted as pending
+- **delete hold**, **hold marker**, **resync**, **owner token**,
+  **sync lock** — coined in [Sync Hardening](SYNC_HARDENING.md#terms-introduced-by-this-plan)
+  and defined there; used below in the same sense
 
 ## The two mirror functions
 
@@ -173,7 +183,11 @@ sequenceDiagram
 `TestMultiMachine_AEditsPushes_BInits`,
 `TestMultiMachine_BInitsFirst_ThenPullsA`,
 `TestMultiMachine_RoundTrip`. The race window with the daemon (Scenario 5)
-is the remaining concern.
+is closed by the sync lock. A file saved while pull downloads peers
+survives the reverse mirror (`TestMultiMachine_FileSavedDuringPullSurvives`,
+`TestPullKeepsProjectEditsMadeDuringDownload`), and if the peer changed
+that same file its version becomes a conflict sidecar
+(`TestPullSidecarsPeerChangeToFileSavedDuringDownload`).
 
 ## Scenario 5: Daemon is running while user runs `swarf pull`
 
@@ -189,8 +203,21 @@ flowchart LR
     end
 ```
 
-**Currently:** ⚠️ unverified. There's no lock between daemon and pull.
-With the manifest in place, two interleavings are worth thinking about:
+**Currently:** ✅ fixed by the sync lock (Sync Hardening task 4). Push,
+pull, and each daemon cycle hold an `flock(2)` on
+`~/.cache/swarf/sync.lock` for their whole run, so none of the
+interleavings below can happen any more: a daemon cycle whose debounce
+fires during a pull waits for the pull to finish, then runs its forward
+mirror against the project pull left behind. A CLI push or pull that
+finds the lock held prints a wait message and waits. Scheduled pulls
+(`[sync] pull_interval`) take the same lock. Locked in by
+`TestMultiMachine_PushWaitsForRunningPull`,
+`TestMultiMachine_PullWaitsForRunningPush`,
+`TestSyncCycleWaitsForSyncLock`, `TestSyncCycleHoldsSyncLockUntilDone`,
+and `TestAcquireExcludesSecondHolder`.
+
+*Analysis from before the lock, kept for the record.* With the manifest
+in place, two interleavings were worth thinking about:
 
 - **Daemon's forward fires during pull's reverse mirror.** Pull just
   wrote 50 of 693 files to project/swarf when the daemon's debounce
@@ -211,7 +238,7 @@ content depends on which `WalkDir` instance it reflects. A test that
 intentionally interleaves the two calls would tell us whether that's
 real.
 
-## Scenario 6: 🔴 Project files vanish between daemon passes (the bug)
+## Scenario 6: Project files vanish between daemon passes (the 2026-05-12 bug)
 
 This is what bit us on 2026-05-12. Reconstructed from `daemon.log`.
 
@@ -257,10 +284,39 @@ re-synced from a remote that already lost the files.
 **What changed since the original incident:** commit `70fc2ea`
 introduced `TrackedDir` so the *first* pass (no manifest) doesn't
 delete. That fix handles the "fresh machine" subcase. It does **not**
-help once the manifest is populated — the failure mode above is
-identical post-fix.
+help once the manifest is populated.
+
+**Currently:** ✅ fixed by the delete hold (Sync Hardening task 1).
+Before deleting anything, `TrackedDir` counts the manifest entries that
+are missing from the project and still exist in the store (sync
+excludes left out). If the project lost every tracked file and at least
+2 are at stake, or at least 10 are at stake and they are at least half
+the manifest, the pass applies none of the deletes: adds and edits
+still copy, the held paths stay in the manifest, and the hold marker
+`~/.cache/swarf/delete-holds/<slug>.json` records the count, a sample,
+and the first-seen time. The daemon logs the hold once; `swarf status`
+and `swarf doctor` show it with the two ways out — `swarf pull` (copies
+the files back from the store and clears the hold) or
+`swarf push --allow-deletes`. The 693-file wipe above would now hold.
+Locked in by `TestMultiMachine_WipedProjectHoldsDeletes`,
+`TestMultiMachine_AllowDeletesAppliesHeldDeletes`,
+`TestMultiMachine_HoldClearedByPeerDeleteIsNotRestored`,
+`TestDeleteHoldLoggedOnce`, and the unit tests in
+`internal/mirror/hold_test.go` and `internal/deletehold`.
+
+For a machine whose store had already lost files before the hold
+existed (or that confirmed a mass delete by mistake),
+`swarf pull --resync` unions every file each peer currently has back
+into the store (`TestMultiMachine_ResyncRestoresDivergedStore`).
 
 ### Mitigations to design for
+
+*The design sketch below predates the fix. What shipped differs: the
+thresholds are "every tracked file (at least 2)" or "at least 10 and at
+least half"; the marker is called a hold marker; the recovery command
+is `swarf pull` (restore) or `swarf push --allow-deletes` (confirm),
+with `swarf pull --resync` for a store that already lost files. The
+heartbeat manifest was not built.*
 
 ```mermaid
 flowchart LR
@@ -280,7 +336,7 @@ Two thresholds worth considering:
   alongside the manifest. If the count drops by more than X between
   passes, treat as suspect.
 
-## Scenario 7: 🔴 Pull's forward-mirror clobbers the store before fetching peers
+## Scenario 7: Pull's forward-mirror clobbers the store before fetching peers
 
 **Want:** pulling from a peer never makes things *worse* than before pulling.
 
@@ -305,17 +361,23 @@ sequenceDiagram
     Note over P: …project ends up empty<br/>and the prune propagates next push
 ```
 
-**Currently:** 🔴 still broken in the stale-manifest subcase.
+**Currently:** ✅ fixed by the delete hold. Pull's forward mirror is
+the same `TrackedDir` pass, so a stale project that would lose every
+tracked file (or a mass share of them) holds instead of pruning the
+store; pull then fetches peers and its reverse mirror copies the held
+files back from the store, which clears the hold.
+`TestMultiMachine_WipedProjectHoldsDeletes` runs exactly this: a pull
+from a wiped project with a populated manifest restores every file.
 
-`pullRclone` calls `mirrorProjectsToStore()` unconditionally at
-`internal/pull/pull.go:118`, *before* fetching peer state. The
-post-`70fc2ea` behavior:
+*Analysis from before the fix.* `pullRclone` called
+`mirrorProjectsToStore()` unconditionally, *before* fetching peer
+state. The post-`70fc2ea` behavior:
 
 | State at start of pull                                | Forward mirror result        | Outcome |
 |-------------------------------------------------------|------------------------------|---------|
 | No manifest (first run, fresh machine)                | No deletes                   | ✅ safe (Scenario 3) |
 | Manifest = N files, project = same N files            | No deletes                   | ✅ safe (idle case) |
-| Manifest = N files, project missing K of them         | K deletes against the store  | 🔴 the bug |
+| Manifest = N files, project missing K of them         | K deletes against the store  | 🔴 the bug (now held when K is a mass delete) |
 
 The middle column is what `TrackedDir` fixed. The right column is what
 the user originally reported — and it's still live.
@@ -336,8 +398,18 @@ nice-to-have at best and a foot-gun at worst.
    never deletions.** Pull is then strictly additive on the project
    side.
 
-Recommendation: **(1)**. The daemon does this work; pull doing it
-again is a duplication that introduces risk without buying anything.
+~~Recommendation: **(1)**. The daemon does this work; pull doing it
+again is a duplication that introduces risk without buying anything.~~
+
+**Withdrawn** (see [Sync Hardening](SYNC_HARDENING.md#what-changed-from-the-earlier-recommendation)).
+The reverse mirror at the end of a pull deletes project files that are
+not in the store, so without the forward mirror a file saved moments
+before a pull — before the daemon's debounce fired, or with no daemon
+running — would never reach the store and would be deleted from the
+project. `TestMultiMachine_LocalEditSurvivesPull` pins that case. The
+forward mirror stays in pull; candidate **(2)**, the delete hold, is
+what shipped, and the reverse mirror now deletes only files the
+manifest lists (Sync Hardening task 2).
 
 ## Scenario 8: User deletes the entire project/swarf/ directory by accident
 
@@ -355,10 +427,14 @@ flowchart TD
 ```
 
 **Currently:** ✅ for the "directory removed" case —
-`mirrorAllProjects` in `runner.go:78-90` skips when `paths.IsDir(src)`
+`mirrorAllProjects` in `runner.go` skips when `paths.IsDir(src)`
 is false. ✅ for the "directory still exists, never had content"
-case — manifest is absent. 🔴 for the "directory still exists, used
-to have content, now emptied" case — that's Scenario 6 in miniature.
+case — manifest is absent. ✅ for the "directory still exists, used
+to have content, now emptied" case — the delete hold's "every tracked
+file" rule holds it as soon as at least 2 files are at stake (a
+one-file project losing its file is an ordinary delete).
+Locked in by `TestTrackedDirHoldsWhenProjectLosesEveryFile` and
+`TestTrackedDirSingleFileDeleteDoesNotHold`.
 
 ## Scenario 9: Two machines edit the same file between pulls
 
@@ -398,7 +474,8 @@ flowchart LR
 
 **Currently:** ⚠️ unverified. There's no UX for "decommission a peer."
 The `refs/swarf-peers/<peer>` ref tracks last-seen, but if a peer's
-remote dir is never deleted, its frozen state keeps showing up.
+remote dir is never deleted, its frozen state keeps showing up. Out of
+scope for Sync Hardening; still open.
 
 ## Scenario 11: Manifest corruption / partial write
 
@@ -414,7 +491,9 @@ flowchart TD
 
 **Currently:** ✅ defensive by accident. `readManifest` returns an
 empty map on any read error. `os.Remove` errors are swallowed. Worth a
-test to lock this in.
+test to lock this in; still none. The delete hold adds a second line of
+defense: a garbage manifest that lists many files the project lacks
+but the store has would hold rather than delete.
 
 ## Scenario 12: Bringing up a second computer (the user's current scenario)
 
@@ -463,17 +542,25 @@ right way given the post-`70fc2ea` code. Specifically:
 **What could still go wrong (worth pinning down):**
 - **Same `machine_id` on both computers.** `DefaultMachineID()` slugs
   the hostname. If both machines happen to share a hostname (e.g.
-  generic `macbook` defaults), they collide and the second push wipes
-  the first's remote subtree. No protection in code. Worth a
-  `swarf doctor` check that warns when listPeers returns the same id
-  as `machine_id`. *(Smoking gun candidate for the user's report.)*
+  generic `macbook` defaults), they collide. ✅ Now protected by the
+  owner token (Sync Hardening task 5): each store keeps a random token
+  in `.git/swarf-owner`, and before uploading the rclone backend reads
+  the token already in `<remote>/machines/<machine_id>/`. A different
+  store's token means the push commits locally and refuses to upload;
+  an unreadable one skips the upload for that pass. `swarf doctor`
+  reports the mismatch, and `swarf push --take-over` uploads anyway for
+  a machine that genuinely replaces the old one. Locked in by
+  `TestMultiMachine_SharedMachineIDRefusesSecondPush`, the
+  `internal/daemon/backends/owner_test.go` suite, and
+  `TestCheckMachineOwner`.
 - **Daemon not running on B.** Init offers the service install but a
   user on a fresh second computer who declines / hasn't been root /
   is in a non-systemd container won't have a daemon. `swarf pull`
   alone leaves the store correct; `remote/machines/B` is *not*
   populated until something pushes. If the user expects pull to also
   push back, this looks like "wiped" because B's remote subtree is
-  empty even after pull.
+  empty even after pull. (Still true: pull never pushes. With a daemon,
+  `[sync] pull_interval` now makes pulling automatic as well.)
 - **Project/swarf existed before init.** If the project dir already
   had stale content from an earlier experiment, that content goes
   into the manifest on first pass. Subsequent cycles where it's
@@ -486,43 +573,60 @@ right way given the post-`70fc2ea` code. Specifically:
 **Suggested next step:** add an integration test that mirrors the
 *exact* user-reported flow (init then pull on a fresh machine, with
 the daemon not running, then run `swarf push` once to confirm B's
-remote subtree gets populated without affecting A's), and a
-`swarf doctor` check for machine_id collision against `listPeers`.
+remote subtree gets populated without affecting A's). The
+`machine_id` collision check landed as the owner token rather than a
+`listPeers` comparison, since a shared id never shows up as a peer.
+`TestMultiMachine_FreshMachineBootstrapsViaPull` and
+`TestMultiMachine_WipedProjectHoldsDeletes` cover most of the flow but
+do not assert A's subtree is untouched.
 
 ## Verification matrix
 
 | # | Scenario | Status | Test |
 |---|----------|--------|------|
-| 1 | Edit propagates | ✅ | daemon path; integration round-trip |
+| 1 | Edit propagates | ✅ | daemon path; `TestMultiMachine_RoundTrip` |
 | 2 | Delete propagates | ✅ | `TestMultiMachine_DeletePropagates` |
 | 3 | First run, empty | ✅ | `TestMultiMachine_EmptyProjectDoesNotWipeStore` |
-| 4 | Pull peer files | ✅ | `TestMultiMachine_AEditsPushes_BInits` etc |
-| 5 | Daemon vs pull race | ⚠️ | none — needs interleaving test |
-| 6 | Project wipe → store wipe | 🔴 | none — bug, partial fix only |
-| 7 | Pull's forward clobbers (stale manifest) | 🔴 | none — bug |
-| 8 | rm -rf swarf/ | ✅ for absent dir; 🔴 for emptied dir | partial |
-| 9 | Cross-machine conflict | ✅ | `TestPullMultiPeerConflict` |
-| 10 | Retired peer | ⚠️ | none |
+| 4 | Pull peer files | ✅ | `TestMultiMachine_AEditsPushes_BInits` etc; `TestMultiMachine_FileSavedDuringPullSurvives` |
+| 5 | Daemon vs pull race | ✅ sync lock | `TestMultiMachine_PushWaitsForRunningPull`, `TestMultiMachine_PullWaitsForRunningPush`, `TestSyncCycleWaitsForSyncLock` |
+| 6 | Project wipe → store wipe | ✅ delete hold | `TestMultiMachine_WipedProjectHoldsDeletes`, `TestMultiMachine_AllowDeletesAppliesHeldDeletes` |
+| 7 | Pull's forward clobbers (stale manifest) | ✅ delete hold | `TestMultiMachine_WipedProjectHoldsDeletes` (pull from a wiped project) |
+| 8 | rm -rf swarf/ | ✅ | `TestTrackedDirHoldsWhenProjectLosesEveryFile` |
+| 9 | Cross-machine conflict | ✅ | `TestPullMultiPeerConflict`, `TestMultiMachine_ConflictingEdits` |
+| 10 | Retired peer | ⚠️ out of scope | none |
 | 11 | Manifest corruption | ✅ defensive | none — should add |
-| 12 | Second-computer bootstrap | ✅ on paper | none for the exact flow |
+| 12 | Second-computer bootstrap | ✅; shared `machine_id` refused | `TestMultiMachine_FreshMachineBootstrapsViaPull`, `TestMultiMachine_SharedMachineIDRefusesSecondPush` |
+| — | Store already lost files | ✅ `swarf pull --resync` | `TestMultiMachine_ResyncRestoresDivergedStore`, `TestPullResync*` |
+| — | Scheduled pull | ✅ `[sync] pull_interval` | `TestMultiMachine_DaemonScheduledPull`, `TestMultiMachine_DaemonScheduledPullGitBackendNote`, `TestPullSchedule` |
 
 ## Proposed work, in priority order
 
-1. **Remove `mirrorProjectsToStore()` from `pullRclone`** (Scenario 7
-   fix candidate 1). Smallest diff, biggest safety win — the daemon
-   already covers this direction.
-2. **Mass-delete sanity guard in `TrackedDir`**. Fixes the residual
-   risk in Scenarios 6 and 8 (emptied-dir subcase). Threshold + log
-   + quarantine marker surfaced by `swarf doctor`.
-3. **`machine_id` collision check in `swarf doctor`**. Cheap to
-   implement; closes off the most likely cause of "B's pull wiped A's
-   data" reports.
-4. **Integration test for Scenario 12.** The exact user-reported
-   second-computer flow, end-to-end.
-5. **Daemon-vs-pull race test** (Scenario 5). Concurrent invocation,
-   assert eventual consistency.
-6. **Peer decommission UX** (Scenario 10). `swarf forget-peer <id>`
+Done in [Sync Hardening](SYNC_HARDENING.md):
+
+- ~~**Remove `mirrorProjectsToStore()` from `pullRclone`**~~ —
+  **withdrawn**: without pull's forward mirror, the reverse mirror would
+  delete a file saved just before the pull (see Scenario 7). The forward
+  mirror stays; the delete hold makes it safe.
+- ✅ **Mass-delete sanity guard in `TrackedDir`** — the delete hold
+  (task 1), surfaced by `swarf status` and `swarf doctor`.
+- ✅ **Reverse mirror deletes only what it has seen synced** (task 2).
+- ✅ **Recovery for a store that already lost files** —
+  `swarf pull --resync` (task 3).
+- ✅ **Daemon-vs-pull race** (Scenario 5) — the sync lock (task 4),
+  with integration tests that run a push and a pull against each other.
+- ✅ **Scheduled pull** — `[sync] pull_interval` (task 4).
+- ✅ **`machine_id` collision** — the owner token, `swarf doctor`'s
+  "machine owner" check, and `swarf push --take-over` (task 5).
+
+Still open:
+
+1. **Integration test for Scenario 12.** The exact user-reported
+   second-computer flow, end-to-end, asserting A's subtree is untouched.
+2. **Peer decommission UX** (Scenario 10). `swarf forget-peer <id>`
    that drops `refs/swarf-peers/<id>` and prompts the user to delete
    the remote subtree.
-7. **Manifest-corruption regression tests** (Scenario 11). Pin down
+3. **Manifest-corruption regression tests** (Scenario 11). Pin down
    the defensive behavior.
+4. **Reinstalled machine under its old `machine_id`.** Pull skips its
+   own id, so it never pulls its old subtree back; other peers still
+   have the data.
