@@ -379,3 +379,36 @@ func TestDirDoesNotCopyExcludedContent(t *testing.T) {
 	}
 	assertFile(t, filepath.Join(project, "shared.md"), "ok")
 }
+
+// Scenario 3 (Sync Scenarios): the first forward pass for a project has
+// no manifest yet, so it cannot tell a store file the project never had
+// from one the user deleted. It copies the project in, deletes nothing
+// from the store even when the project is empty, and writes the
+// manifest so later passes can tell.
+func TestTrackedDirWithoutManifestDeletesNothing(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	manifest := filepath.Join(t.TempDir(), "m.txt")
+
+	os.MkdirAll(filepath.Join(dst, "docs"), 0o755)
+	os.WriteFile(filepath.Join(dst, "docs", "peer.md"), []byte("from a peer"), 0o644)
+
+	h, err := TrackedDir(src, dst, manifest, nil, Guard{})
+	if err != nil {
+		t.Fatalf("TrackedDir from an empty project: %v", err)
+	}
+	if h != nil {
+		t.Errorf("nothing is at stake without a manifest, got hold %+v", h)
+	}
+	assertFile(t, filepath.Join(dst, "docs", "peer.md"), "from a peer")
+
+	os.WriteFile(filepath.Join(src, "mine.md"), []byte("mine"), 0o644)
+	if _, err := TrackedDir(src, dst, manifest, nil, Guard{}); err != nil {
+		t.Fatalf("TrackedDir: %v", err)
+	}
+	assertFile(t, filepath.Join(dst, "docs", "peer.md"), "from a peer")
+	assertFile(t, filepath.Join(dst, "mine.md"), "mine")
+	if _, ok := readManifest(manifest)["mine.md"]; !ok {
+		t.Error("the pass should record mine.md in the manifest")
+	}
+}

@@ -156,7 +156,7 @@ flowchart TD
 
 **Currently:** ✅ works. `readManifest` returns an empty set when the
 file is absent, so the delete loop in `TrackedDir` has nothing to act on.
-Locked in by `TestPushDoesNotWipeStoreOnFirstRun` (push package) and
+Locked in by `TestTrackedDirWithoutManifestDeletesNothing` (mirror package) and
 `TestMultiMachine_EmptyProjectDoesNotWipeStore` (integration).
 
 ## Scenario 4: Pull from a peer that has files we don't
