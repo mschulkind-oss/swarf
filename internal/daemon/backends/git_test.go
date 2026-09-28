@@ -199,3 +199,19 @@ func TestGitSyncTakeOverRefusedByRemote(t *testing.T) {
 		t.Errorf("remote machines/box = %q; the refused push must leave it at %q", got, theirs)
 	}
 }
+
+// A sync pushes only what the remote does not have: with HEAD already
+// pushed and nothing new, it does not contact the remote at all (here
+// the remote is gone, and the sync still reports no changes).
+func TestGitSyncSkipsPushWhenAlreadyPushed(t *testing.T) {
+	newGitFixture(t)
+	b := &GitBackend{MachineID: "box"}
+	if res := b.Sync(context.Background(), paths.StoreDir); !res.Success || !res.Pushed {
+		t.Fatalf("first sync should push: %+v", res)
+	}
+	gitexec.SetRemoteURL(paths.StoreDir, "origin", filepath.Join(t.TempDir(), "missing.git"))
+	res := b.Sync(context.Background(), paths.StoreDir)
+	if !res.Success || res.Pushed || res.Message != "No changes to sync" {
+		t.Errorf("with HEAD already pushed, the sync should not push: %+v", res)
+	}
+}
