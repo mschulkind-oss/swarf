@@ -210,9 +210,10 @@ func CheckMachineOwner(gc *config.GlobalConfig) Check {
 	if local, has := backends.ReadOwnerToken(paths.StoreDir); has && local == remote {
 		return Check{"machine owner", true, fmt.Sprintf("Remote subtree %s belongs to this store", target)}
 	}
-	msg := strings.Replace(backends.OwnerMismatch(gc.EffectiveMachineID(), target),
-		".\n", ".\n    Pushes commit locally but do not upload until this is resolved.\n", 1)
-	msg = strings.ReplaceAll(msg, "\n  ", "\n    Fix: ")
+	// Turn the ways out into Fix lines first, so the note inserted after
+	// the first line is not mistaken for one.
+	msg := strings.ReplaceAll(backends.OwnerMismatch(gc.EffectiveMachineID(), target), "\n  ", "\n    Fix: ")
+	msg = strings.Replace(msg, ".\n", ".\n    Pushes commit locally but do not upload until this is resolved.\n", 1)
 	return Check{"machine owner", false, msg}
 }
 

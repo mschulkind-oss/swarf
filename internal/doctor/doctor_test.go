@@ -414,6 +414,14 @@ func TestCheckMachineOwner(t *testing.T) {
 			t.Errorf("doctor message missing %q:\n%s", want, c.Msg)
 		}
 	}
+	// Only the ways out are Fix lines; the note that pushes still commit
+	// locally is not one.
+	if !strings.Contains(c.Msg, "\n    Pushes commit locally") || strings.Contains(c.Msg, "Fix:   Pushes") {
+		t.Errorf("the local-commit note should be its own line, not a Fix:\n%s", c.Msg)
+	}
+	if n := strings.Count(c.Msg, "Fix: "); n != 2 {
+		t.Errorf("doctor message should list exactly two fixes, got %d:\n%s", n, c.Msg)
+	}
 
 	if c := doctor.CheckMachineOwner(&config.GlobalConfig{Backend: "git", Remote: remote}); !c.OK || c.Msg != "" {
 		t.Errorf("git backend should skip the check, got %+v", c)
