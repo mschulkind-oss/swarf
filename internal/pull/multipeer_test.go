@@ -1310,6 +1310,12 @@ func TestPullCancelledMirrorsBackWhatItApplied(t *testing.T) {
 	if strings.Contains(string(calls), "/machines/c") {
 		t.Errorf("no download should start for a peer after the cancel; rclone transfers:\n%s", calls)
 	}
+	// The download would fail on its own under the ended context, so
+	// check that pull did not start on peer c at all: it makes the
+	// peer's cache directory before downloading.
+	if _, err := os.Stat(paths.PeerCacheDir("c")); !os.IsNotExist(err) {
+		t.Errorf("pull should skip the peers after the cancel, but started on c (cache stat err = %v)", err)
+	}
 }
 
 // A pull cancelled before it applied anything from a peer leaves the
