@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests simulate two swarf machines sharing one rclone "remote"
@@ -1198,5 +1199,63 @@ func TestMultiMachine_ResyncRestoresDivergedStore(t *testing.T) {
 	remote := filepath.Join(fakeRemote, "store", "machines", "b", a.slug(), "README.md")
 	if _, err := os.Stat(remote); err != nil {
 		t.Errorf("B's push after --resync should upload the restored files: %v", err)
+	}
+}
+
+// Scenario 5: a push started while a pull is running must not touch the
+// store until the pull is done. The push finds the sync lock held, says
+// so, waits, and then runs to completion.
+func TestMultiMachine_PushWaitsForRunningPull(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.push()
+
+	// While B's pull is downloading A, start a push in the background
+	// (all descriptors redirected, so the pull does not wait on its
+	// output), give it time to reach the lock, and record whether it
+	// finished while the pull was still running.
+	work := t.TempDir()
+	pushOut := filepath.Join(work, "push.out")
+	early := filepath.Join(work, "finished-early")
+	hook := filepath.Join(work, "hook.sh")
+	script := fmt.Sprintf(`
+( '%[1]s' push > '%[2]s' 2>&1 < /dev/null; echo "EXIT $?" >> '%[2]s' ) > /dev/null 2>&1 < /dev/null &
+for i in $(seq 50); do grep -q 'sync lock' '%[2]s' 2>/dev/null && break; sleep 0.1; done
+sleep 0.5
+if grep -q EXIT '%[2]s'; then touch '%[3]s'; fi
+`, swarfBin, pushOut, early)
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b.env = []string{"FAKE_RCLONE_AFTER_DOWNLOAD=bash '" + hook + "'"}
+	pullOut := mustSwarf(t, b, "pull")
+	b.env = nil
+
+	var got string
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(pushOut)
+		if got = string(data); strings.Contains(got, "EXIT") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(got, "EXIT 0") {
+		t.Fatalf("the waiting push should finish once the pull is done\n--- push output ---\n%s\n--- pull output ---\n%s", got, pullOut)
+	}
+	if _, err := os.Stat(early); err == nil {
+		t.Fatalf("the push ran while the pull held the store\n--- push output ---\n%s", got)
+	}
+	if !strings.Contains(got, "sync lock") {
+		t.Fatalf("the push should say it is waiting for the sync lock\n--- push output ---\n%s", got)
 	}
 }

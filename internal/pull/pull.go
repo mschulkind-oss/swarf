@@ -2,6 +2,7 @@ package pull
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
+	"github.com/mschulkind-oss/swarf/internal/synclock"
 )
 
 var (
@@ -48,16 +50,27 @@ type Options struct {
 	Resync bool
 }
 
-func Run(opts Options) error {
-	_, err := RunWithResult(opts)
+// Run pulls once. ctx bounds only the wait for the sync lock: a pull
+// that finds another push, pull, or daemon cycle holding it waits, and
+// gives up if ctx ends first.
+func Run(ctx context.Context, opts Options) error {
+	_, err := RunWithResult(ctx, opts)
 	return err
 }
 
-func RunWithResult(opts Options) (*Result, error) {
+func RunWithResult(ctx context.Context, opts Options) (*Result, error) {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
 		return nil, ErrNoConfig
 	}
+
+	// Hold the sync lock for the whole pull, so a daemon cycle or a
+	// push cannot mirror or commit the store in the middle of it.
+	release, err := synclock.Acquire(ctx, func() { console.Info(synclock.WaitMessage) })
+	if err != nil {
+		return nil, fmt.Errorf("sync lock: %w", err)
+	}
+	defer release()
 
 	switch gc.Backend {
 	case "git":

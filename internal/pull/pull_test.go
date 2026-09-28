@@ -1,6 +1,7 @@
 package pull
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -14,7 +15,7 @@ import (
 
 func TestPullNoConfig(t *testing.T) {
 	testutil.GitRepo(t)
-	err := Run(Options{})
+	err := Run(context.Background(), Options{})
 	if err != ErrNoConfig {
 		t.Fatalf("expected ErrNoConfig, got %v", err)
 	}
@@ -24,7 +25,7 @@ func TestPullGitNoStoreNoRemote(t *testing.T) {
 	testutil.GitRepo(t)
 	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
-	if err := Run(Options{}); err != ErrNotGitRepo {
+	if err := Run(context.Background(), Options{}); err != ErrNotGitRepo {
 		t.Fatalf("expected ErrNotGitRepo when store missing and no remote, got %v", err)
 	}
 }
@@ -47,7 +48,7 @@ func TestPullGitBootstrapsFromRemote(t *testing.T) {
 	paths.StoreDir = filepath.Join(t.TempDir(), "fresh-store")
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s"})
 
-	if err := Run(Options{}); err != nil {
+	if err := Run(context.Background(), Options{}); err != nil {
 		t.Fatalf("pull: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(paths.StoreDir, "seed.txt")); err != nil {
@@ -58,7 +59,7 @@ func TestPullGitBootstrapsFromRemote(t *testing.T) {
 func TestPullUnknownBackend(t *testing.T) {
 	testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "unknown", Remote: "", Debounce: "5s"})
-	err := Run(Options{})
+	err := Run(context.Background(), Options{})
 	if err == nil {
 		t.Fatal("expected error for unknown backend")
 	}
@@ -92,7 +93,7 @@ func TestPullGitSuccess(t *testing.T) {
 
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: bare, Debounce: "5s"})
 
-	err := Run(Options{})
+	err := Run(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -103,7 +104,7 @@ func TestPullGitPullFailure(t *testing.T) {
 	testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
 
-	err := Run(Options{})
+	err := Run(context.Background(), Options{})
 	if err == nil {
 		t.Fatal("expected error from git pull with no remote")
 	}
@@ -122,7 +123,7 @@ func TestPullRcloneNotInstalled(t *testing.T) {
 	os.Setenv("PATH", "")
 	defer os.Setenv("PATH", origPath)
 
-	err := Run(Options{})
+	err := Run(context.Background(), Options{})
 	if err == nil {
 		t.Fatal("expected error when rclone not installed")
 	}
@@ -173,7 +174,7 @@ esac
 	runGit(t, paths.StoreDir, "add", "-A")
 	runGit(t, paths.StoreDir, "commit", "-m", "seed")
 
-	err := Run(Options{})
+	err := Run(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -202,7 +203,7 @@ func TestPullRcloneFailure(t *testing.T) {
 	runGit(t, paths.StoreDir, "add", "-A")
 	runGit(t, paths.StoreDir, "commit", "-m", "seed")
 
-	err := Run(Options{})
+	err := Run(context.Background(), Options{})
 	if err == nil {
 		t.Fatal("expected error from failing rclone")
 	}
@@ -225,7 +226,7 @@ func runGit(t *testing.T, dir string, args ...string) {
 func TestPullGitResyncRejected(t *testing.T) {
 	testutil.InitializedSwarf(t)
 	config.WriteGlobalConfig(&config.GlobalConfig{Backend: "git", Remote: "", Debounce: "5s"})
-	if err := Run(Options{Resync: true}); !errors.Is(err, ErrResyncNeedsRclone) {
+	if err := Run(context.Background(), Options{Resync: true}); !errors.Is(err, ErrResyncNeedsRclone) {
 		t.Fatalf("expected ErrResyncNeedsRclone, got %v", err)
 	}
 }

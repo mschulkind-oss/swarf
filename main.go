@@ -280,7 +280,7 @@ Resync
 	}
 	resync := cmd.Flags().Bool("resync", false, "Union every file each peer has into the store, ignoring what was already pulled (rclone backend only)")
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		return pull.Run(pull.Options{Resync: *resync})
+		return pull.Run(cmd.Context(), pull.Options{Resync: *resync})
 	}
 	return cmd
 }

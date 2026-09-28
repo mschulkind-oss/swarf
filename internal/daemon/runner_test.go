@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
+	"github.com/mschulkind-oss/swarf/internal/daemon/backends"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
+	"github.com/mschulkind-oss/swarf/internal/synclock"
 	"github.com/mschulkind-oss/swarf/internal/testutil"
 )
 
@@ -172,5 +174,72 @@ func TestDeleteHoldLoggedOnce(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(paths.StoreDir, slug, "a.md")); err != nil {
 		t.Error("the daemon's held pass must not delete from the store")
+	}
+}
+
+// recordingBackend is a SyncBackend that only records that Sync ran.
+type recordingBackend struct{ synced chan struct{} }
+
+func (b *recordingBackend) Sync(context.Context, string) backends.SyncResult {
+	b.synced <- struct{}{}
+	return backends.SyncResult{Success: true}
+}
+func (b *recordingBackend) HasChanges(string) bool { return false }
+
+// A daemon cycle that finds the sync lock held — a 'swarf pull' or
+// 'swarf push' is running — waits for it instead of syncing alongside.
+func TestSyncCycleWaitsForSyncLock(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	if err := config.RegisterDrawer(filepath.Base(repo), repo); err != nil {
+		t.Fatal(err)
+	}
+	release, err := synclock.Acquire(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := &recordingBackend{synced: make(chan struct{}, 1)}
+	done := make(chan struct{})
+	go func() { syncCycle(context.Background(), b, nil); close(done) }()
+
+	select {
+	case <-b.synced:
+		t.Fatal("the cycle synced while another holder had the sync lock")
+	case <-time.After(300 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the cycle should run once the sync lock is free")
+	}
+	if len(b.synced) != 1 {
+		t.Fatal("the cycle should sync once it has the sync lock")
+	}
+}
+
+// A cycle still waiting for the lock at shutdown gives up without
+// syncing.
+func TestSyncCycleGivesUpOnShutdown(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	release, err := synclock.Acquire(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	b := &recordingBackend{synced: make(chan struct{}, 1)}
+	done := make(chan struct{})
+	go func() { syncCycle(ctx, b, nil); close(done) }()
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a waiting cycle should return promptly on shutdown")
+	}
+	if len(b.synced) != 0 {
+		t.Fatal("a cycle that never got the lock must not sync")
 	}
 }

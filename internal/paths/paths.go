@@ -49,6 +49,13 @@ func DeleteHoldMarker(slug string) string {
 	return filepath.Join(CacheDir, "delete-holds", slug+".json")
 }
 
+// SyncLockFile returns the path of the sync lock: the advisory lock
+// held for the duration of any push, pull, or daemon cycle so two of
+// them never touch the store at the same time. See package synclock.
+func SyncLockFile() string {
+	return filepath.Join(CacheDir, "sync.lock")
+}
+
 func ProjectSlug(hostRoot string) string {
 	resolved, err := filepath.EvalSymlinks(hostRoot)
 	if err != nil {

@@ -22,6 +22,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/initialize"
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
+	"github.com/mschulkind-oss/swarf/internal/synclock"
 )
 
 var ErrNoConfig = errors.New("no global config found — run 'swarf init' first")
@@ -33,14 +34,23 @@ type Options struct {
 	AllowDeletes bool
 }
 
-// Run executes one full push cycle. The context governs the network portion
-// of the backend sync, so an interrupted `swarf push` (Ctrl-C) aborts the
-// in-flight rclone/git-push rather than blocking.
+// Run executes one full push cycle. The context governs the wait for the
+// sync lock and the network portion of the backend sync, so an
+// interrupted `swarf push` (Ctrl-C) stops waiting or aborts the in-flight
+// rclone/git-push rather than blocking.
 func Run(ctx context.Context, opts Options) error {
 	gc := config.ReadGlobalConfig()
 	if gc == nil {
 		return ErrNoConfig
 	}
+
+	// Hold the sync lock for the whole cycle, so a pull or a daemon
+	// cycle cannot rewrite the store or the manifests under us.
+	release, err := synclock.Acquire(ctx, func() { console.Info(synclock.WaitMessage) })
+	if err != nil {
+		return fmt.Errorf("sync lock: %w", err)
+	}
+	defer release()
 
 	// Make sure the store exists — same auto-bootstrap behavior pull uses.
 	if err := initialize.EnsureStore("", gc); err != nil {

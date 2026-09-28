@@ -17,6 +17,7 @@ import (
 	"github.com/mschulkind-oss/swarf/internal/mirror"
 	"github.com/mschulkind-oss/swarf/internal/paths"
 	"github.com/mschulkind-oss/swarf/internal/sweep"
+	"github.com/mschulkind-oss/swarf/internal/synclock"
 )
 
 func Run(ctx context.Context) error {
@@ -32,30 +33,48 @@ func Run(ctx context.Context) error {
 	}
 
 	backend := makeBackend(gc)
-	debouncer := NewDebouncer(duration, func() {
-		// Daemon cycle:
-		//   1. Re-link: restore any missing symlinks from swarf/.links/
-		//   2. Forward mirror: project/swarf → store/<slug>/
-		//   3. Update store README
-		//   4. Backend sync: commit + push
-		// The CLI 'swarf push' runs the same steps via internal/push.
-		//
-		// ctx is the daemon's signal context: on SIGTERM it's cancelled,
-		// which kills any in-flight rclone/git-push child so shutdown is
-		// prompt rather than blocking on a slow network transfer.
-		relinkAllProjects()
-		mirrorAllProjects(mirror.SkipPatterns(gc.Exclude))
-		initialize.WriteStoreReadme()
-		result := backend.Sync(ctx, paths.StoreDir)
-		if result.Success && result.FilesChanged > 0 {
-			slog.Info("sync: " + result.Message)
-		} else if !result.Success {
-			slog.Warn("sync: " + result.Message)
-		}
-	})
+	skip := mirror.SkipPatterns(gc.Exclude)
+	debouncer := NewDebouncer(duration, func() { syncCycle(ctx, backend, skip) })
 	defer debouncer.Cancel()
 
-	return watchProjects(ctx, debouncer, mirror.SkipPatterns(gc.Exclude))
+	return watchProjects(ctx, debouncer, skip)
+}
+
+// syncCycle is one daemon cycle:
+//  1. Re-link: restore any missing symlinks from swarf/.links/
+//  2. Forward mirror: project/swarf → store/<slug>/
+//  3. Update store README
+//  4. Backend sync: commit + push
+//
+// The CLI 'swarf push' runs the same steps via internal/push.
+//
+// ctx is the daemon's signal context: on SIGTERM it's cancelled, which
+// kills any in-flight rclone/git-push child so shutdown is prompt rather
+// than blocking on a slow network transfer.
+//
+// The whole cycle holds the sync lock, so a 'swarf push' or 'swarf pull'
+// run meanwhile waits for it rather than mirroring into the same store,
+// and vice versa.
+func syncCycle(ctx context.Context, backend backends.SyncBackend, skip mirror.Skip) {
+	release, err := synclock.Acquire(ctx, func() {
+		slog.Info("sync: waiting for the sync lock held by another push or pull")
+	})
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("sync: could not take the sync lock", "err", err)
+		}
+		return
+	}
+	defer release()
+	relinkAllProjects()
+	mirrorAllProjects(skip)
+	initialize.WriteStoreReadme()
+	result := backend.Sync(ctx, paths.StoreDir)
+	if result.Success && result.FilesChanged > 0 {
+		slog.Info("sync: " + result.Message)
+	} else if !result.Success {
+		slog.Warn("sync: " + result.Message)
+	}
 }
 
 // loggedRelinkWarnings remembers relink warnings we've already emitted so a

@@ -1,6 +1,7 @@
 package pull
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -198,7 +199,7 @@ func TestPullMultiPeerFastForward(t *testing.T) {
 
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult(Options{})
+	res, err := RunWithResult(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestPullMultiPeerConflict(t *testing.T) {
 
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult(Options{})
+	res, err := RunWithResult(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestPullLegacyLayoutDetected(t *testing.T) {
 
 	setupStore(t, "self")
 
-	if _, err := RunWithResult(Options{}); err == nil || !strings.Contains(err.Error(), "legacy flat layout") {
+	if _, err := RunWithResult(context.Background(), Options{}); err == nil || !strings.Contains(err.Error(), "legacy flat layout") {
 		t.Fatalf("expected legacy-layout error, got %v", err)
 	}
 }
@@ -303,7 +304,7 @@ func TestPullNoPeersYet(t *testing.T) {
 
 	setupStore(t, "self")
 
-	res, err := RunWithResult(Options{})
+	res, err := RunWithResult(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -337,7 +338,7 @@ func TestPullBootstrapEmptyStore(t *testing.T) {
 		MachineID: "self",
 	})
 
-	res, err := RunWithResult(Options{})
+	res, err := RunWithResult(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -372,7 +373,7 @@ func TestPullPropagatesDelete(t *testing.T) {
 
 	// First pull establishes refs/swarf-peers/peer at the seed commit.
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 
@@ -382,7 +383,7 @@ func TestPullPropagatesDelete(t *testing.T) {
 	runGit(t, peerStore, "commit", "-m", "drop doomed")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult(Options{})
+	res, err := RunWithResult(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("second pull: %v", err)
 	}
@@ -417,7 +418,7 @@ func TestPullDeleteVsLocalModify(t *testing.T) {
 
 	// Establish last-seen.
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 
@@ -432,7 +433,7 @@ func TestPullDeleteVsLocalModify(t *testing.T) {
 	runGit(t, peerStore, "commit", "-m", "peer delete")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult(Options{})
+	res, err := RunWithResult(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -485,7 +486,7 @@ func TestPullUnrelatedHistories(t *testing.T) {
 
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	res, err := RunWithResult(Options{})
+	res, err := RunWithResult(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -534,7 +535,7 @@ func TestPullPostUpgradeMergeBase(t *testing.T) {
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
 	headBefore := runGitOut(t, paths.StoreDir, "rev-parse", "HEAD")
-	res, err := RunWithResult(Options{})
+	res, err := RunWithResult(context.Background(), Options{})
 	if err != nil {
 		t.Fatalf("pull: %v", err)
 	}
@@ -599,7 +600,7 @@ func TestPullReverseMirrorsIntoProject(t *testing.T) {
 	runGit(t, peerStore, "commit", "-m", "add new.txt")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("pull: %v", err)
 	}
 
@@ -718,7 +719,7 @@ func TestPullResync(t *testing.T) {
 	runGit(t, paths.StoreDir, "fetch", peerStore)
 	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 
@@ -730,7 +731,7 @@ func TestPullResync(t *testing.T) {
 	runGit(t, paths.StoreDir, "add", "-A")
 	runGit(t, paths.StoreDir, "commit", "-m", "diverge")
 
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("plain pull: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(paths.StoreDir, "lost.txt")); !os.IsNotExist(err) {
@@ -744,7 +745,7 @@ func TestPullResync(t *testing.T) {
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 
 	peerHead := gitexec.RevParseHEAD(peerStore)
-	res, err := RunWithResult(Options{Resync: true})
+	res, err := RunWithResult(context.Background(), Options{Resync: true})
 	if err != nil {
 		t.Fatalf("resync: %v", err)
 	}
@@ -793,7 +794,7 @@ func TestPullResyncAppliesPendingPeerDeletes(t *testing.T) {
 	runGit(t, paths.StoreDir, "fetch", peerStore)
 	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 
@@ -805,7 +806,7 @@ func TestPullResyncAppliesPendingPeerDeletes(t *testing.T) {
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
 	peerHead := gitexec.RevParseHEAD(peerStore)
 
-	res, err := RunWithResult(Options{Resync: true})
+	res, err := RunWithResult(context.Background(), Options{Resync: true})
 	if err != nil {
 		t.Fatalf("resync: %v", err)
 	}
@@ -823,7 +824,7 @@ func TestPullResyncAppliesPendingPeerDeletes(t *testing.T) {
 	}
 
 	headBefore := gitexec.RevParseHEAD(paths.StoreDir)
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("follow-up plain pull: %v", err)
 	}
 	if got := gitexec.RevParseHEAD(paths.StoreDir); got != headBefore {
@@ -859,7 +860,7 @@ func TestPullResyncUpdatesOlderPeerVersion(t *testing.T) {
 	runGit(t, paths.StoreDir, "fetch", peerStore)
 	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 
@@ -868,7 +869,7 @@ func TestPullResyncUpdatesOlderPeerVersion(t *testing.T) {
 	runGit(t, paths.StoreDir, "add", "-A")
 	runGit(t, paths.StoreDir, "commit", "-m", "back to v1")
 
-	res, err := RunWithResult(Options{Resync: true})
+	res, err := RunWithResult(context.Background(), Options{Resync: true})
 	if err != nil {
 		t.Fatalf("resync: %v", err)
 	}
@@ -900,7 +901,7 @@ func TestPullResyncKeepsLocalOnlyEdit(t *testing.T) {
 
 	setupStore(t, "self")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "notes.txt")); string(got) != "v1\n" {
@@ -913,7 +914,7 @@ func TestPullResyncKeepsLocalOnlyEdit(t *testing.T) {
 	runGit(t, paths.StoreDir, "commit", "-m", "local edit")
 
 	for i := 0; i < 2; i++ {
-		res, err := RunWithResult(Options{Resync: true})
+		res, err := RunWithResult(context.Background(), Options{Resync: true})
 		if err != nil {
 			t.Fatalf("resync %d: %v", i, err)
 		}
@@ -955,7 +956,7 @@ func TestPullResyncPendingDeleteKeepsDivergedLocal(t *testing.T) {
 	runGit(t, paths.StoreDir, "fetch", peerStore)
 	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 
@@ -967,7 +968,7 @@ func TestPullResyncPendingDeleteKeepsDivergedLocal(t *testing.T) {
 	runGit(t, paths.StoreDir, "add", "-A")
 	runGit(t, paths.StoreDir, "commit", "-m", "local edit")
 
-	res, err := RunWithResult(Options{Resync: true})
+	res, err := RunWithResult(context.Background(), Options{Resync: true})
 	if err != nil {
 		t.Fatalf("resync: %v", err)
 	}
@@ -1004,7 +1005,7 @@ func TestPullResyncAfterPeerRebuild(t *testing.T) {
 	runGit(t, paths.StoreDir, "fetch", peerStore)
 	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
 	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
-	if _, err := RunWithResult(Options{}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
 		t.Fatalf("initial pull: %v", err)
 	}
 	oldPeerHead := gitexec.RevParseHEAD(peerStore)
@@ -1027,7 +1028,7 @@ func TestPullResyncAfterPeerRebuild(t *testing.T) {
 	runGit(t, paths.StoreDir, "rm", "-q", "seed.txt")
 	runGit(t, paths.StoreDir, "commit", "-m", "lose seed")
 
-	if _, err := RunWithResult(Options{Resync: true}); err != nil {
+	if _, err := RunWithResult(context.Background(), Options{Resync: true}); err != nil {
 		t.Fatalf("resync after peer rebuild should not fail: %v", err)
 	}
 	for name, want := range map[string]string{"seed.txt": "seed\n", "rebuilt.txt": "rebuilt\n"} {
