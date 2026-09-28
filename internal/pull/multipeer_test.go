@@ -1248,3 +1248,88 @@ func TestPullKeepsProjectEditsMadeDuringDownload(t *testing.T) {
 		t.Errorf("the peer's new file should still reach the project, got %q", got)
 	}
 }
+
+// newUnrelatedPeer publishes a peer store under machines/<id>/ whose one
+// commit adds forms/<id>.md. Its history shares nothing with ours, so a
+// pull unions it in.
+func newUnrelatedPeer(t *testing.T, fakeRoot, id string) {
+	t.Helper()
+	peerStore := filepath.Join(t.TempDir(), id)
+	os.MkdirAll(filepath.Join(peerStore, "forms"), 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "forms", id+".md"), []byte("from "+id+"\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "seed "+id)
+	mirrorStoreToRemote(t, peerStore, fakeRoot, id)
+}
+
+// cancelPullAtGate runs a pull, cancels it once a gated transfer has
+// started, and returns the pull's error.
+func cancelPullAtGate(t *testing.T, gate rcloneGate) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunWithResult(ctx, Options{})
+		done <- err
+	}()
+	gate.waitStarted(t)
+	cancel()
+	return <-done
+}
+
+// A pull cancelled partway through the peers still mirrors into the
+// project what it applied from the peers before the cancel, and starts
+// no download for the peers after it.
+func TestPullCancelledMirrorsBackWhatItApplied(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	repo := setupStore(t, "self")
+	project := filepath.Join(repo, "..", "forms-project", "swarf")
+	os.MkdirAll(project, 0o755)
+	config.RegisterDrawer("forms", filepath.Dir(project))
+	for _, id := range []string{"a", "b", "c"} {
+		newUnrelatedPeer(t, fakeRoot, id)
+	}
+	log := filepath.Join(t.TempDir(), "rclone.log")
+	t.Setenv("FAKE_RCLONE_LOG", log)
+	gate := gateRcloneSync(t, "/machines/b")
+
+	if err := cancelPullAtGate(t, gate); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the context's error, got %v", err)
+	}
+
+	if got, _ := os.ReadFile(filepath.Join(project, "a.md")); string(got) != "from a\n" {
+		t.Errorf("peer a was applied before the cancel, so its file should reach the project; got %q", got)
+	}
+	calls, _ := os.ReadFile(log)
+	if strings.Contains(string(calls), "/machines/c") {
+		t.Errorf("no download should start for a peer after the cancel; rclone transfers:\n%s", calls)
+	}
+}
+
+// A pull cancelled before it applied anything from a peer leaves the
+// projects as they were: there is nothing of the peers' to mirror back.
+func TestPullCancelledBeforeApplyingSkipsReverseMirror(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	repo := setupStore(t, "self")
+	project := filepath.Join(repo, "..", "forms-project", "swarf")
+	os.MkdirAll(project, 0o755)
+	config.RegisterDrawer("forms", filepath.Dir(project))
+	newUnrelatedPeer(t, fakeRoot, "peer")
+	// A file only the store has, which a reverse mirror would copy in.
+	os.MkdirAll(filepath.Join(paths.StoreDir, "forms"), 0o755)
+	os.WriteFile(filepath.Join(paths.StoreDir, "forms", "store-only.md"), []byte("x\n"), 0o644)
+	gate := gateRcloneSync(t, "")
+
+	if err := cancelPullAtGate(t, gate); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the context's error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(project, "store-only.md")); !os.IsNotExist(err) {
+		t.Errorf("a pull cancelled before applying anything should not mirror the store back; stat err = %v", err)
+	}
+}

@@ -39,6 +39,10 @@ type Result struct {
 	PeersSeen     int
 	PeersMerged   int
 	ConflictFiles []string
+
+	// applying is set once a peer's download finishes and pull starts
+	// changing the store for it, even if that peer then fails.
+	applying bool
 }
 
 // Options tunes one pull.
@@ -54,7 +58,8 @@ type Options struct {
 // holding the sync lock waits for it, and gives up if ctx ends first.
 // With the rclone backend ctx also bounds the downloads: ending it kills
 // the in-flight rclone, skips the remaining peers, and returns ctx's
-// error once the store is mirrored back into the projects.
+// error once whatever it applied from peers is mirrored back into the
+// projects.
 func Run(ctx context.Context, opts Options) error {
 	_, err := RunWithResult(ctx, opts)
 	return err
@@ -173,6 +178,12 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 			continue
 		}
 		result.PeersMerged++
+	}
+
+	// An interrupted pull that applied nothing from a peer has nothing
+	// to mirror back, so it leaves the projects alone.
+	if err := ctx.Err(); err != nil && !result.applying {
+		return result, err
 	}
 
 	// Mirror store back into every registered project's swarf/ directory so
@@ -397,6 +408,7 @@ func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, res
 	if err := runRcloneSyncStreaming(ctx, peerRemote, peerCache, backends.ListingFlags(gc.NoFastList)...); err != nil {
 		return fmt.Errorf("rclone sync from peer: %w", err)
 	}
+	result.applying = true
 
 	// Register the peer cache as a git remote so we can fetch its objects.
 	// Fetching makes ShowFile work for arbitrary commits in the peer's history
