@@ -1210,7 +1210,10 @@ func TestPullAfterPeerRebuildDeletesNothing(t *testing.T) {
 		t.Fatalf("pull: %v", err)
 	}
 	if len(res.PeerFailures) != 1 || res.PeerFailures[0].Peer != "peer" {
-		t.Errorf("the rebuilt peer should be recorded as a failure, got %+v", res.PeerFailures)
+		t.Fatalf("the rebuilt peer should be recorded as a failure, got %+v", res.PeerFailures)
+	}
+	if msg := res.PeerFailures[0].Err.Error(); !strings.Contains(msg, "swarf pull --resync") {
+		t.Errorf("the failure should tell the user to run 'swarf pull --resync', got %q", msg)
 	}
 	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "seed.txt")); string(got) != "seed\n" {
 		t.Errorf("seed.txt should stay in the store, got %q", got)
@@ -1239,6 +1242,85 @@ func TestPullResyncAfterPeerRebuildDeletesNothing(t *testing.T) {
 	}
 	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != newPeerHead {
 		t.Errorf("resync should advance the last-seen ref to %s, got %s", newPeerHead, got)
+	}
+}
+
+// amendedPeerStore returns a peer store whose tip the local store has
+// pulled and which the peer then amended: the amended tip drops a.txt and
+// adds b.txt. The two tips share the seed commit, but the last-seen ref
+// (the pulled tip) is no longer in the peer's history. Returns the peer
+// store, the last-seen tip, and the amended tip.
+func amendedPeerStore(t *testing.T, fakeRoot string) (string, string, string) {
+	t.Helper()
+	peerStore := pulledPeerStore(t, fakeRoot)
+	os.WriteFile(filepath.Join(peerStore, "a.txt"), []byte("a\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "add a")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
+		t.Fatalf("pull a.txt: %v", err)
+	}
+	lastSeen := gitexec.ReadRef(paths.StoreDir, peerRefName("peer"))
+	if lastSeen != gitexec.RevParseHEAD(peerStore) {
+		t.Fatalf("setup: the last-seen ref should be the peer tip that added a.txt")
+	}
+
+	runGit(t, peerStore, "rm", "-q", "a.txt")
+	os.WriteFile(filepath.Join(peerStore, "b.txt"), []byte("b\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-q", "--amend", "-m", "add b")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	return peerStore, lastSeen, gitexec.RevParseHEAD(peerStore)
+}
+
+// A plain pull from a peer that amended the tip the store last pulled
+// fails that peer and changes nothing: the last-seen ref shares history
+// with the new tip but is not in it, so a diff from it would read a.txt
+// as a peer delete.
+func TestPullAfterPeerAmendDeletesNothing(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	_, lastSeen, _ := amendedPeerStore(t, fakeRoot)
+
+	res, err := RunWithResult(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if len(res.PeerFailures) != 1 || res.PeerFailures[0].Peer != "peer" {
+		t.Fatalf("the amended peer should be recorded as a failure, got %+v", res.PeerFailures)
+	}
+	if msg := res.PeerFailures[0].Err.Error(); !strings.Contains(msg, "swarf pull --resync") {
+		t.Errorf("the failure should tell the user to run 'swarf pull --resync', got %q", msg)
+	}
+	if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, "a.txt")); string(got) != "a\n" {
+		t.Errorf("a.txt should stay in the store, got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(paths.StoreDir, "b.txt")); !os.IsNotExist(err) {
+		t.Errorf("b.txt should not be merged by a failed pull, stat err=%v", err)
+	}
+	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != lastSeen {
+		t.Errorf("the last-seen ref should stay at %s, got %s", lastSeen, got)
+	}
+}
+
+// A resync from a peer that amended the tip the store last pulled unions
+// the amended tree and applies no deletes, then advances the last-seen
+// ref to the amended tip.
+func TestPullResyncAfterPeerAmendDeletesNothing(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	_, _, amended := amendedPeerStore(t, fakeRoot)
+
+	if _, err := RunWithResult(context.Background(), Options{Resync: true}); err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	for name, want := range map[string]string{"seed.txt": "seed\n", "a.txt": "a\n", "b.txt": "b\n"} {
+		if got, _ := os.ReadFile(filepath.Join(paths.StoreDir, name)); string(got) != want {
+			t.Errorf("after resync %s should be %q, got %q", name, want, got)
+		}
+	}
+	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != amended {
+		t.Errorf("resync should advance the last-seen ref to %s, got %s", amended, got)
 	}
 }
 

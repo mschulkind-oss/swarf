@@ -513,8 +513,8 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 	}
 
 	// The store keeps the objects of every peer tip it has pulled, so it
-	// can still read lastSeen after the peer rebuilt its store and dropped
-	// that commit from its history. A diff from it would then read every
+	// can still read lastSeen after the peer rebuilt its store or rewrote
+	// its history (an amend or reset) and dropped that commit from it. A diff from it would then read every
 	// file the new history lacks as a peer delete, so lastSeen counts only
 	// while it is an ancestor of peerHead. A plain pull fails the peer
 	// without it; a resync unions the peer's tree and applies no deletes.
@@ -527,7 +527,7 @@ func mergePeer(peer, peerHead string, resync bool, result *Result) error {
 		seenInHistory = err == nil && base == lastSeen
 	}
 	if lastSeen != "" && !seenInHistory && !resync {
-		return fmt.Errorf("diff peer: last-seen commit %s is not in the peer's history (the peer rebuilt its store)", lastSeen)
+		return fmt.Errorf("diff peer: last-seen commit %s is not in the peer's history (the peer rebuilt its store or rewrote its history); run 'swarf pull --resync' to merge its current tree", lastSeen)
 	}
 
 	localHead := gitexec.RevParseHEAD(paths.StoreDir)
