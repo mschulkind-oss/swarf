@@ -469,3 +469,80 @@ func TestResetHardFromNoCommits(t *testing.T) {
 		t.Error("resetting to a commit the repository lacks should fail")
 	}
 }
+
+// PushLease updates or deletes a remote branch only while it points at
+// the expected commit: a branch that moved is left alone and reported as
+// ErrStaleLease, and a hook's refusal is a different error.
+func TestPushLease(t *testing.T) {
+	repo := makeRepo(t)
+	bare := filepath.Join(t.TempDir(), "remote.git")
+	execCmd(t, "", "git", "init", "--bare", bare)
+	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "one")
+	one := RevParseHEAD(repo)
+	execCmd(t, repo, "git", "push", bare, "HEAD:refs/heads/main")
+	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "two")
+	two := RevParseHEAD(repo)
+
+	if err := PushLease(context.Background(), repo, bare, two, "refs/heads/main", two); !errors.Is(err, ErrStaleLease) {
+		t.Fatalf("a lease on a commit the branch is not at should be stale, got %v", err)
+	}
+	if err := PushLease(context.Background(), repo, bare, two, "refs/heads/main", one); err != nil {
+		t.Fatalf("push with a lease that holds: %v", err)
+	}
+	if sha, _, _ := LsRemoteRef(repo, bare, "refs/heads/main"); sha != two {
+		t.Fatalf("main = %q, want %q", sha, two)
+	}
+
+	hook := "#!/bin/sh\necho no >&2\nexit 1\n"
+	os.WriteFile(filepath.Join(bare, "hooks", "pre-receive"), []byte(hook), 0o755)
+	err := PushLease(context.Background(), repo, bare, "", "refs/heads/main", two)
+	if err == nil || errors.Is(err, ErrStaleLease) {
+		t.Fatalf("a hook's refusal should be an error other than ErrStaleLease, got %v", err)
+	}
+	os.Remove(filepath.Join(bare, "hooks", "pre-receive"))
+	if err := PushLease(context.Background(), repo, bare, "", "refs/heads/main", two); err != nil {
+		t.Fatalf("delete with a lease that holds: %v", err)
+	}
+	if _, ok, _ := LsRemoteRef(repo, bare, "refs/heads/main"); ok {
+		t.Error("main should be deleted")
+	}
+}
+
+// CommitInfo reads a root commit's empty parent list, not its message's
+// first line, as the parents.
+func TestCommitInfoRootCommit(t *testing.T) {
+	repo := makeRepo(t)
+	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "root\n\nTrailer: yes")
+	parents, msg, ok := CommitInfo(repo, RevParseHEAD(repo))
+	if !ok || len(parents) != 0 || !strings.Contains(msg, "Trailer: yes") || !strings.HasPrefix(msg, "root") {
+		t.Fatalf("CommitInfo(root) = %v, %q, %v", parents, msg, ok)
+	}
+	execCmd(t, repo, "git", "commit", "--allow-empty", "-m", "child")
+	if parents, _, _ := CommitInfo(repo, "HEAD"); len(parents) != 1 {
+		t.Errorf("a child commit has one parent, got %v", parents)
+	}
+	if _, _, ok := CommitInfo(repo, strings.Repeat("0", 40)); ok {
+		t.Error("a commit the repository does not have is not ok")
+	}
+}
+
+// UntrackUpstreams leaves a clone with no upstream and no
+// remote-tracking branches, including the origin/HEAD symbolic ref.
+func TestUntrackUpstreams(t *testing.T) {
+	src := makeRepo(t)
+	execCmd(t, src, "git", "commit", "--allow-empty", "-m", "one")
+	clone := filepath.Join(t.TempDir(), "clone")
+	if err := Clone(src, clone); err != nil {
+		t.Fatal(err)
+	}
+	if err := UntrackUpstreams(clone, "origin"); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := runStdout(clone, "for-each-ref", "--format=%(refname) %(upstream)")
+	if strings.Contains(out, "refs/remotes/") {
+		t.Errorf("the clone still tracks origin:\n%s", out)
+	}
+	if RevParseHEAD(clone) == "" {
+		t.Error("untracking must not touch the local branch")
+	}
+}

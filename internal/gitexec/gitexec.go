@@ -382,14 +382,15 @@ func IsAncestor(dir, a, b string) bool {
 	return err == nil
 }
 
-// FetchRefspec runs `git fetch --prune` of refspec (e.g.
+// FetchRefspec runs `git fetch --prune` of refspecs (e.g.
 // "+refs/heads/machines/*:refs/swarf-machines/*") from remote. Only
-// refspec's destination refs change: --refmap= stops git from also
+// the refspecs' destination refs change: --refmap= stops git from also
 // updating the remote's remote-tracking branches, and no tags are
 // fetched. --prune removes each destination ref whose source is gone.
 // A cancelled ctx kills the fetch.
-func FetchRefspec(ctx context.Context, dir, remote, refspec string) error {
-	out, err := runCtx(ctx, dir, "fetch", "--prune", "--no-tags", "--refmap=", remote, refspec)
+func FetchRefspec(ctx context.Context, dir, remote string, refspecs ...string) error {
+	args := append([]string{"fetch", "--prune", "--no-tags", "--refmap=", remote}, refspecs...)
+	out, err := runCtx(ctx, dir, args...)
 	if err != nil && out != "" {
 		return fmt.Errorf("%s: %w", out, err)
 	}
@@ -426,4 +427,172 @@ func ResetHard(dir, commit string) error {
 		return fmt.Errorf("%s: %w", out, err)
 	}
 	return err
+}
+
+// LsRemoteHeads returns every branch on remote, keyed by branch name
+// (refs/heads/ removed), each with the SHA it points at. A cancelled ctx
+// kills the ls-remote.
+func LsRemoteHeads(ctx context.Context, dir, remote string) (map[string]string, error) {
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", remote)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		msg := err.Error()
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			msg = strings.TrimSpace(string(exit.Stderr))
+		}
+		return nil, fmt.Errorf("git ls-remote --heads %s: %s", remote, msg)
+	}
+	heads := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		if name, ok := strings.CutPrefix(f[1], "refs/heads/"); ok && name != "" {
+			heads[name] = f[0]
+		}
+	}
+	return heads, nil
+}
+
+// ErrStaleLease is returned by PushLease when the remote ref no longer
+// points at the commit the caller expected, so nothing was changed.
+var ErrStaleLease = errors.New("push rejected: the remote branch moved")
+
+// PushLease sets ref on remote to src (a commit, or "" to delete ref),
+// but only while the remote ref still points at expect (git push
+// --force-with-lease). The update may discard commits, which the lease
+// limits to exactly expect's. A remote ref that moved returns an error
+// wrapping ErrStaleLease; any other failure, such as a hook refusing
+// the update, returns git's output. A cancelled ctx kills the push.
+func PushLease(ctx context.Context, dir, remote, src, ref, expect string) error {
+	out, err := runCtx(ctx, dir, "push", "--porcelain", "--force-with-lease="+ref+":"+expect, remote, src+":"+ref)
+	if err == nil {
+		return nil
+	}
+	// A lease that no longer holds reads "!\t<src>:<ref>\t[rejected]
+	// (stale info)"; a hook's refusal is "[remote rejected]".
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "!") && strings.Contains(line, "[rejected]") {
+			return fmt.Errorf("%w: %s", ErrStaleLease, strings.TrimSpace(line))
+		}
+	}
+	if out != "" {
+		return fmt.Errorf("%s: %w", out, err)
+	}
+	return err
+}
+
+// DeleteRef removes ref itself from the repository; a symbolic ref is
+// removed, not the ref it points at. A ref that does not exist is not an
+// error.
+func DeleteRef(dir, ref string) error {
+	out, err := run(dir, "update-ref", "--no-deref", "-d", ref)
+	if err != nil && out != "" {
+		return fmt.Errorf("%s: %w", out, err)
+	}
+	return err
+}
+
+// ConfigUnset removes key from the repository's config. A key that is
+// not set is not an error.
+func ConfigUnset(dir, key string) error {
+	if ConfigGet(dir, key) == "" {
+		return nil
+	}
+	_, err := run(dir, "config", "--unset-all", key)
+	return err
+}
+
+// WriteTree writes the index as a tree object and returns its SHA.
+func WriteTree(dir string) (string, error) {
+	return runStdout(dir, "write-tree")
+}
+
+// TreeOf returns the SHA of commit's tree, or "" if commit is not in the
+// repository.
+func TreeOf(dir, commit string) string {
+	return ReadRef(dir, commit+"^{tree}")
+}
+
+// CommitTree creates a commit of tree with message and the given parents
+// (none makes a root commit) without touching any branch, the index, or
+// the working tree, and returns its SHA.
+func CommitTree(dir, tree, message string, parents ...string) (string, error) {
+	args := []string{"commit-tree", tree, "-m", message}
+	for _, p := range parents {
+		args = append(args, "-p", p)
+	}
+	out, err := runStdout(dir, args...)
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			return "", fmt.Errorf("git commit-tree: %s", strings.TrimSpace(string(exit.Stderr)))
+		}
+		return "", err
+	}
+	return out, nil
+}
+
+// HashBlob writes content as a blob object and returns its SHA.
+func HashBlob(dir string, content []byte) (string, error) {
+	cmd := exec.Command("git", "hash-object", "-w", "--stdin")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(string(content))
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// MkTreeFile writes a tree holding one regular file, name, whose content
+// is the blob blob, and returns the tree's SHA.
+func MkTreeFile(dir, name, blob string) (string, error) {
+	cmd := exec.Command("git", "mktree")
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader("100644 blob " + blob + "\t" + name + "\n")
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// CommitInfo returns the parents and full message of commit. ok is
+// false when the repository does not have commit.
+func CommitInfo(dir, commit string) (parents []string, message string, ok bool) {
+	// The "parents:" label keeps a root commit's empty parent line from
+	// being trimmed away with the output's leading whitespace.
+	out, err := runStdout(dir, "show", "-s", "--format=parents:%P%n%B", commit+"^{commit}", "--")
+	if err != nil {
+		return nil, "", false
+	}
+	first, rest, _ := strings.Cut(out, "\n")
+	return strings.Fields(strings.TrimPrefix(first, "parents:")), rest, true
+}
+
+// UntrackUpstreams stops every local branch from tracking a branch of
+// remote (it unsets each one's upstream) and deletes remote's
+// remote-tracking branches (refs/remotes/<remote>/).
+func UntrackUpstreams(dir, remote string) error {
+	out, err := runStdout(dir, "for-each-ref", "--format=%(refname:short) %(upstream:remotename)", "refs/heads/")
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		branch, upstreamRemote, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if branch == "" || upstreamRemote != remote {
+			continue
+		}
+		if _, err := run(dir, "branch", "--unset-upstream", branch); err != nil {
+			return fmt.Errorf("unset upstream of %s: %w", branch, err)
+		}
+	}
+	tracking, err := ListRefs(dir, "refs/remotes/"+remote+"/")
+	if err != nil {
+		return err
+	}
+	for name := range tracking {
+		if err := DeleteRef(dir, "refs/remotes/"+remote+"/"+name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
