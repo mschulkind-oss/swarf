@@ -77,3 +77,36 @@ func TestPullWaitsForSyncLockWithMessage(t *testing.T) {
 		t.Fatal("pull did not finish after the sync lock was released")
 	}
 }
+
+// A pull holds the sync lock until it is done, downloads included, so a
+// push or daemon cycle started mid-pull waits for it.
+func TestPullHoldsSyncLockWhileDownloading(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	setupStore(t, "self")
+	newUnrelatedPeer(t, fakeRoot, "peer")
+	gate := gateRcloneSync(t, "")
+
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), Options{}) }()
+	gate.waitStarted(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if release, err := synclock.Acquire(ctx, nil); err == nil {
+		release()
+		gate.release(t)
+		<-done
+		t.Fatal("the sync lock was free while the pull was downloading")
+	}
+
+	gate.release(t)
+	if err := <-done; err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	release, err := synclock.Acquire(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("the sync lock should be free once the pull is done: %v", err)
+	}
+	release()
+}

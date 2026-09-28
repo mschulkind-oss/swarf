@@ -243,3 +243,44 @@ func TestSyncCycleGivesUpOnShutdown(t *testing.T) {
 		t.Fatal("a cycle that never got the lock must not sync")
 	}
 }
+
+// gatedBackend is a SyncBackend whose Sync reports that it started and
+// then blocks until release is closed, so a test can act mid-cycle.
+type gatedBackend struct{ started, release chan struct{} }
+
+func (b *gatedBackend) Sync(context.Context, string) backends.SyncResult {
+	close(b.started)
+	<-b.release
+	return backends.SyncResult{Success: true}
+}
+func (b *gatedBackend) HasChanges(string) bool { return false }
+
+// A daemon cycle holds the sync lock until it is done, backend sync
+// included, so a 'swarf push' or 'swarf pull' started mid-cycle waits.
+func TestSyncCycleHoldsSyncLockUntilDone(t *testing.T) {
+	testutil.InitializedSwarf(t)
+	b := &gatedBackend{started: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan struct{})
+	go func() { syncCycle(context.Background(), b, nil); close(done) }()
+	select {
+	case <-b.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cycle never reached the backend sync")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if release, err := synclock.Acquire(ctx, nil); err == nil {
+		release()
+		close(b.release)
+		t.Fatal("the sync lock was free while the cycle was still syncing")
+	}
+
+	close(b.release)
+	<-done
+	release, err := synclock.Acquire(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("the sync lock should be free once the cycle is done: %v", err)
+	}
+	release()
+}

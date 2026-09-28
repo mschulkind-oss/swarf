@@ -24,7 +24,8 @@ import (
 // fakeRemoteRoot. The shim implements lsf / mkdir / sync / copy / about /
 // size / lsd with filesystem paths. Remote refs of the form fake:<path>
 // resolve to fakeRemoteRoot/<path>. When FAKE_RCLONE_AFTER_DOWNLOAD is set,
-// sync/copy runs it with bash after every copy from a fake: source.
+// sync/copy runs it with bash after every copy from a fake: source, and
+// FAKE_RCLONE_AFTER_UPLOAD likewise after every copy to a fake: destination.
 func fakeRemoteShim(t *testing.T, dir, fakeRemoteRoot string) string {
 	t.Helper()
 	shim := filepath.Join(dir, "rclone")
@@ -99,6 +100,7 @@ case "$cmd" in
       esac
     done
     src_ref="$src"
+    dst_ref="$dst"
     src=$(resolve "$src")
     dst=$(resolve "$dst")
     mkdir -p "$dst"
@@ -141,6 +143,10 @@ case "$cmd" in
     # fetching peers.
     case "$src_ref" in
       fake:*) [ -n "${FAKE_RCLONE_AFTER_DOWNLOAD:-}" ] && bash -c "$FAKE_RCLONE_AFTER_DOWNLOAD" ;;
+    esac
+    # Test hook: the same for an upload, standing in for a slow push.
+    case "$dst_ref" in
+      fake:*) [ -n "${FAKE_RCLONE_AFTER_UPLOAD:-}" ] && bash -c "$FAKE_RCLONE_AFTER_UPLOAD" ;;
     esac
     exit 0
     ;;
@@ -1263,6 +1269,64 @@ if grep -q EXIT '%[2]s'; then touch '%[3]s'; fi
 	}
 	if !strings.Contains(got, "sync lock") {
 		t.Fatalf("the push should say it is waiting for the sync lock\n--- push output ---\n%s", got)
+	}
+}
+
+// Scenario 5, the other way round: a pull started while a push is
+// uploading must not touch the store until the push is done. The pull
+// finds the sync lock held, says so, waits, and then runs to completion.
+func TestMultiMachine_PullWaitsForRunningPush(t *testing.T) {
+	fakeRemote := t.TempDir()
+	os.MkdirAll(filepath.Join(fakeRemote, "store"), 0o755)
+
+	a := newMachine(t, "a", fakeRemote)
+	a.init()
+	a.write("shared.md", "v1\n")
+	a.push()
+
+	b := newMachineWithSlug(t, "b", fakeRemote, a.slug())
+	b.pull()
+	b.init()
+	b.write("from-b.md", "b's edit\n")
+
+	// While B's push is uploading, start a pull in the background (all
+	// descriptors redirected, so the push does not wait on its output),
+	// give it time to reach the lock, and record whether it finished
+	// while the push was still running.
+	work := t.TempDir()
+	pullOut := filepath.Join(work, "pull.out")
+	early := filepath.Join(work, "finished-early")
+	hook := filepath.Join(work, "hook.sh")
+	script := fmt.Sprintf(`
+( '%[1]s' pull > '%[2]s' 2>&1 < /dev/null; echo "EXIT $?" >> '%[2]s' ) > /dev/null 2>&1 < /dev/null &
+for i in $(seq 50); do grep -q 'sync lock' '%[2]s' 2>/dev/null && break; sleep 0.1; done
+sleep 0.5
+if grep -q EXIT '%[2]s'; then touch '%[3]s'; fi
+`, swarfBin, pullOut, early)
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b.env = []string{"FAKE_RCLONE_AFTER_UPLOAD=bash '" + hook + "'"}
+	pushOut := mustSwarf(t, b, "push")
+	b.env = nil
+
+	var got string
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		data, _ := os.ReadFile(pullOut)
+		if got = string(data); strings.Contains(got, "EXIT") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(got, "EXIT 0") {
+		t.Fatalf("the waiting pull should finish once the push is done\n--- pull output ---\n%s\n--- push output ---\n%s", got, pushOut)
+	}
+	if _, err := os.Stat(early); err == nil {
+		t.Fatalf("the pull ran while the push held the store\n--- pull output ---\n%s", got)
+	}
+	if !strings.Contains(got, "sync lock") {
+		t.Fatalf("the pull should say it is waiting for the sync lock\n--- pull output ---\n%s", got)
 	}
 }
 
