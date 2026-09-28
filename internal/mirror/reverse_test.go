@@ -33,7 +33,7 @@ func newReverseFixture(t *testing.T, files ...string) *reverseFixture {
 
 func (f *reverseFixture) reverse(skip Skip) {
 	f.t.Helper()
-	if err := TrackedReverse(f.store, f.project, f.manifest, skip); err != nil {
+	if err := TrackedReverse(f.store, f.project, f.manifest, skip, nil); err != nil {
 		f.t.Fatalf("TrackedReverse: %v", err)
 	}
 }
@@ -129,7 +129,7 @@ func TestTrackedReverseNoManifestDeletesNothing(t *testing.T) {
 	writeFile(t, filepath.Join(project, "local.md"), "mine")
 	writeFile(t, filepath.Join(store, "peer.md"), "theirs")
 
-	if err := TrackedReverse(store, project, manifest, nil); err != nil {
+	if err := TrackedReverse(store, project, manifest, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	assertFile(t, filepath.Join(project, "local.md"), "mine")
@@ -224,4 +224,59 @@ func TestTrackedReverseKeepsFileWhenStoreHasDanglingLink(t *testing.T) {
 	f.reverse(nil)
 
 	assertFile(t, filepath.Join(f.project, "a.md"), "content of a.md")
+}
+
+// Project files written after the stamps were taken — a save while pull
+// was downloading peers — are neither overwritten with the store's copy
+// nor deleted for leaving the store, and stay in the manifest; files the
+// stamps still match take the store's changes as usual.
+func TestTrackedReverseSparesFilesChangedSinceStamps(t *testing.T) {
+	f := newReverseFixture(t, "edited.md", "doomed.md", "stale.md", "gone.md")
+	stamps := TakeStamps(f.project, nil)
+
+	// The pull's peers change the store...
+	writeFile(t, filepath.Join(f.store, "edited.md"), "peer version")
+	writeFile(t, filepath.Join(f.store, "stale.md"), "peer version")
+	writeFile(t, filepath.Join(f.store, "made.md"), "peer version")
+	os.Remove(filepath.Join(f.store, "doomed.md"))
+	os.Remove(filepath.Join(f.store, "gone.md"))
+	// ...while the user saves in the project.
+	writeFile(t, filepath.Join(f.project, "edited.md"), "the user's longer save")
+	writeFile(t, filepath.Join(f.project, "doomed.md"), "the user's longer save")
+	writeFile(t, filepath.Join(f.project, "made.md"), "the user's new file")
+
+	if err := TrackedReverse(f.store, f.project, f.manifest, nil, stamps); err != nil {
+		t.Fatalf("TrackedReverse: %v", err)
+	}
+
+	assertFile(t, filepath.Join(f.project, "edited.md"), "the user's longer save")
+	assertFile(t, filepath.Join(f.project, "doomed.md"), "the user's longer save")
+	assertFile(t, filepath.Join(f.project, "made.md"), "the user's new file")
+	assertFile(t, filepath.Join(f.project, "stale.md"), "peer version")
+	if f.projectHas("gone.md") {
+		t.Error("gone.md is unchanged since the stamps and gone from the store: it should be deleted")
+	}
+	m := readManifest(f.manifest)
+	for _, rel := range []string{"edited.md", "doomed.md", "made.md"} {
+		if _, ok := m[rel]; !ok {
+			t.Errorf("the manifest should still list %s", rel)
+		}
+	}
+}
+
+// Stamps of a missing directory are empty, not nil, so every file that
+// appears there later counts as changed.
+func TestTakeStampsMissingRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "absent")
+	s := TakeStamps(root, nil)
+	if s == nil {
+		t.Fatal("TakeStamps of a missing root should be empty, not nil")
+	}
+	writeFile(t, filepath.Join(root, "new.md"), "x")
+	if !s.changed(root, "new.md") {
+		t.Error("a file created after the stamps should count as changed")
+	}
+	if s.changed(root, "never.md") {
+		t.Error("a file that does not exist is not changed")
+	}
 }

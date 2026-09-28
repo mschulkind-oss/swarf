@@ -284,7 +284,7 @@ func TestTrackedDirHoldMarkerLifecycle(t *testing.T) {
 func (f *holdFixture) reverseAndClear(skip Skip) (HoldRelease, bool) {
 	f.t.Helper()
 	held := HeldPaths(f.src, f.dst, f.manifest, skip)
-	if err := TrackedReverse(f.dst, f.src, f.manifest, skip); err != nil {
+	if err := TrackedReverse(f.dst, f.src, f.manifest, skip, nil); err != nil {
 		f.t.Fatalf("TrackedReverse: %v", err)
 	}
 	return ClearResolvedHold(f.src, f.dst, held, f.marker)
@@ -330,7 +330,7 @@ func TestClearResolvedHoldCountsFilesGoneFromStore(t *testing.T) {
 	held := HeldPaths(f.src, f.dst, f.manifest, nil)
 	os.Remove(filepath.Join(f.dst, "a.md"))
 	os.Remove(filepath.Join(f.dst, "b.md"))
-	if err := TrackedReverse(f.dst, f.src, f.manifest, nil); err != nil {
+	if err := TrackedReverse(f.dst, f.src, f.manifest, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	release, ok := ClearResolvedHold(f.src, f.dst, held, f.marker)

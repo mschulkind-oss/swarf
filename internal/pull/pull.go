@@ -144,7 +144,7 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 	// lose work the user just saved. Forward then reverse keeps our
 	// invariant: the store is up-to-date with local edits before we start
 	// reconciling peer state into it.
-	mirrorProjectsToStore(mirror.SkipPatterns(gc.Exclude))
+	stamps := mirrorProjectsToStore(mirror.SkipPatterns(gc.Exclude))
 
 	self := config.EnsureMachineID()
 	peers, err := listPeers(ctx, gc.Remote)
@@ -180,7 +180,7 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 	// they actually work. Without this, pull updates only the store; the
 	// project's swarf/ keeps showing stale files until the daemon's next
 	// forward mirror accidentally undoes our pull.
-	synced, unregistered := mirrorStoreBackToProjects(mirror.SkipPatterns(gc.Exclude))
+	synced, unregistered := mirrorStoreBackToProjects(mirror.SkipPatterns(gc.Exclude), stamps)
 
 	// An interrupted pull still mirrors back what it applied — skipping
 	// that would leave the store ahead of the projects, and the next
@@ -219,10 +219,16 @@ func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Re
 // we have first-hand evidence of (i.e. they were in project/swarf/ last
 // time we looked and are gone now). Files we never saw stay in the store
 // untouched — that's the "empty project doesn't wipe the store" rule.
-func mirrorProjectsToStore(skip mirror.Skip) {
+//
+// Returns the Stamps of each drawer's project, by slug, taken just before
+// its forward pass, so the reverse mirror can tell which project files
+// the user saved while pull was downloading peers.
+func mirrorProjectsToStore(skip mirror.Skip) map[string]mirror.Stamps {
+	stamps := make(map[string]mirror.Stamps)
 	for _, d := range config.ReadDrawers() {
 		src := paths.SwarfDir(d.Host)
 		dst := filepath.Join(paths.StoreDir, d.Slug)
+		stamps[d.Slug] = mirror.TakeStamps(src, skip)
 		if !paths.IsDir(src) {
 			continue
 		}
@@ -233,6 +239,7 @@ func mirrorProjectsToStore(skip mirror.Skip) {
 			slog.Warn("pull: forward mirror failed", "project", d.Slug, "err", err)
 		}
 	}
+	return stamps
 }
 
 // mirrorStoreBackToProjects copies the store's per-project subdirectories
@@ -241,15 +248,16 @@ func mirrorProjectsToStore(skip mirror.Skip) {
 // (mirror.TrackedReverse): a project file missing from the store is
 // deleted only when the manifest says swarf synced it before, so peer
 // deletes propagate but a file saved during the pull survives. The
-// manifest is then rewritten to the project's file set. We still accept
-// a small race window — if the user edits a synced file during a pull,
-// the store's copy can overwrite it here, same risk the daemon's forward
-// mirror already has.
+// manifest is then rewritten to the project's file set. stamps, from
+// mirrorProjectsToStore, protect a synced file the user saved during the
+// pull (the downloads can take minutes): the store's older copy does not
+// overwrite it, and a peer's delete does not remove it. A drawer with no
+// stamps, registered mid-pull, has no such protection.
 //
 // Returns the slugs that were mirrored, and the slugs present in the store
 // that have no drawer on this machine (so the caller can tell the user to
 // 'swarf init' them).
-func mirrorStoreBackToProjects(skip mirror.Skip) (synced, unregistered []string) {
+func mirrorStoreBackToProjects(skip mirror.Skip, stamps map[string]mirror.Stamps) (synced, unregistered []string) {
 	drawers := config.ReadDrawers()
 	registered := make(map[string]string, len(drawers)) // slug → host
 	for _, d := range drawers {
@@ -281,7 +289,7 @@ func mirrorStoreBackToProjects(skip mirror.Skip) (synced, unregistered []string)
 		if _, holding := deletehold.Read(marker); holding {
 			held = mirror.HeldPaths(dst, src, manifest, skip)
 		}
-		if err := mirror.TrackedReverse(src, dst, manifest, skip); err != nil {
+		if err := mirror.TrackedReverse(src, dst, manifest, skip, stamps[slug]); err != nil {
 			slog.Warn("pull: reverse mirror failed", "project", slug, "err", err)
 			continue
 		}

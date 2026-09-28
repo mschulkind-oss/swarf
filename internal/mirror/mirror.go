@@ -150,15 +150,30 @@ func Dir(src, dst string, skip Skip) error {
 // next forward pass starts from what pull left behind: files pull just
 // copied in count as synced, and files it deleted are no longer listed.
 //
+// since protects the project files the user changed during the pull:
+// it is a Stamps taken of dst when pull's forward mirror ran, and a dst
+// file that since exists at a different size or modification time than
+// it recorded (including one created since) is neither overwritten nor
+// deleted — the next forward pass copies it into the store instead. A
+// nil since protects nothing.
+//
 // Paths matched by skip are neither copied, deleted, nor recorded, as in
 // every other mirror pass. Errors from individual files are logged and
 // do not abort; the last one is returned.
-func TrackedReverse(src, dst, manifestPath string, skip Skip) error {
+func TrackedReverse(src, dst, manifestPath string, skip Skip, since Stamps) error {
 	oldSet := readManifest(manifestPath)
-	lastErr := CopyOnly(src, dst, skip)
+	// Leave out of the copy and the deletes, but not the manifest below,
+	// each file changed since the stamps: it is still a synced file.
+	pass := skip
+	if since != nil {
+		pass = func(rel string, isDir bool) bool {
+			return skips(skip, rel, isDir) || (!isDir && since.changed(dst, rel))
+		}
+	}
+	lastErr := CopyOnly(src, dst, pass)
 
 	for rel := range oldSet {
-		if skipsEntry(skip, rel) {
+		if skipsEntry(pass, rel) {
 			continue
 		}
 		if _, err := os.Lstat(filepath.Join(src, rel)); !os.IsNotExist(err) {
@@ -175,6 +190,45 @@ func TrackedReverse(src, dst, manifestPath string, skip Skip) error {
 		slog.Warn("mirror: writing manifest failed", "path", manifestPath, "err", err)
 	}
 	return lastErr
+}
+
+// Stamps records the size and modification time of each file under a
+// directory at one moment, so a later pass can tell which files were
+// written since. Pull takes one of each project when its forward mirror
+// runs (TakeStamps) and hands it to TrackedReverse, whose copy would
+// otherwise overwrite a save the user made while pull was downloading
+// peers. The name is coined here.
+type Stamps map[string]stamp
+
+type stamp struct {
+	size    int64
+	modTime time.Time
+}
+
+// TakeStamps records every file under root that skip does not exclude,
+// as the file resolves (a link records its target). A missing root
+// yields an empty, non-nil Stamps: every file found there later counts
+// as written since.
+func TakeStamps(root string, skip Skip) Stamps {
+	s := Stamps{}
+	for rel := range fileSet(root, skip) {
+		if info, err := os.Stat(filepath.Join(root, rel)); err == nil {
+			s[rel] = stamp{info.Size(), info.ModTime()}
+		}
+	}
+	return s
+}
+
+// changed reports whether root/rel exists now but not as s recorded it:
+// created since, or at a different size or modification time. A file
+// removed since is not changed — nothing of the user's is at stake.
+func (s Stamps) changed(root, rel string) bool {
+	info, err := os.Stat(filepath.Join(root, rel))
+	if err != nil || info.IsDir() {
+		return false
+	}
+	was, ok := s[rel]
+	return !ok || was.size != info.Size() || !was.modTime.Equal(info.ModTime())
 }
 
 // fileSet returns the drawer-relative paths of the files under root that

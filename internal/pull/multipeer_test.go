@@ -694,7 +694,7 @@ func TestPullFlagsUnregisteredProjects(t *testing.T) {
 
 	// We can't introspect the Result for unregistered slugs directly —
 	// the check is that the mirror helper returns them correctly.
-	synced, unregistered := mirrorStoreBackToProjects(nil)
+	synced, unregistered := mirrorStoreBackToProjects(nil, nil)
 	if len(synced) != 0 {
 		t.Fatalf("no drawers registered, expected nothing synced; got %v", synced)
 	}
@@ -1174,5 +1174,77 @@ func TestPullCancelledIgnoresLeftoverPipeHolder(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected the context's error, got %v", err)
+	}
+}
+
+// A project file the user edits while a pull is downloading peers keeps
+// the edit: the reverse mirror does not overwrite it with the store's
+// copy from before the edit, nor delete it because a peer deleted it.
+// The pull's other changes still reach the project.
+func TestPullKeepsProjectEditsMadeDuringDownload(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+
+	peerStore := filepath.Join(t.TempDir(), "peer-store")
+	os.MkdirAll(filepath.Join(peerStore, "forms"), 0o755)
+	runGit(t, peerStore, "init")
+	runGit(t, peerStore, "config", "user.email", "t@t")
+	runGit(t, peerStore, "config", "user.name", "t")
+	os.WriteFile(filepath.Join(peerStore, "forms", "notes.md"), []byte("v1\n"), 0o644)
+	os.WriteFile(filepath.Join(peerStore, "forms", "doomed.md"), []byte("bye\n"), 0o644)
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "peer seed")
+
+	repo := setupStore(t, "self")
+	runGit(t, paths.StoreDir, "fetch", peerStore)
+	runGit(t, paths.StoreDir, "reset", "--hard", "FETCH_HEAD")
+	project := filepath.Join(repo, "..", "forms-project", "swarf")
+	os.MkdirAll(project, 0o755)
+	config.RegisterDrawer("forms", filepath.Dir(project))
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+	if _, err := RunWithResult(context.Background(), Options{}); err != nil {
+		t.Fatalf("seeding pull: %v", err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(project, "notes.md")); string(got) != "v1\n" {
+		t.Fatalf("setup: project notes.md = %q, want v1", got)
+	}
+
+	// The peer adds a file and deletes doomed.md.
+	os.WriteFile(filepath.Join(peerStore, "forms", "new.md"), []byte("from peer\n"), 0o644)
+	os.Remove(filepath.Join(peerStore, "forms", "doomed.md"))
+	runGit(t, peerStore, "add", "-A")
+	runGit(t, peerStore, "commit", "-m", "peer edits")
+	mirrorStoreToRemote(t, peerStore, fakeRoot, "peer")
+
+	gate := gateRcloneSync(t, "")
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunWithResult(context.Background(), Options{})
+		done <- err
+	}()
+	gate.waitStarted(t)
+	// The user saves while the peer is downloading.
+	edits := map[string]string{
+		"notes.md":  "v2 the user just saved this longer text\n",
+		"doomed.md": "the user kept working on this\n",
+		"fresh.md":  "created during the pull\n",
+	}
+	for name, content := range edits {
+		if err := os.WriteFile(filepath.Join(project, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate.release(t)
+	if err := <-done; err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+
+	for name, want := range edits {
+		if got, _ := os.ReadFile(filepath.Join(project, name)); string(got) != want {
+			t.Errorf("project %s = %q, want the user's save %q", name, got, want)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(project, "new.md")); string(got) != "from peer\n" {
+		t.Errorf("the peer's new file should still reach the project, got %q", got)
 	}
 }
