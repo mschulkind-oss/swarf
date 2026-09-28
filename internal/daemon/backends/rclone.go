@@ -20,6 +20,11 @@ type RcloneBackend struct {
 	// belongs to a different store ('swarf push --take-over').
 	TakeOver    bool
 	remoteMkdir bool // true after we've confirmed/created our machine dir
+	// loggedRefusal is the owner-check refusal last logged. A daemon
+	// whose subtree another store owns is refused on every cycle until
+	// the user acts, so the refusal is logged when it first appears and
+	// again only after it clears or changes.
+	loggedRefusal string
 }
 
 // ListingFlags returns the rclone flags a full store sync needs for its
@@ -111,9 +116,13 @@ func (r *RcloneBackend) Sync(ctx context.Context, storePath string) SyncResult {
 	// other's upload. The store's owner token (see OwnerTokenFile) rides
 	// along with the upload, so an unclaimed subtree becomes ours.
 	if msg := r.checkOwner(ctx, storePath, target); msg != "" {
-		slog.Warn("sync: refusing to push", "remote", target, "reason", msg)
-		return SyncResult{Success: false, Message: msg, FilesChanged: nFiles}
+		if msg != r.loggedRefusal {
+			slog.Warn("sync: refusing to push", "remote", target, "reason", msg)
+			r.loggedRefusal = msg
+		}
+		return SyncResult{Success: false, Message: msg, FilesChanged: nFiles, Logged: true}
 	}
+	r.loggedRefusal = ""
 
 	// Create our machine's remote directory on first sync only.
 	if !r.remoteMkdir {

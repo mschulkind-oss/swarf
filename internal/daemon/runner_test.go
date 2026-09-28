@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -283,4 +284,53 @@ func TestSyncCycleHoldsSyncLockUntilDone(t *testing.T) {
 		t.Fatalf("the sync lock should be free once the cycle is done: %v", err)
 	}
 	release()
+}
+
+// A daemon whose machine subtree another store owns is refused on every
+// cycle until the user acts, so the refusal is logged when it first
+// appears and again only after it has cleared and come back.
+func TestSyncCycleLogsOwnerRefusalOnce(t *testing.T) {
+	if _, err := exec.LookPath("rclone"); err != nil {
+		t.Skip("rclone not installed")
+	}
+	testutil.InitializedSwarf(t)
+	remote := t.TempDir()
+	tokenPath := filepath.Join(remote, backends.MachineSuffix, "box", ".git", backends.OwnerTokenFile)
+	claim := func(tok string) {
+		os.MkdirAll(filepath.Dir(tokenPath), 0o755)
+		os.WriteFile(tokenPath, []byte(tok+"\n"), 0o644)
+	}
+	claim("someone-else")
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	b := &backends.RcloneBackend{Remote: remote, MachineID: "box"}
+	count := func() int { return strings.Count(buf.String(), "different store") }
+
+	syncCycle(context.Background(), b, nil) // refusal appears: logged
+	syncCycle(context.Background(), b, nil) // same refusal: quiet
+	if n := count(); n != 1 {
+		t.Fatalf("expected the refusal logged once across two cycles, got %d\nlog:\n%s", n, buf.String())
+	}
+
+	// The user resolves it; the next cycle uploads.
+	tok, err := backends.EnsureOwnerToken(paths.StoreDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim(tok)
+	syncCycle(context.Background(), b, nil)
+	if n := count(); n != 1 {
+		t.Fatalf("a cycle that uploads should not log the refusal, got %d\nlog:\n%s", n, buf.String())
+	}
+
+	// It comes back: logged afresh.
+	claim("someone-else")
+	syncCycle(context.Background(), b, nil)
+	if n := count(); n != 2 {
+		t.Fatalf("a refusal that returns should be logged again, got %d\nlog:\n%s", n, buf.String())
+	}
 }

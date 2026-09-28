@@ -88,7 +88,7 @@ func syncCycle(ctx context.Context, backend backends.SyncBackend, skip mirror.Sk
 	result := backend.Sync(ctx, paths.StoreDir)
 	if result.Success && result.FilesChanged > 0 {
 		slog.Info("sync: " + result.Message)
-	} else if !result.Success {
+	} else if !result.Success && !result.Logged {
 		slog.Warn("sync: " + result.Message)
 	}
 }

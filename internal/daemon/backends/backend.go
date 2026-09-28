@@ -11,6 +11,10 @@ type SyncResult struct {
 	Success      bool
 	Message      string
 	FilesChanged int
+	// Logged means the backend has already logged this failure (or chose
+	// to stay quiet about a repeat of it), so the caller should not log
+	// Message again.
+	Logged bool
 }
 
 type SyncBackend interface {
