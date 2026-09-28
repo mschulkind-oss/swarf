@@ -50,9 +50,11 @@ type Options struct {
 	Resync bool
 }
 
-// Run pulls once. ctx bounds only the wait for the sync lock: a pull
-// that finds another push, pull, or daemon cycle holding it waits, and
-// gives up if ctx ends first.
+// Run pulls once. A pull that finds another push, pull, or daemon cycle
+// holding the sync lock waits for it, and gives up if ctx ends first.
+// With the rclone backend ctx also bounds the downloads: ending it kills
+// the in-flight rclone, skips the remaining peers, and returns ctx's
+// error once the store is mirrored back into the projects.
 func Run(ctx context.Context, opts Options) error {
 	_, err := RunWithResult(ctx, opts)
 	return err
@@ -79,7 +81,7 @@ func RunWithResult(ctx context.Context, opts Options) (*Result, error) {
 		}
 		return nil, pullGit(gc)
 	case "rclone":
-		return pullRclone(gc, opts)
+		return pullRclone(ctx, gc, opts)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnknownBackend, gc.Backend)
 	}
@@ -123,7 +125,7 @@ func pullGit(gc *config.GlobalConfig) error {
 //  4. Apply the resulting A/M/D entries to the local working tree, creating
 //     conflict sidecars where local has diverged.
 //  5. Commit any changes and advance refs/swarf-peers/<peer>.
-func pullRclone(gc *config.GlobalConfig, opts Options) (*Result, error) {
+func pullRclone(ctx context.Context, gc *config.GlobalConfig, opts Options) (*Result, error) {
 	if _, err := exec.LookPath("rclone"); err != nil {
 		return nil, errors.New("rclone is not installed")
 	}
@@ -145,13 +147,13 @@ func pullRclone(gc *config.GlobalConfig, opts Options) (*Result, error) {
 	mirrorProjectsToStore(mirror.SkipPatterns(gc.Exclude))
 
 	self := config.EnsureMachineID()
-	peers, err := listPeers(gc.Remote)
+	peers, err := listPeers(ctx, gc.Remote)
 	if err != nil {
 		return nil, err
 	}
 
 	if len(peers) == 0 {
-		if legacy, reason := peekLegacyLayout(gc.Remote); legacy {
+		if legacy, reason := peekLegacyLayout(ctx, gc.Remote); legacy {
 			return nil, fmt.Errorf("remote is in legacy flat layout (%s); run 'swarf doctor' for migration steps", reason)
 		}
 		console.Info("No peers found on remote yet.")
@@ -163,7 +165,10 @@ func pullRclone(gc *config.GlobalConfig, opts Options) (*Result, error) {
 		if peer == self {
 			continue
 		}
-		if err := pullFromPeer(gc, peer, opts.Resync, result); err != nil {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := pullFromPeer(ctx, gc, peer, opts.Resync, result); err != nil {
 			console.Warn(fmt.Sprintf("peer %s: %v", peer, err))
 			continue
 		}
@@ -176,6 +181,14 @@ func pullRclone(gc *config.GlobalConfig, opts Options) (*Result, error) {
 	// project's swarf/ keeps showing stale files until the daemon's next
 	// forward mirror accidentally undoes our pull.
 	synced, unregistered := mirrorStoreBackToProjects(mirror.SkipPatterns(gc.Exclude))
+
+	// An interrupted pull still mirrors back what it applied — skipping
+	// that would leave the store ahead of the projects, and the next
+	// forward mirror would undo the peers' edits — but it is not a
+	// finished pull, so it reports the interruption instead of a summary.
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 
 	if len(result.ConflictFiles) > 0 {
 		console.Warn(fmt.Sprintf("Pulled %d peer(s) with %d conflict file(s):", result.PeersMerged, len(result.ConflictFiles)))
@@ -303,9 +316,9 @@ func holdReleaseMessage(slug string, r mirror.HoldRelease) string {
 
 // listPeers returns the machine IDs found under <remote>/machines/.
 // Returns an empty slice if the machines/ directory doesn't exist yet.
-func listPeers(remote string) ([]string, error) {
+func listPeers(ctx context.Context, remote string) ([]string, error) {
 	machinesPath := strings.TrimRight(remote, "/") + "/" + backends.MachineSuffix
-	cmd := exec.Command("rclone", "lsf", "--dirs-only", machinesPath)
+	cmd := exec.CommandContext(ctx, "rclone", "lsf", "--dirs-only", machinesPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.ToLower(strings.TrimSpace(string(out)))
@@ -328,8 +341,8 @@ func listPeers(remote string) ([]string, error) {
 
 // peekLegacyLayout returns (true, reason) when the remote has a .git/
 // directory at its root, matching the pre-multi-machine flat layout.
-func peekLegacyLayout(remote string) (bool, string) {
-	cmd := exec.Command("rclone", "lsf", "--dirs-only", strings.TrimRight(remote, "/"))
+func peekLegacyLayout(ctx context.Context, remote string) (bool, string) {
+	cmd := exec.CommandContext(ctx, "rclone", "lsf", "--dirs-only", strings.TrimRight(remote, "/"))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, ""
@@ -366,14 +379,14 @@ func peerRefName(peer string) string {
 // last-seen peer HEAD, and applies it to the local store. With resync it
 // applies the deletes the peer made since the last-seen ref, then the
 // peer's whole tree in content-union mode instead of the rest of the diff.
-func pullFromPeer(gc *config.GlobalConfig, peer string, resync bool, result *Result) error {
+func pullFromPeer(ctx context.Context, gc *config.GlobalConfig, peer string, resync bool, result *Result) error {
 	peerCache := paths.PeerCacheDir(peer)
 	if err := os.MkdirAll(peerCache, 0o755); err != nil {
 		return fmt.Errorf("mkdir peer cache: %w", err)
 	}
 	peerRemote := strings.TrimRight(gc.Remote, "/") + "/" + backends.MachineSuffix + "/" + peer
 	slog.Info("pull: copying peer", "peer", peer, "from", peerRemote, "to", peerCache)
-	if err := runRcloneSyncStreaming(peerRemote, peerCache, backends.ListingFlags(gc.NoFastList)...); err != nil {
+	if err := runRcloneSyncStreaming(ctx, peerRemote, peerCache, backends.ListingFlags(gc.NoFastList)...); err != nil {
 		return fmt.Errorf("rclone sync from peer: %w", err)
 	}
 
@@ -701,8 +714,8 @@ func writeConflictSidecar(rel, peer, ts string, peerContent []byte) (string, err
 // blocks a path that now needs to be a directory), we wipe the
 // destination and retry once. This recovers peer caches left over from
 // older layouts without the user having to clean up by hand.
-func runRcloneSyncStreaming(src, dst string, flags ...string) error {
-	if err := runRcloneSyncOnce(src, dst, flags...); err == nil {
+func runRcloneSyncStreaming(ctx context.Context, src, dst string, flags ...string) error {
+	if err := runRcloneSyncOnce(ctx, src, dst, flags...); err == nil {
 		return nil
 	} else if !isNotADirectoryError(err) {
 		return err
@@ -714,21 +727,24 @@ func runRcloneSyncStreaming(src, dst string, flags ...string) error {
 	if mkErr := os.MkdirAll(dst, 0o755); mkErr != nil {
 		return fmt.Errorf("recreate peer cache %s: %w", dst, mkErr)
 	}
-	return runRcloneSyncOnce(src, dst, flags...)
+	return runRcloneSyncOnce(ctx, src, dst, flags...)
 }
 
-func runRcloneSyncOnce(src, dst string, flags ...string) error {
+func runRcloneSyncOnce(ctx context.Context, src, dst string, flags ...string) error {
 	args := append([]string{"sync", src, dst, "-v"}, flags...)
 	if term.IsTerminal(int(os.Stderr.Fd())) {
 		args = append(args, "--progress", "--stats=1s")
 	} else {
 		args = append(args, "--stats=5s")
 	}
-	cmd := exec.Command("rclone", args...)
+	cmd := exec.CommandContext(ctx, "rclone", args...)
 	cmd.Stdout = os.Stderr
 	var errBuf bytes.Buffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		tail := strings.TrimSpace(errBuf.String())
 		if len(tail) > 2000 {
 			tail = tail[len(tail)-2000:]

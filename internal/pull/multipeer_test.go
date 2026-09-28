@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mschulkind-oss/swarf/internal/config"
 	"github.com/mschulkind-oss/swarf/internal/gitexec"
@@ -93,6 +94,8 @@ case "$cmd" in
     exit 0
     ;;
   sync|copy)
+    # Test hook: stand in for a slow download that only ends when killed.
+    [ -n "${FAKE_RCLONE_SLOW_SYNC:-}" ] && exec sleep 30
     src=""
     dst=""
     for a in "$@"; do
@@ -665,7 +668,7 @@ func TestListPeersMissingMachinesDir(t *testing.T) {
 	installFakeRclone(t, fakeRoot)
 	os.MkdirAll(filepath.Join(fakeRoot, "store"), 0o755)
 
-	peers, err := listPeers("fake:store")
+	peers, err := listPeers(context.Background(), "fake:store")
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -683,7 +686,7 @@ func TestListPeersError(t *testing.T) {
 	os.WriteFile(shim, []byte("#!/bin/sh\necho 'network is down' >&2\nexit 1\n"), 0o755)
 	t.Setenv("PATH", fakeDir+":"+os.Getenv("PATH"))
 
-	_, err := listPeers("fake:store")
+	_, err := listPeers(context.Background(), "fake:store")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1038,5 +1041,27 @@ func TestPullResyncAfterPeerRebuild(t *testing.T) {
 	}
 	if got := gitexec.ReadRef(paths.StoreDir, peerRefName("peer")); got != newPeerHead {
 		t.Errorf("resync should advance the last-seen ref to the rebuilt peer HEAD %s, got %s", newPeerHead, got)
+	}
+}
+
+// A pull whose context ends mid-download (a daemon shutting down during a
+// scheduled pull) kills the rclone child and returns promptly instead of
+// waiting for the transfer.
+func TestPullCancelledStopsDownload(t *testing.T) {
+	fakeRoot := t.TempDir()
+	installFakeRclone(t, fakeRoot)
+	setupStore(t, "self")
+	os.MkdirAll(filepath.Join(fakeRoot, "store", "machines", "peer"), 0o755)
+	t.Setenv("FAKE_RCLONE_SLOW_SYNC", "1")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	start := time.Now()
+	_, err := RunWithResult(ctx, Options{})
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("a cancelled pull should return promptly, took %v", elapsed)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the context's error, got %v", err)
 	}
 }
