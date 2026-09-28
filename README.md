@@ -310,7 +310,9 @@ calls any branch not under `machines/` a *legacy branch*, and migrates it
 on its own during any git-backend pull, push, or daemon cycle: it folds
 the branch's content into the store, then, once this machine's branch
 has been pushed with it, removes the branch from the remote. Where the
-remote refuses the delete (GitHub refuses deleting the default branch),
+remote refuses the delete (GitHub refuses deleting the default branch,
+and a plain bare repository refuses deleting the branch its `HEAD`
+names),
 swarf replaces the branch with a *tombstone*: a commit with no parents
 holding only `SWARF-BRANCHES.md`, which says the branch is intentionally
 empty, with the trailer `Swarf-Tombstone: true` in its message. `swarf

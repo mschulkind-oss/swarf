@@ -381,7 +381,8 @@ const backendsDoc = `
     2. Once this machine's branch has been pushed with that content, it
        retires the legacy branch: removes it from the remote. It deletes
        the branch, or, when the remote refuses (GitHub refuses deleting
-       the default branch), replaces it with a tombstone. A branch that
+       the default branch, and a plain bare repository refuses deleting
+       the branch its HEAD names), replaces it with a tombstone. A branch that
        moved in between is left for the next pass to fold in again.
 
   A tombstone is a commit with no parents holding one file,

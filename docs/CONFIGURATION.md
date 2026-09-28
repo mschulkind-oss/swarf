@@ -547,8 +547,10 @@ cycle migrates the remote.
 2. **Retire.** Once the machine branch has been pushed with the legacy
    tip in its history, swarf **retires** the legacy branch: removes it
    from the remote. It deletes the branch. If the remote refuses (GitHub
-   refuses deleting the default branch), it force-pushes a tombstone to
-   the branch instead. Both updates hold only while the branch still
+   refuses deleting the default branch, and a plain bare repository
+   refuses deleting the branch its `HEAD` names, such as the `main` of
+   `git init --bare -b main`), it force-pushes a tombstone to the branch
+   instead. Both updates hold only while the branch still
    points at the commit swarf folded in, so if a machine still running an
    older swarf pushed to it in between, swarf leaves it this time and the
    next pass folds in the new commits. A push retires right after it
