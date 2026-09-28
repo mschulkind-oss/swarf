@@ -209,3 +209,19 @@ func TestTrackedDirKeepsSyncedFileWhoseCopyFails(t *testing.T) {
 	}
 	assertFile(t, filepath.Join(f.store, "b.md"), "content of b.md")
 }
+
+// The store still has a tracked path when a dangling symlink sits there:
+// the path is present, it just resolves to nothing. The reverse mirror
+// checks presence without following links, so the project copy stays.
+func TestTrackedReverseKeepsFileWhenStoreHasDanglingLink(t *testing.T) {
+	f := newReverseFixture(t, "a.md")
+	storeCopy := filepath.Join(f.store, "a.md")
+	os.Remove(storeCopy)
+	if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), storeCopy); err != nil {
+		t.Fatal(err)
+	}
+
+	f.reverse(nil)
+
+	assertFile(t, filepath.Join(f.project, "a.md"), "content of a.md")
+}
