@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -244,6 +245,60 @@ func TestPullIntervalRoundTrip(t *testing.T) {
 	EnsureMachineID()
 	if got := ReadGlobalConfig(); got.PullInterval != "10m" {
 		t.Fatalf("rewriting the config dropped pull_interval, got %q", got.PullInterval)
+	}
+}
+
+// [sync] store_dir relocates the central store: the string survives a
+// rewrite verbatim, and ReadGlobalConfig points paths.StoreDir at the
+// resolved location.
+func TestStoreDirRoundTrip(t *testing.T) {
+	setupTestConfig(t)
+	old := paths.StoreDir
+	defer func() { paths.StoreDir = old }()
+
+	dir := filepath.Join(t.TempDir(), "swarf-store")
+	WriteGlobalConfig(&GlobalConfig{Backend: "git", Remote: "x", Debounce: "5s", StoreDir: dir})
+	got := ReadGlobalConfig()
+	if got.StoreDir != dir {
+		t.Fatalf("store_dir did not survive a write/read round trip: %q", got.StoreDir)
+	}
+	if paths.StoreDir != dir {
+		t.Fatalf("ReadGlobalConfig set StoreDir=%q, want %q", paths.StoreDir, dir)
+	}
+}
+
+// A config with no store_dir must leave the default store location
+// alone: every config written before the key existed lacks it.
+func TestStoreDirDefaultUnchanged(t *testing.T) {
+	setupTestConfig(t)
+	old := paths.StoreDir
+	defer func() { paths.StoreDir = old }()
+	before := paths.StoreDir
+
+	WriteGlobalConfig(&GlobalConfig{Backend: "git", Remote: "x", Debounce: "5s"})
+	ReadGlobalConfig()
+	if paths.StoreDir != before {
+		t.Fatalf("a config without store_dir moved the store to %q", paths.StoreDir)
+	}
+}
+
+// store_dir accepts ~ and relative paths: both resolve against the home
+// directory, never the process working directory.
+func TestResolveStoreDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	abs := filepath.Join(home, "abs-store")
+	cases := []struct{ in, want string }{
+		{abs, abs},
+		{"~/rel-store", filepath.Join(home, "rel-store")},
+		{"rel-store", filepath.Join(home, "rel-store")},
+		{"  ~/padded  ", filepath.Join(home, "padded")},
+	}
+	for _, c := range cases {
+		if got := resolveStoreDir(c.in); got != c.want {
+			t.Errorf("resolveStoreDir(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 

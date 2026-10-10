@@ -18,6 +18,12 @@ type GlobalConfig struct {
 	Remote   string `toml:"remote"`
 	Debounce string `toml:"debounce"`
 	DirName  string `toml:"dir_name"`
+	// StoreDir is [sync] store_dir: the directory the central store
+	// lives in, replacing the default <XDG_DATA_HOME>/swarf. Empty means
+	// the default. ReadGlobalConfig resolves it (see resolveStoreDir)
+	// and points paths.StoreDir at the result; this field keeps the
+	// string as written so a rewrite preserves it verbatim.
+	StoreDir string `toml:"store_dir"`
 	// NoFastList turns off rclone's --fast-list (see
 	// backends.ListingFlags). Spelled as the negative so that the zero
 	// value — every config written before the flag existed, and every
@@ -46,6 +52,7 @@ type syncSection struct {
 	Remote     string   `toml:"remote"`
 	Debounce   string   `toml:"debounce"`
 	DirName    string   `toml:"dir_name,omitempty"`
+	StoreDir   string   `toml:"store_dir,omitempty"`
 	NoFastList bool     `toml:"no_fast_list,omitempty"`
 	Exclude    []string `toml:"exclude,omitempty"`
 	// PullInterval: see GlobalConfig.PullInterval.
@@ -74,6 +81,7 @@ func ReadGlobalConfig() *GlobalConfig {
 		Remote:       f.Sync.Remote,
 		Debounce:     f.Sync.Debounce,
 		DirName:      f.Sync.DirName,
+		StoreDir:     f.Sync.StoreDir,
 		NoFastList:   f.Sync.NoFastList,
 		Exclude:      f.Sync.Exclude,
 		PullInterval: f.Sync.PullInterval,
@@ -88,8 +96,32 @@ func ReadGlobalConfig() *GlobalConfig {
 	if c.DirName != "" {
 		paths.SwarfDirName = c.DirName
 	}
+	if c.StoreDir != "" {
+		paths.StoreDir = resolveStoreDir(c.StoreDir)
+	}
 	c.AutoSweep = f.AutoSweep.Paths
 	return c
+}
+
+// resolveStoreDir turns [sync] store_dir into the absolute path the
+// central store lives at. A leading "~" is the user's home directory,
+// and a relative path is resolved against home rather than the process
+// working directory, which differs between the CLI and the daemon.
+// Without a usable home directory it leaves the current store location
+// alone, so a bad config cannot move the store to a relative path.
+func resolveStoreDir(dir string) string {
+	dir = paths.ExpandHome(strings.TrimSpace(dir))
+	if dir == "" {
+		return paths.StoreDir
+	}
+	if filepath.IsAbs(dir) {
+		return filepath.Clean(dir)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return paths.StoreDir
+	}
+	return filepath.Join(home, dir)
 }
 
 func WriteGlobalConfig(c *GlobalConfig) error {
@@ -102,6 +134,7 @@ func WriteGlobalConfig(c *GlobalConfig) error {
 			Remote:       c.Remote,
 			Debounce:     c.Debounce,
 			DirName:      c.DirName,
+			StoreDir:     c.StoreDir,
 			NoFastList:   c.NoFastList,
 			Exclude:      c.Exclude,
 			PullInterval: c.PullInterval,

@@ -14,7 +14,7 @@ only need to edit config manually to change defaults or add auto-sweep.
 | `~/.config/swarf/daemon.log` | Daemon log output |
 | `~/.config/swarf/last-commit` | Timestamp of last successful local commit |
 | `~/.config/swarf/last-push` | Timestamp of last successful remote push |
-| `~/.local/share/swarf/` | Central backup store (a git repo mirroring all projects) |
+| `~/.local/share/swarf/` | Central backup store (a git repo mirroring all projects); relocate with [`[sync] store_dir`](#store_dir) |
 | `~/.local/share/swarf/.git/swarf-owner` | This store's owner token (rclone backend; see [Owner token](#owner-token-and---take-over)) |
 | `~/.cache/swarf/manifests/<slug>.txt` | The manifest: the files swarf last synced from each project |
 | `~/.cache/swarf/delete-holds/<slug>.json` | Hold marker for a project in a [delete hold](#delete-hold-and---allow-deletes) |
@@ -26,7 +26,7 @@ All paths respect XDG conventions. Override with environment variables:
 | Variable | Default | Controls |
 |----------|---------|----------|
 | `XDG_CONFIG_HOME` | `~/.config` | Config directory (config.toml, drawers.toml, daemon files) |
-| `XDG_DATA_HOME` | `~/.local/share` | Data directory (central store) |
+| `XDG_DATA_HOME` | `~/.local/share` | Data directory (central store); [`[sync] store_dir`](#store_dir) overrides it |
 | `XDG_CACHE_HOME` | `~/.cache` | Cache directory (manifests, hold markers, sync lock, peer caches) |
 
 ## Global config (`config.toml`)
@@ -40,6 +40,8 @@ remote = "git@github.com:you/my-swarf-store.git"     # git URL or rclone remote:
 debounce = "5s"                                      # wait after last change before syncing
 exclude = [".yolo/"]                                 # drawer paths never copied to the store
 pull_interval = "10m"                                # daemon pulls on this interval (default off)
+store_dir = "/mnt/big-disk/swarf"                    # central store location (optional;
+                                                     # default ~/.local/share/swarf)
 
 [machine]
 id = "laptop"                                        # stable name for this machine (multi-machine sync)
@@ -92,6 +94,45 @@ Where to push. Format depends on the backend:
   The remote name (before the colon) must match a configured rclone remote
   (`rclone listremotes` to see available ones). The path is created
   automatically on first sync.
+
+#### `store_dir`
+
+Where the central store lives. Defaults to `~/.local/share/swarf/`, or
+`$XDG_DATA_HOME/swarf` when that environment variable is set.
+
+Point it at another directory to put the store somewhere else — a larger
+disk, a directory your own backup already covers, or an encrypted volume:
+
+```toml
+[sync]
+store_dir = "/mnt/big-disk/swarf"
+```
+
+- A leading `~` is your home directory, and a relative path is resolved
+  against your home directory — never against the working directory the
+  command or daemon happens to run in, which are not the same.
+- It wins over `XDG_DATA_HOME` for the store. Nothing else moves: config,
+  drawers, and the [cache](#file-locations) (manifests, delete holds, the
+  sync lock, peer caches) stay under `XDG_CONFIG_HOME` and
+  `XDG_CACHE_HOME`.
+- `swarf init` creates the store at the configured location, and `swarf
+  doctor` reports where it expects it.
+- A running daemon keeps the location it started with, so stop and start
+  it after changing this (`swarf daemon stop && swarf daemon start`).
+
+**Move the store, don't start a second one.** The cache's per-project
+manifests record which files swarf has synced, so a store that is
+suddenly empty reads as "everything was deleted" and a pull can delete
+those files from your projects. Relocate an existing store with the
+filesystem and point `store_dir` at the result:
+
+```bash
+mv ~/.local/share/swarf /mnt/big-disk/swarf
+```
+
+If you do mean to start fresh at the new location, also empty
+`~/.cache/swarf/manifests/` so the stale manifests cannot drive those
+deletes; the next sync copies the projects into the new store.
 
 ### `[machine]` section
 

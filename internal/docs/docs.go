@@ -120,8 +120,9 @@ const architecture = `
      No symlinks to a central store — your data is right where you work.
 
   2. Mirror + sync: The daemon watches all project swarf/ dirs, mirrors
-     changes to ~/.local/share/swarf/ (a git repo), then pushes to remote.
-     One daemon, one remote, one backup for all projects.
+     changes to ~/.local/share/swarf/ (a git repo; relocate it with
+     [sync] store_dir), then pushes to remote. One daemon, one remote,
+     one backup for all projects.
 
   3. Swept links: Files in swarf/.links/ are symlinked into the host tree.
      This lets AGENTS.md appear in the project root while living in swarf/.
@@ -195,6 +196,8 @@ const configDoc = `
   exclude = [".yolo/"]     # drawer paths to keep out of the store entirely
   pull_interval = "10m"    # daemon pulls on this interval (empty or
                            # "0" is off, the default)
+  store_dir = ""           # central store location (default:
+                           # ~/.local/share/swarf)
 
   [machine]
   id = "laptop"            # this machine's folder on an rclone remote,

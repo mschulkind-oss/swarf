@@ -173,6 +173,26 @@ paths = ["AGENTS.md", "CLAUDE.md", ".copilot/skills/"]
 
 The daemon watches for these files and sweeps them on creation.
 
+### Relocate the store
+
+The central store defaults to `~/.local/share/swarf/`. To keep it
+somewhere else — a bigger disk, an encrypted volume — set `store_dir` in
+`~/.config/swarf/config.toml` and move the existing store there:
+
+```toml
+[sync]
+store_dir = "/mnt/big-disk/swarf"
+```
+
+```bash
+mv ~/.local/share/swarf /mnt/big-disk/swarf
+```
+
+A leading `~` and relative paths resolve against your home directory. See
+the [configuration guide](docs/CONFIGURATION.md#store_dir) for the
+details, including why you should move the store rather than point at an
+empty directory.
+
 ### Check status
 
 ```bash

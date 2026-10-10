@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestExpandHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if got := ExpandHome("~"); got != home {
+		t.Fatalf("ExpandHome(~) = %q, want %q", got, home)
+	}
+	if got := ExpandHome("~/notes"); got != filepath.Join(home, "notes") {
+		t.Fatalf("ExpandHome(~/notes) = %q, want %q", got, filepath.Join(home, "notes"))
+	}
+	if got := ExpandHome("relative/notes"); got != "relative/notes" {
+		t.Fatalf("ExpandHome must leave a relative path alone, got %q", got)
+	}
+	if got := ExpandHome("/abs/notes"); got != "/abs/notes" {
+		t.Fatalf("ExpandHome must leave an absolute path alone, got %q", got)
+	}
+	// "~user" is not a form swarf expands.
+	if got := ExpandHome("~other/notes"); got != "~other/notes" {
+		t.Fatalf("ExpandHome must not expand ~user, got %q", got)
+	}
+}
+
 func TestSwarfDir(t *testing.T) {
 	got := SwarfDir("/home/user/project")
 	want := filepath.Join("/home/user/project", "swarf")

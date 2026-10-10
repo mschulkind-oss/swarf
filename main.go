@@ -91,6 +91,14 @@ Learn more:
 		docsCmd(),
 	)
 
+	// Apply config-driven path overrides — [sync] store_dir moves the
+	// central store, [sync] dir_name the per-project directory — before any
+	// command runs. Commands that read the config again get the same
+	// result, and this covers the ones that never read it: 'swarf forget
+	// --delete-store' uses paths.StoreDir directly, and must delete from
+	// the configured store, not the default one.
+	config.ReadGlobalConfig()
+
 	// Execute with a signal-cancelled context so long-running commands
 	// (notably `swarf push`, which can sit in a network sync) abort promptly
 	// on Ctrl-C / SIGTERM instead of blocking. The daemon installs its own

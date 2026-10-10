@@ -3,6 +3,7 @@ package paths
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var SwarfDirName = "swarf"
@@ -26,6 +27,24 @@ func xdg(env, fallback string) string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, fallback)
+}
+
+// ExpandHome replaces a leading "~" or "~/" with the user's home
+// directory, the way a shell would. A path without that prefix is
+// returned unchanged, and "~" is left as-is when the home directory
+// cannot be determined.
+func ExpandHome(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
 }
 
 func SwarfDir(hostRoot string) string        { return filepath.Join(hostRoot, SwarfDirName) }
