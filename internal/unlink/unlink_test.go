@@ -196,3 +196,66 @@ func TestUnlinkNoProject(t *testing.T) {
 		t.Fatal("expected error outside project")
 	}
 }
+
+// TestUnlinkRemoveDeletesFile covers 'swarf unlink --rm': the swept file is
+// deleted outright — no regular file left behind, no .links/ copy, no store
+// copy, no exclude entry — instead of being restored in place.
+func TestUnlinkRemoveDeletesFile(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	slug := filepath.Base(repo)
+	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# Agents\n"), 0o644)
+	os.Chdir(repo)
+	if err := sweep.Run([]string{"AGENTS.md"}, repo); err != nil {
+		t.Fatal(err)
+	}
+	storeLinks := filepath.Join(paths.StoreDir, slug, ".links")
+	os.MkdirAll(storeLinks, 0o755)
+	storeCopy := filepath.Join(storeLinks, "AGENTS.md")
+	os.WriteFile(storeCopy, []byte("# Agents\n"), 0o644)
+
+	if err := unlink.RunWithRemove([]string{"AGENTS.md"}, repo, true); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(repo, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatal("expected AGENTS.md gone from the project tree")
+	}
+	if _, err := os.Stat(filepath.Join(paths.LinksDir(repo), "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatal("expected file removed from swarf/.links/")
+	}
+	if _, err := os.Stat(storeCopy); !os.IsNotExist(err) {
+		t.Fatal("expected store copy removed")
+	}
+	for _, e := range exclude.ReadManagedExcludes(repo) {
+		if e == "/AGENTS.md" {
+			t.Fatal("/AGENTS.md should be removed from excludes after unlink --rm")
+		}
+	}
+}
+
+// TestUnlinkRemoveKeepsRegularFile: if the host path is no longer the
+// symlink sweep made (a tool replaced it with a regular file), --rm must
+// not delete it — that content isn't in swarf/.links/ and would be lost.
+func TestUnlinkRemoveKeepsRegularFile(t *testing.T) {
+	repo := testutil.InitializedSwarf(t)
+	os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("# Agents\n"), 0o644)
+	os.Chdir(repo)
+	if err := sweep.Run([]string{"AGENTS.md"}, repo); err != nil {
+		t.Fatal(err)
+	}
+	host := filepath.Join(repo, "AGENTS.md")
+	os.Remove(host)
+	os.WriteFile(host, []byte("# Rewritten by a tool\n"), 0o644)
+
+	if err := unlink.RunWithRemove([]string{"AGENTS.md"}, repo, true); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(host)
+	if err != nil || string(got) != "# Rewritten by a tool\n" {
+		t.Fatalf("expected the regular file kept untouched, got %q, %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.LinksDir(repo), "AGENTS.md")); err != nil {
+		t.Fatal("expected swarf/.links/ copy kept when the path is skipped")
+	}
+}

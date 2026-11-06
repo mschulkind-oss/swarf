@@ -161,6 +161,13 @@ To reverse a sweep:
 swarf unlink AGENTS.md
 ```
 
+To delete a swept file entirely (symlink, `swarf/.links/` copy, and store
+copy):
+
+```bash
+swarf unlink --rm AGENTS.md
+```
+
 ### Auto-sweep
 
 Configure files to be swept automatically whenever they appear:
@@ -244,7 +251,7 @@ creates `swarf/` in a new directory, while `doctor` only checks and repairs.
 |---------|-------------|
 | `swarf init` | Set up swarf in the current project |
 | `swarf sweep <file>...` | Move files into `swarf/.links/` and symlink back |
-| `swarf unlink <file>...` | Reverse a sweep — restore symlinks to regular files |
+| `swarf unlink <file>...` | Reverse a sweep — restore symlinks to regular files (`--rm` deletes them instead) |
 | `swarf doctor` | Check health and fix problems (config, store, service, links) |
 | `swarf status` | Show projects, sync state, remote verification, daemon health |
 | `swarf push` | Sync now instead of waiting for the daemon (`--allow-deletes`, `--take-over`) |

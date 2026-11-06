@@ -164,7 +164,7 @@ Use 'swarf unlink' to reverse a sweep.`,
 }
 
 func unlinkCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:     "unlink <file>...",
 		Short:   "Reverse a sweep: replace symlinks with regular files",
 		GroupID: groupCore,
@@ -174,11 +174,20 @@ swarf/.links/, writes it back as a regular file in the project tree,
 removes the symlink and the swarf/.links/ copy, and cleans up the
 git exclude entry.
 
+With --rm, the file is deleted instead of restored: the symlink, the
+swarf/.links/ copy, and the store copy all go. A path that is no longer
+a symlink is left alone.
+
 This works inside jails and containers where the daemon isn't running.`,
 		Example: `  swarf unlink AGENTS.md
-  swarf unlink CLAUDE.md .copilot/skills/SKILL.md`,
-		RunE: func(cmd *cobra.Command, args []string) error { return unlink.Run(args, "") },
+  swarf unlink CLAUDE.md .copilot/skills/SKILL.md
+  swarf unlink --rm AGENTS.md`,
 	}
+	rm := cmd.Flags().Bool("rm", false, "Delete the swept file instead of restoring it as a regular file")
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return unlink.RunWithRemove(args, "", *rm)
+	}
+	return cmd
 }
 
 func forgetCmd() *cobra.Command {

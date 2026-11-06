@@ -21,6 +21,13 @@ var (
 // removes the file from swarf/.links/. Works inside jails where the daemon
 // isn't available.
 func Run(filePaths []string, hostRoot string) error {
+	return RunWithRemove(filePaths, hostRoot, false)
+}
+
+// RunWithRemove is like Run but when remove is true, it deletes the swept
+// file entirely instead of restoring it as a regular file. A host path that
+// is no longer a symlink is skipped, since its content isn't in .links/.
+func RunWithRemove(filePaths []string, hostRoot string, remove bool) error {
 	if hostRoot == "" {
 		hostRoot = paths.FindHostRoot("")
 	}
@@ -34,7 +41,7 @@ func Run(filePaths []string, hostRoot string) error {
 
 	var unlinked []string
 	for _, p := range filePaths {
-		if rel, ok := unlinkOne(p, hostRoot, ld); ok {
+		if rel, ok := unlinkOne(p, hostRoot, ld, remove); ok {
 			unlinked = append(unlinked, rel)
 		}
 	}
@@ -103,7 +110,7 @@ func dropFromManifest(manifestPath string, unlinked []string) {
 	}
 }
 
-func unlinkOne(pathStr, hostRoot, linksDir string) (string, bool) {
+func unlinkOne(pathStr, hostRoot, linksDir string, remove bool) (string, bool) {
 	target := pathStr
 	if !filepath.IsAbs(target) {
 		cwd, _ := os.Getwd()
@@ -122,6 +129,18 @@ func unlinkOne(pathStr, hostRoot, linksDir string) (string, bool) {
 	if _, err := os.Stat(source); os.IsNotExist(err) {
 		console.Error(fmt.Sprintf("%s is not a swept file (not in %s/.links/).", rel, paths.SwarfDirName))
 		return "", false
+	}
+
+	if remove {
+		if fi, err := os.Lstat(target); err == nil && fi.Mode()&os.ModeSymlink == 0 {
+			console.Error(fmt.Sprintf("%s is a regular file, not a swarf symlink — leaving it alone.", rel))
+			return "", false
+		}
+		os.Remove(target)
+		os.Remove(source)
+		cleanEmptyParents(filepath.Dir(source), linksDir)
+		console.Infof("  removed %s", rel)
+		return rel, true
 	}
 
 	// Read the content from swarf/.links/.
